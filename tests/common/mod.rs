@@ -1,3 +1,9 @@
+/* 
+ * This file contains some sample entities we can use for testing the codebase
+ * In each case there is a strongly 
+ * UserId / User - 
+ */
+
 use serde::{Serialize, Deserialize};
 use grm_rs::{RelModel, typed_id};
 use grm_rs::{NodeModel};
@@ -30,4 +36,3 @@ pub struct Authored {
     pub id: AuthoredId,
     pub year: u64,
 }
-
