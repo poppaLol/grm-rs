@@ -263,14 +263,15 @@ impl InMemoryTx {
             .as_object()
             .ok_or_else(|| GrmError::Backend("UPDATE requires props object".into()))?;
 
+        let mut result = QueryResult { rows: vec![] };
+
         if let Some(node) = self.working_copy.nodes.get_mut(&id) {
             // Merge props (SET n += $props semantics)
             for (k, v) in props_obj {
                 node.props.insert(k.clone(), v.clone());
             }
-
-            return Ok(QueryResult {
-                rows: vec![QueryRow {
+            
+            result.rows = vec![QueryRow {
                     values: BTreeMap::from([(
                         "n".to_string(),
                         serde_json::json!({
@@ -278,12 +279,10 @@ impl InMemoryTx {
                             "labels": node.labels,
                             "props": node.props,
                         }),
-                    )]),
-                }],
-            });
+                    )])}];
         }
 
-        Ok(QueryResult { rows: vec![] })
+        Ok(result)
     }
 
     fn delete_node(&mut self, params: &Value) -> Result<QueryResult> {
