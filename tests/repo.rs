@@ -3,9 +3,9 @@ mod common;
 #[cfg(test)]
 mod node_matches_filters_tests {
     use crate::common::*;
-    use grm_rs::{CompareOp, repo::node_matches_filters};
+    use grm_rs::{CompareOp, dsl::props_match_filters};
 
-    use grm_rs::PropertyFilter;
+    use grm_rs::{NodeModel, PropertyFilter};
     use serde_json::json;
 
     #[test]
@@ -19,12 +19,13 @@ mod node_matches_filters_tests {
             value: json!("Bob"),
         }];
 
-        let matches = node_matches_filters(&user, &filters);
+        let props = user.to_properties();
+        let matches = props_match_filters(&props, &filters);
 
         assert!(
             !matches,
             "expected user NOT to match filter name == \"Bob\", \
-             but node_matches_filters returned true"
+             but props_matches_filters returned true"
         );
     }
 
@@ -46,7 +47,8 @@ mod node_matches_filters_tests {
             },
         ];
 
-        let matches = node_matches_filters(&user, &filters);
+        let props = user.to_properties();
+        let matches = props_match_filters(&props, &filters);
 
         // ❗ With the buggy logic, this will also be TRUE,
         // because failures just `continue` instead of rejecting the node.
