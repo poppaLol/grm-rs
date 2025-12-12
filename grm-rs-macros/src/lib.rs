@@ -1,11 +1,14 @@
+mod helpers;
+
+use helpers::generate_property_helpers;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, parse_macro_input, Lit};
+use syn::{Data, DeriveInput, Fields, Lit, parse_macro_input};
 
-
-#[proc_macro_derive(NodeModel)]
+#[proc_macro_derive(NodeModel, attributes(grm))]
 pub fn derive_node_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let prop_helpers = generate_property_helpers(&input);
 
     let struct_ident = input.ident.clone(); // the struct name (User, Post, etc.)
     let label_str = struct_ident.to_string(); // default label
@@ -148,15 +151,16 @@ pub fn derive_node_model(input: TokenStream) -> TokenStream {
                 })
             }
         }
+        #prop_helpers
     };
 
     TokenStream::from(expanded)
 }
 
-
 #[proc_macro_derive(RelModel, attributes(grm))]
 pub fn derive_rel_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let prop_helpers = generate_property_helpers(&input);
 
     // Struct name
     let struct_ident = input.ident.clone();
@@ -317,34 +321,40 @@ pub fn derive_rel_model(input: TokenStream) -> TokenStream {
     let id_ty = id_field_ty.unwrap();
 
     // to_properties()
-    let to_props_inserts = prop_idents.iter().zip(prop_names.iter()).map(|(ident, key)| {
-        quote! {
-            map.insert(
-                #key.to_string(),
-                ::serde_json::to_value(&self.#ident)
-                    .unwrap_or_else(|e| panic!(
-                        "RelModel::to_properties failed to serialize `{}`: {}",
-                        #key, e
-                    ))
-            );
-        }
-    });
+    let to_props_inserts = prop_idents
+        .iter()
+        .zip(prop_names.iter())
+        .map(|(ident, key)| {
+            quote! {
+                map.insert(
+                    #key.to_string(),
+                    ::serde_json::to_value(&self.#ident)
+                        .unwrap_or_else(|e| panic!(
+                            "RelModel::to_properties failed to serialize `{}`: {}",
+                            #key, e
+                        ))
+                );
+            }
+        });
 
     // from_properties()
-    let from_props_fields = prop_idents.iter().zip(prop_names.iter()).map(|(ident, key)| {
-        quote! {
-            #ident: {
-                let v = props.remove(#key)
-                    .ok_or_else(|| ::grm_rs::error::GrmError::Mapping(
-                        format!("missing field `{}`", #key)
-                    ))?;
-                ::serde_json::from_value(v)
-                    .map_err(|e| ::grm_rs::error::GrmError::Mapping(
-                        format!("failed to deserialize `{}`: {}", #key, e)
-                    ))?
+    let from_props_fields = prop_idents
+        .iter()
+        .zip(prop_names.iter())
+        .map(|(ident, key)| {
+            quote! {
+                #ident: {
+                    let v = props.remove(#key)
+                        .ok_or_else(|| ::grm_rs::error::GrmError::Mapping(
+                            format!("missing field `{}`", #key)
+                        ))?;
+                    ::serde_json::from_value(v)
+                        .map_err(|e| ::grm_rs::error::GrmError::Mapping(
+                            format!("failed to deserialize `{}`: {}", #key, e)
+                        ))?
+                }
             }
-        }
-    });
+        });
 
     // Generate final impl
     let expanded = quote! {
@@ -381,8 +391,8 @@ pub fn derive_rel_model(input: TokenStream) -> TokenStream {
                 })
             }
         }
+        #prop_helpers
     };
 
     TokenStream::from(expanded)
 }
-
