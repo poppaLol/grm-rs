@@ -5,8 +5,10 @@ mod tests {
     use crate::common::*;
     use serde_json::json;
 
+    use grm_rs::dsl::{Direction, MatchClause, Return};
     use grm_rs::{
-        CompareOp, GrmError, NodePattern, NodeRepository, Query, QueryKind, backend::InMemoryBackend
+        CompareOp, GrmError, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel,
+        backend::InMemoryBackend,
     };
 
     #[test]
@@ -152,5 +154,192 @@ mod tests {
         assert_eq!(users[0].name, "Charlie");
 
         Ok(())
+    }
+
+    #[test]
+    fn nodepattern_new_has_empty_traversals() {
+        let p = NodePattern::<User>::new();
+        assert!(p.traversals.is_empty());
+        assert_eq!(p.labels, User::LABELS);
+        assert!(p.alias.is_none());
+        assert!(p.id.is_none());
+        assert!(p.property_filters.is_empty());
+    }
+
+    #[test]
+    fn traversal_builder_pushes_step() {
+        let p = NodePattern::<User>::new().out::<Authored>().to::<Post>();
+
+        assert_eq!(p.traversals.len(), 1);
+        let step = &p.traversals[0];
+        assert!(matches!(step.dir, Direction::Out));
+        assert_eq!(step.rel_type, Authored::TYPE);
+        assert_eq!(step.end_labels, Post::LABELS);
+        assert!(step.end_filters.is_empty());
+        assert!(step.end_alias.is_none());
+    }
+
+    #[test]
+    fn compile_to_graph_root_only() {
+        let p = NodePattern::<User>::new().filter(User::name_prop().contains("Ali"));
+
+        let q = Query::matching(p).limit(10).offset(5);
+        let g = q.compile_to_graph();
+
+        assert_eq!(g.limit, Some(10));
+        assert_eq!(g.offset, Some(5));
+        assert!(matches!(g.ret, Return::Node(_)));
+
+        // Expect exactly one Node match clause.
+        assert_eq!(g.matches.len(), 1);
+        match &g.matches[0] {
+            MatchClause::Node(nm) => {
+                assert_eq!(nm.labels, User::LABELS);
+                assert!(nm.id_filter.is_none());
+                assert_eq!(nm.property_filters.len(), 1);
+                assert_eq!(nm.property_filters[0].key, "name");
+            }
+            other => panic!("expected root MatchClause::Node, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_to_graph_single_hop_with_end_filters() {
+        let p = NodePattern::<User>::new()
+            .filter(User::name_prop().contains("Ali"))
+            .out::<Authored>()
+            .to_where::<Post>(|p| p.filter(Post::title_prop().contains("Rust")));
+
+        let q = Query::matching(p);
+        let g = q.compile_to_graph();
+
+        // root node + hop + end node (because end filters exist)
+        assert_eq!(g.matches.len(), 3);
+
+        // 0: root node match
+        let root_var = match &g.matches[0] {
+            MatchClause::Node(nm) => {
+                assert_eq!(nm.labels, User::LABELS);
+                assert_eq!(nm.property_filters.len(), 1);
+                nm.var
+            }
+            other => panic!("expected root node match, got {:?}", other),
+        };
+
+        // 1: hop match
+        let end_var = match &g.matches[1] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.start, root_var);
+                assert_eq!(h.rel_type, Authored::TYPE);
+                assert!(matches!(h.dir, Direction::Out));
+                assert_eq!(h.end_labels, Post::LABELS);
+                h.end
+            }
+            other => panic!("expected hop match, got {:?}", other),
+        };
+
+        // 2: end node match with filter
+        match &g.matches[2] {
+            MatchClause::Node(nm) => {
+                assert_eq!(nm.var, end_var);
+                assert_eq!(nm.labels, Post::LABELS);
+                assert_eq!(nm.property_filters.len(), 1);
+                assert_eq!(nm.property_filters[0].key, "title");
+            }
+            other => panic!("expected end node match, got {:?}", other),
+        };
+
+        // Return should be root var (User)
+        debug_assert!(matches!(g.ret, Return::Node(_)));
+        let Return::Node(v) = g.ret;
+        assert_eq!(v, root_var);
+    }
+
+    #[test]
+    fn compile_to_graph_multihop_chains_correctly() {
+        // (User)-[:AUTHORED]->(Post)-[:AUTHORED]->(Post) is silly but good for chaining shape
+        let p = NodePattern::<User>::new()
+            .out::<Authored>()
+            .to::<Post>()
+            .out::<Authored>()
+            .to::<Post>();
+
+        let g = Query::matching(p).compile_to_graph();
+
+        // root node + hop + hop (no end node matches because no end filters)
+        assert_eq!(g.matches.len(), 3);
+
+        let root_var = match &g.matches[0] {
+            MatchClause::Node(nm) => nm.var,
+            _ => panic!("expected root node"),
+        };
+
+        let hop1_end = match &g.matches[1] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.start, root_var);
+                h.end
+            }
+            _ => panic!("expected hop1"),
+        };
+
+        match &g.matches[2] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.start, hop1_end, "hop2 should start at hop1 end");
+            }
+            _ => panic!("expected hop2"),
+        }
+    }
+
+    #[test]
+    fn compile_preserves_root_id_filter() {
+        let p = NodePattern::<User>::new().with_id(UserId(123_i64));
+        let g = Query::matching(p).compile_to_graph();
+
+        match &g.matches[0] {
+            MatchClause::Node(nm) => assert_eq!(nm.id_filter, Some(123)),
+            _ => panic!("expected root node match"),
+        }
+    }
+
+    #[test]
+    fn traversal_builder_incoming_sets_direction_in() {
+        let p = NodePattern::<User>::new()
+            .incoming::<Authored>()
+            .to::<Post>();
+
+        assert_eq!(p.traversals.len(), 1);
+        assert!(matches!(p.traversals[0].dir, Direction::In));
+    }
+
+    #[test]
+    fn traversal_builder_both_sets_direction_both() {
+        let p = NodePattern::<User>::new().both::<Authored>().to::<Post>();
+
+        assert_eq!(p.traversals.len(), 1);
+        assert!(matches!(p.traversals[0].dir, Direction::Both));
+    }
+
+    #[test]
+    fn compile_to_graph_preserves_incoming_direction() {
+        let p = NodePattern::<User>::new().incoming::<Authored>().to::<Post>();
+
+        let g = Query::matching(p).compile_to_graph();
+
+        match &g.matches[1] {
+            MatchClause::Hop(h) => assert!(matches!(h.dir, Direction::In)),
+            other => panic!("expected hop match, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compile_to_graph_preserves_both_direction() {
+        let p = NodePattern::<User>::new().both::<Authored>().to::<Post>();
+
+        let g = Query::matching(p).compile_to_graph();
+
+        match &g.matches[1] {
+            MatchClause::Hop(h) => assert!(matches!(h.dir, Direction::Both)),
+            other => panic!("expected hop match, got {:?}", other),
+        }
     }
 }
