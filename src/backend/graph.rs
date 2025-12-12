@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use crate::error::Result;
+use crate::{GrmError, dsl::GraphQuery, error::Result};
 
 #[derive(Debug, Clone)]
 pub struct QueryRow {
@@ -20,6 +20,10 @@ pub trait GraphTx {
         params: Value,
     ) -> Result<QueryResult>;
 
+    async fn execute_graph(&mut self, _q: &GraphQuery) -> Result<QueryResult> {
+        Err(GrmError::Backend("execute_graph not supported by this backend".into()))
+    }
+
     async fn commit(self) -> Result<()>;
     async fn rollback(self) -> Result<()>;
 }
@@ -35,4 +39,11 @@ pub trait GraphBackend: Send + Sync + Clone {
     ) -> Result<QueryResult>;
 
     async fn begin_tx(&self) -> Result<Self::Tx>;
+
+    async fn execute_graph(&self, q: &GraphQuery) -> Result<QueryResult> {
+        let mut tx = self.begin_tx().await?;
+        let out = tx.execute_graph(q).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
 }
