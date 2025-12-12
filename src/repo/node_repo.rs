@@ -1,10 +1,136 @@
-use serde_json::json;
-use std::collections::BTreeMap;
-
 use crate::{
-    GraphBackend, NodeModel,
+    CompareOp, GraphBackend, NodeModel, PropertyFilter, Query, QueryKind,
     error::{GrmError, Result},
 };
+
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+fn apply_paging<N>(mut items: Vec<N>, offset: Option<usize>, limit: Option<usize>) -> Vec<N> {
+    let start = offset.unwrap_or(0);
+    if start >= items.len() {
+        return Vec::new();
+    }
+
+    let end = if let Some(limit) = limit {
+        start.saturating_add(limit).min(items.len())
+    } else {
+        items.len()
+    };
+
+    items.drain(..start); // drop items before offset
+    items.truncate(end - start);
+    items
+}
+
+fn numeric_cmp<F>(a: &Value, b: &Value, cmp: F) -> bool
+where
+    F: Fn(f64, f64) -> bool,
+{
+    match (a.as_f64(), b.as_f64()) {
+        (Some(la), Some(rb)) => cmp(la, rb),
+        _ => false,
+    }
+}
+
+pub fn node_matches_filters<N: NodeModel>(node: &N, filters: &[PropertyFilter]) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+
+    let props = node.to_properties();
+
+    for f in filters {
+        let value = match props.get(f.key) {
+            Some(v) => v,
+            None => return false,
+        };
+
+        let ok = match f.op {
+            CompareOp::Eq => value == &f.value,
+            CompareOp::Ne => value != &f.value,
+
+            // Very naive numeric comparisons, works if both are numbers
+            CompareOp::Gt => numeric_cmp(value, &f.value, |a, b| a > b),
+            CompareOp::Ge => numeric_cmp(value, &f.value, |a, b| a >= b),
+            CompareOp::Lt => numeric_cmp(value, &f.value, |a, b| a < b),
+            CompareOp::Le => numeric_cmp(value, &f.value, |a, b| a <= b),
+
+            // String CONTAINS
+            CompareOp::Contains => {
+                if let (Some(lhs), Some(rhs)) = (value.as_str(), f.value.as_str()) {
+                    lhs.contains(rhs)
+                } else {
+                    false
+                }
+            }
+        };
+
+        if !ok {
+            // this filter failed → node doesn't match
+            return false; // reject node on first failing filter
+        }
+    }
+
+    true
+}
+
+async fn execute_node_query<B, M>(repo: &NodeRepository<B, M>, q: Query<M>) -> Result<Vec<M>>
+where
+    B: GraphBackend,
+    M: NodeModel,
+{
+    match q.kind {
+        QueryKind::MatchNode {
+            pattern,
+            limit,
+            offset,
+        } => {
+            // 1) Fast path: ID-based match
+            if let Some(id) = pattern.id.clone() {
+                if let Some(node) = repo.find_by_id(&id).await? {
+                    let mut v = vec![node];
+                    v.retain(|n| node_matches_filters(n, &pattern.property_filters));
+                    return Ok(apply_paging(v, offset, limit));
+                } else {
+                    return Ok(Vec::new());
+                }
+            }
+
+            // 2) No ID → use the first Eq filter as backend filter (if any)
+            let mut eq_filters: Vec<PropertyFilter> = Vec::new();
+            let mut non_eq_filters: Vec<PropertyFilter> = Vec::new();
+
+            for f in pattern.property_filters {
+                match f.op {
+                    CompareOp::Eq => eq_filters.push(f),
+                    _ => non_eq_filters.push(f),
+                }
+            }
+
+            let primary_eq = eq_filters.first();
+
+            // If we have at least one Eq filter, use it as the backend filter.
+            let mut results: Vec<M> = if let Some(f) = primary_eq {
+                repo.find_by(f.key, &f.value).await?
+            } else {
+                // No id, no Eq filter → currently unsupported without "find all".
+                // For now, just return empty.
+                Vec::new()
+            };
+
+            // 3) Apply *all* filters in-memory (so additional Eq filters still matter).
+            if !eq_filters.is_empty() || !non_eq_filters.is_empty() {
+                let mut all_filters = eq_filters;
+                all_filters.extend(non_eq_filters);
+                results.retain(|n| node_matches_filters(n, &all_filters));
+            }
+
+            // 4) Apply offset/limit in-memory
+            Ok(apply_paging(results, offset, limit))
+        }
+    }
+}
 
 pub struct NodeRepository<B, M>
 where
@@ -25,6 +151,10 @@ where
             backend,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    pub async fn query(&self, q: Query<M>) -> Result<Vec<M>> {
+        execute_node_query(self, q).await
     }
 
     /// INSERT node using pseudo-Cypher
