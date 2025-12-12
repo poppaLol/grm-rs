@@ -6,14 +6,12 @@
  */
 
 use serde::{Serialize, Deserialize};
-use grm_rs::{RelModel, typed_id};
-use grm_rs::{NodeModel};
+use grm_rs::{RelModel, typed_id, NodeModel};
 
 typed_id!(UserId);
 typed_id!(PostId);
 typed_id!(AuthoredId);
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
 pub struct User {
     #[grm(id)]
@@ -23,7 +21,6 @@ pub struct User {
     pub age: i32
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
 pub struct Post {
     #[grm(id)]
@@ -32,7 +29,6 @@ pub struct Post {
     pub title: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RelModel)]
 #[grm(from = "User", to = "Post", ty = "AUTHORED")]
 pub struct Authored {
