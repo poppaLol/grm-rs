@@ -1,78 +1,37 @@
 use crate::{
-    CompareOp, GraphBackend, NodeModel, PropertyFilter, Query, QueryKind,
-    error::{GrmError, Result},
+    GraphBackend, NodeModel, Query, QueryResult, error::{GrmError, Result}
 };
 
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::BTreeMap;
 
-fn apply_paging<N>(mut items: Vec<N>, offset: Option<usize>, limit: Option<usize>) -> Vec<N> {
-    let start = offset.unwrap_or(0);
-    if start >= items.len() {
-        return Vec::new();
+fn decode_nodes<M: NodeModel>(qr: QueryResult) -> Result<Vec<M>> {
+    let mut out = Vec::with_capacity(qr.rows.len());
+
+    for row in qr.rows {
+        let v = row.values.get("n")
+            .ok_or_else(|| GrmError::Backend("execute_graph row missing key 'n'".into()))?;
+
+        let id = v.get("id")
+            .and_then(|x| x.as_i64())
+            .ok_or_else(|| GrmError::Backend("node missing/invalid id".into()))?;
+
+        let props_obj = v.get("props")
+            .and_then(|x| x.as_object())
+            .ok_or_else(|| GrmError::Backend("node missing/invalid props".into()))?;
+
+        // Convert serde_json::Value -> your crate::dsl::Value (if different)
+        // If your NodeModel expects BTreeMap<String, crate::dsl::Value>, map it here.
+        let props = props_obj.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<BTreeMap<String, serde_json::Value>>();
+
+        // If NodeModel::from_properties expects your Value type, convert accordingly.
+        // For now, assuming NodeModel uses serde_json::Value like StoredNode does:
+        out.push(M::from_properties(id.into(), props)?);
     }
 
-    let end = if let Some(limit) = limit {
-        start.saturating_add(limit).min(items.len())
-    } else {
-        items.len()
-    };
-
-    items.drain(..start); // drop items before offset
-    items.truncate(end - start);
-    items
-}
-
-fn numeric_cmp<F>(a: &Value, b: &Value, cmp: F) -> bool
-where
-    F: Fn(f64, f64) -> bool,
-{
-    match (a.as_f64(), b.as_f64()) {
-        (Some(la), Some(rb)) => cmp(la, rb),
-        _ => false,
-    }
-}
-
-pub fn node_matches_filters<N: NodeModel>(node: &N, filters: &[PropertyFilter]) -> bool {
-    if filters.is_empty() {
-        return true;
-    }
-
-    let props = node.to_properties();
-
-    for f in filters {
-        let value = match props.get(f.key) {
-            Some(v) => v,
-            None => return false,
-        };
-
-        let ok = match f.op {
-            CompareOp::Eq => value == &f.value,
-            CompareOp::Ne => value != &f.value,
-
-            // Very naive numeric comparisons, works if both are numbers
-            CompareOp::Gt => numeric_cmp(value, &f.value, |a, b| a > b),
-            CompareOp::Ge => numeric_cmp(value, &f.value, |a, b| a >= b),
-            CompareOp::Lt => numeric_cmp(value, &f.value, |a, b| a < b),
-            CompareOp::Le => numeric_cmp(value, &f.value, |a, b| a <= b),
-
-            // String CONTAINS
-            CompareOp::Contains => {
-                if let (Some(lhs), Some(rhs)) = (value.as_str(), f.value.as_str()) {
-                    lhs.contains(rhs)
-                } else {
-                    false
-                }
-            }
-        };
-
-        if !ok {
-            // this filter failed → node doesn't match
-            return false; // reject node on first failing filter
-        }
-    }
-
-    true
+    Ok(out)
 }
 
 async fn execute_node_query<B, M>(repo: &NodeRepository<B, M>, q: Query<M>) -> Result<Vec<M>>
@@ -80,56 +39,15 @@ where
     B: GraphBackend,
     M: NodeModel,
 {
-    match q.kind {
-        QueryKind::MatchNode {
-            pattern,
-            limit,
-            offset,
-        } => {
-            // 1) Fast path: ID-based match
-            if let Some(id) = pattern.id.clone() {
-                if let Some(node) = repo.find_by_id(&id).await? {
-                    let mut v = vec![node];
-                    v.retain(|n| node_matches_filters(n, &pattern.property_filters));
-                    return Ok(apply_paging(v, offset, limit));
-                } else {
-                    return Ok(Vec::new());
-                }
-            }
+    let gq = q.compile_to_graph();
 
-            // 2) No ID → use the first Eq filter as backend filter (if any)
-            let mut eq_filters: Vec<PropertyFilter> = Vec::new();
-            let mut non_eq_filters: Vec<PropertyFilter> = Vec::new();
+    // Execute via typed IR
+    let result = repo.backend.execute_graph(&gq).await?;
 
-            for f in pattern.property_filters {
-                match f.op {
-                    CompareOp::Eq => eq_filters.push(f),
-                    _ => non_eq_filters.push(f),
-                }
-            }
-
-            let primary_eq = eq_filters.first();
-
-            // If we have at least one Eq filter, use it as the backend filter.
-            let mut results: Vec<M> = if let Some(f) = primary_eq {
-                repo.find_by(f.key, &f.value).await?
-            } else {
-                // No id, no Eq filter → currently unsupported without "find all".
-                // For now, just return empty.
-                Vec::new()
-            };
-
-            // 3) Apply *all* filters in-memory (so additional Eq filters still matter).
-            if !eq_filters.is_empty() || !non_eq_filters.is_empty() {
-                let mut all_filters = eq_filters;
-                all_filters.extend(non_eq_filters);
-                results.retain(|n| node_matches_filters(n, &all_filters));
-            }
-
-            // 4) Apply offset/limit in-memory
-            Ok(apply_paging(results, offset, limit))
-        }
-    }
+    // Decode rows -> Vec<M>
+    // This depends on what QueryResult looks like for execute_graph.
+    // The simplest: return rows with a single key "n" containing {id, props, labels}.
+    decode_nodes::<M>(result)
 }
 
 pub struct NodeRepository<B, M>
