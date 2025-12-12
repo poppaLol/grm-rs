@@ -1,9 +1,12 @@
-use serde_json::json;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
+
+use serde_json::Value as JsonValue;
 
 use crate::{
-    GraphBackend, NodeModel, RelModel,
-    error::{GrmError, Result},
+    backend::{GraphBackend, GraphTx}, // adjust path if GraphTx is elsewhere
+    model::{NodeModel, RelModel},
+    error::Result
 };
 
 pub struct RelRepository<B, R>
@@ -12,7 +15,7 @@ where
     R: RelModel,
 {
     backend: B,
-    _marker: std::marker::PhantomData<R>,
+    _marker: PhantomData<R>,
 }
 
 impl<B, R> RelRepository<B, R>
@@ -21,13 +24,10 @@ where
     R: RelModel,
 {
     pub fn new(backend: B) -> Self {
-        Self {
-            backend,
-            _marker: std::marker::PhantomData,
-        }
+        Self { backend, _marker: PhantomData }
     }
 
-    /// Create a relationship between two nodes
+    /// Create a relationship between two nodes (typed).
     pub async fn create_between(
         &self,
         from_id: &<R::From as NodeModel>::Id,
@@ -36,103 +36,49 @@ where
     ) -> Result<()> {
         let from_raw: i64 = from_id.clone().into();
         let to_raw: i64 = to_id.clone().into();
-        let props: BTreeMap<String, serde_json::Value> = rel.to_properties();
+        let props: BTreeMap<String, JsonValue> = rel.to_properties();
 
-        let result = self
-            .backend
-            .execute_query(
-                "MATCH (a), (b) \
-             WHERE id(a) = $from AND id(b) = $to \
-             CREATE (a)-[r]->(b) \
-             RETURN r",
-                serde_json::json!({
-                    "from": from_raw,
-                    "to": to_raw,
-                    "type": R::TYPE,
-                    "props": props,
-                }),
-            )
+        let mut tx = self.backend.begin_tx().await?;
+        let stored = tx
+            .create_relationship(from_raw, to_raw, R::TYPE.to_string(), props)
             .await?;
+        tx.commit().await?;
 
-        let row = result
-            .rows
-            .get(0)
-            .ok_or_else(|| GrmError::Backend("CREATE rel did not return row".into()))?;
-
-        let r_json = row
-            .values
-            .get("r")
-            .ok_or_else(|| GrmError::Backend("CREATE rel row missing 'r'".into()))?;
-
-        let raw_id = r_json["id"]
-            .as_i64()
-            .ok_or_else(|| GrmError::Backend("rel id is not i64".into()))?;
-
-        let id: R::Id = raw_id.into();
-        rel.set_id(id);
-
+        rel.set_id(stored.id.into());
         Ok(())
     }
 
     /// Get all outgoing relationships of this type from a given node,
-    /// returning (relationship, target_node) pairs.
+    /// returning (relationship, target_node) pairs. (typed)
     pub async fn outgoing_from(
         &self,
         from_id: &<R::From as NodeModel>::Id,
     ) -> Result<Vec<(R, R::To)>> {
         let from_raw: i64 = from_id.clone().into();
 
-        let result = self
-            .backend
-            .execute_query(
-                "MATCH (A)-[R]->(B) WHERE id(a) = $from RETURN r, b",
-                json!({
-                    "from": from_raw,
-                    "type": R::TYPE,
-                }),
-            )
-            .await?;
+        let mut tx = self.backend.begin_tx().await?;
+        let pairs = tx.outgoing(from_raw, Some(R::TYPE)).await?;
+        tx.commit().await?;
 
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(pairs.len());
 
-        for row in result.rows {
-            let r_json = row
-                .values
-                .get("r")
-                .ok_or_else(|| GrmError::Backend("row missing 'r'".into()))?;
+        for (stored_rel, stored_node) in pairs {
+            // Decode relationship model
+            let rel_id: R::Id = stored_rel.id.into();
+            let rel_model = R::from_properties(rel_id, stored_rel.props)?;
 
-            let rel_id_raw = r_json["id"]
-                .as_i64()
-                .ok_or_else(|| GrmError::Backend("rel id not i64".into()))?;
-            let rel_id: R::Id = rel_id_raw.into();
-
-            let rel_props = r_json["props"]
-                .as_object()
-                .ok_or_else(|| GrmError::Backend("rel props not object".into()))?
+            // Optional: enforce target node labels match R::To
+            let ok = <R::To as NodeModel>::LABELS
                 .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<BTreeMap<_, _>>();
+                .all(|l| stored_node.labels.iter().any(|sl| sl == l));
 
-            let rel_model = R::from_properties(rel_id, rel_props)?;
+            if !ok {
+                continue;
+            }
 
-            let b_json = row
-                .values
-                .get("b")
-                .ok_or_else(|| GrmError::Backend("row missing 'b'".into()))?;
-
-            let node_id_raw = b_json["id"]
-                .as_i64()
-                .ok_or_else(|| GrmError::Backend("node id not i64".into()))?;
-            let node_id: <R::To as NodeModel>::Id = node_id_raw.into();
-
-            let node_props = b_json["props"]
-                .as_object()
-                .ok_or_else(|| GrmError::Backend("node props not object".into()))?
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<BTreeMap<_, _>>();
-
-            let node_model = R::To::from_properties(node_id, node_props)?;
+            // Decode target node model
+            let node_id: <R::To as NodeModel>::Id = stored_node.id.into();
+            let node_model = <R::To as NodeModel>::from_properties(node_id, stored_node.props)?;
 
             out.push((rel_model, node_model));
         }
