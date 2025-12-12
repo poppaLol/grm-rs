@@ -1,10 +1,15 @@
-use crate::{
-    GraphBackend, NodeModel, Query, QueryResult, error::{GrmError, Result}
-};
-
-use serde_json::json;
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
+use serde_json::Value as JsonValue;
+
+use crate::backend::{GraphBackend, GraphTx, QueryResult};
+use crate::dsl::Query;
+use crate::error::{GrmError, Result};
+use crate::model::NodeModel;
+
+/// Decode QueryResult rows (from execute_graph) into models.
+/// Convention: each row contains key "n" => { id, labels, props }.
 fn decode_nodes<M: NodeModel>(qr: QueryResult) -> Result<Vec<M>> {
     let mut out = Vec::with_capacity(qr.rows.len());
 
@@ -12,7 +17,7 @@ fn decode_nodes<M: NodeModel>(qr: QueryResult) -> Result<Vec<M>> {
         let v = row.values.get("n")
             .ok_or_else(|| GrmError::Backend("execute_graph row missing key 'n'".into()))?;
 
-        let id = v.get("id")
+        let raw_id = v.get("id")
             .and_then(|x| x.as_i64())
             .ok_or_else(|| GrmError::Backend("node missing/invalid id".into()))?;
 
@@ -20,34 +25,20 @@ fn decode_nodes<M: NodeModel>(qr: QueryResult) -> Result<Vec<M>> {
             .and_then(|x| x.as_object())
             .ok_or_else(|| GrmError::Backend("node missing/invalid props".into()))?;
 
-        // Convert serde_json::Value -> your crate::dsl::Value (if different)
-        // If your NodeModel expects BTreeMap<String, crate::dsl::Value>, map it here.
-        let props = props_obj.iter()
+        let props: BTreeMap<String, JsonValue> = props_obj
+            .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
-            .collect::<BTreeMap<String, serde_json::Value>>();
+            .collect();
 
-        // If NodeModel::from_properties expects your Value type, convert accordingly.
-        // For now, assuming NodeModel uses serde_json::Value like StoredNode does:
-        out.push(M::from_properties(id.into(), props)?);
+        out.push(M::from_properties(raw_id.into(), props)?);
     }
 
     Ok(out)
 }
 
-async fn execute_node_query<B, M>(repo: &NodeRepository<B, M>, q: Query<M>) -> Result<Vec<M>>
-where
-    B: GraphBackend,
-    M: NodeModel,
-{
-    let gq = q.compile_to_graph();
-
-    // Execute via typed IR
-    let result = repo.backend.execute_graph(&gq).await?;
-
-    // Decode rows -> Vec<M>
-    // This depends on what QueryResult looks like for execute_graph.
-    // The simplest: return rows with a single key "n" containing {id, props, labels}.
-    decode_nodes::<M>(result)
+/// Decode a StoredNode into M.
+fn decode_stored_node<M: NodeModel>(id: i64, props: BTreeMap<String, JsonValue>) -> Result<M> {
+    M::from_properties(id.into(), props)
 }
 
 pub struct NodeRepository<B, M>
@@ -56,7 +47,7 @@ where
     M: NodeModel,
 {
     backend: B,
-    _marker: std::marker::PhantomData<M>,
+    _marker: PhantomData<M>,
 }
 
 impl<B, M> NodeRepository<B, M>
@@ -65,165 +56,91 @@ where
     M: NodeModel,
 {
     pub fn new(backend: B) -> Self {
-        Self {
-            backend,
-            _marker: std::marker::PhantomData,
-        }
+        Self { backend, _marker: PhantomData }
     }
 
+    /// Option A sugar: Query<M> -> compile_to_graph -> execute_graph -> decode.
     pub async fn query(&self, q: Query<M>) -> Result<Vec<M>> {
-        execute_node_query(self, q).await
+        let gq = q.compile_to_graph();
+        let qr = self.backend.execute_graph(&gq).await?;
+        decode_nodes::<M>(qr)
     }
 
-    /// INSERT node using pseudo-Cypher
+    /// Create a node using typed tx CRUD.
     pub async fn create(&self, model: &mut M) -> Result<()> {
-        // 1. Prepare labels & props to send to the backend
+        let mut tx = self.backend.begin_tx().await?;
+
         let labels = M::LABELS.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let props: BTreeMap<String, serde_json::Value> = model.to_properties();
+        let props: BTreeMap<String, JsonValue> = model.to_properties();
 
-        // 2. Execute our pseudo-Cypher "CREATE" query
-        let result = self
-            .backend
-            .execute_query(
-                "CREATE (n) RETURN n",
-                json!({
-                    "labels": labels,
-                    "props": props,
-                }),
-            )
-            .await?;
+        let stored = tx.create_node(labels, props).await?;
+        tx.commit().await?;
 
-        // 3. Extract the generated ID from the result and set it on the model
-        let row = result
-            .rows
-            .get(0)
-            .ok_or_else(|| GrmError::Backend("CREATE did not return a row".into()))?;
-
-        let n_json = row
-            .values
-            .get("n")
-            .ok_or_else(|| GrmError::Backend("CREATE row missing 'n' key".into()))?;
-
-        let raw_id = n_json["id"]
-            .as_i64()
-            .ok_or_else(|| GrmError::Backend("node id is not an i64".into()))?;
-
-        let id: M::Id = raw_id.into(); // thanks to `From<i64>` bound on M::Id
-        model.set_id(id);
-
+        model.set_id(stored.id.into());
         Ok(())
     }
 
-    /// MATCH node by ID
+    /// Find a node by internal id using typed tx CRUD.
     pub async fn find_by_id(&self, id: &M::Id) -> Result<Option<M>> {
-        let raw_id: i64 = (*id).clone().into(); // thanks to `Into<i64>` bound on M::Id
+        let raw_id: i64 = id.clone().into();
 
-        let result = self
-            .backend
-            .execute_query(
-                "MATCH (n) WHERE id(n) = $id RETURN n",
-                json!({
-                    "id": raw_id,
-                }),
-            )
-            .await?;
+        let mut tx = self.backend.begin_tx().await?;
+        let stored_opt = tx.find_node_by_id(raw_id).await?;
+        tx.commit().await?;
 
-        if let Some(row) = result.rows.get(0) {
-            let n_json = row
-                .values
-                .get("n")
-                .ok_or_else(|| GrmError::Backend("MATCH row missing 'n' key".into()))?;
+        match stored_opt {
+            Some(stored) => {
+                // Optional defensive label check (recommended)
+                // If you don’t want this, remove it.
+                let ok = M::LABELS.iter().all(|l| stored.labels.iter().any(|sl| sl == l));
+                if !ok {
+                    return Ok(None);
+                }
 
-            let raw_id = n_json["id"]
-                .as_i64()
-                .ok_or_else(|| GrmError::Backend("node id is not an i64".into()))?;
-
-            let id: M::Id = raw_id.into();
-
-            let props_map = n_json["props"]
-                .as_object()
-                .ok_or_else(|| GrmError::Backend("node props is not an object".into()))?
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<BTreeMap<_, _>>();
-
-            let model = M::from_properties(id, props_map)?;
-            Ok(Some(model))
-        } else {
-            Ok(None)
+                Ok(Some(decode_stored_node::<M>(stored.id, stored.props)?))
+            }
+            None => Ok(None),
         }
     }
 
-    pub async fn find_by(&self, key: &str, value: &serde_json::Value) -> Result<Vec<M>> {
-        let result = self
-            .backend
-            .execute_query(
-                "MATCH (n) WHERE n.$key = $value RETURN n",
-                json!({
-                    "key": key,
-                    "value": value,
-                }),
-            )
-            .await?;
+    /// Find nodes by a single property equality using typed tx CRUD.
+    ///
+    /// Note: returns all matches; not unique.
+    pub async fn find_by(&self, key: &str, value: &JsonValue) -> Result<Vec<M>> {
+        let mut tx = self.backend.begin_tx().await?;
+        let stored = tx.find_nodes_by_property(key, value).await?;
+        tx.commit().await?;
 
-        let mut out = vec![];
-
-        for row in result.rows {
-            let json = row.values.get("n").unwrap();
-
-            let raw_id = json["id"].as_i64().unwrap();
-            let id: M::Id = raw_id.into();
-
-            let props = json["props"]
-                .as_object()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-
-            let model = M::from_properties(id, props)?;
-            out.push(model);
+        let mut out = Vec::with_capacity(stored.len());
+        for n in stored {
+            // Optional defensive label check
+            let ok = M::LABELS.iter().all(|l| n.labels.iter().any(|sl| sl == l));
+            if !ok {
+                continue;
+            }
+            out.push(decode_stored_node::<M>(n.id, n.props)?);
         }
-
         Ok(out)
     }
 
+    /// Update node properties (SET += semantics) using typed tx CRUD.
     pub async fn update(&self, model: &M) -> Result<()> {
-        use serde_json::json;
-        use std::collections::BTreeMap;
-
         let raw_id: i64 = model.id().clone().into();
-        let props: BTreeMap<String, serde_json::Value> = model.to_properties();
+        let props: BTreeMap<String, JsonValue> = model.to_properties();
 
-        let _result = self
-            .backend
-            .execute_query(
-                "MATCH (n) WHERE id(n) = $id SET n += $props RETURN n",
-                json!({
-                    "id": raw_id,
-                    "props": props,
-                }),
-            )
-            .await?;
-
+        let mut tx = self.backend.begin_tx().await?;
+        let _ = tx.update_node(raw_id, props).await?;
+        tx.commit().await?;
         Ok(())
     }
 
+    /// Delete node (and its attached rels) using typed tx CRUD.
     pub async fn delete(&self, id: &M::Id) -> Result<()> {
-        use serde_json::json;
-
         let raw_id: i64 = id.clone().into();
 
-        let _ = self
-            .backend
-            .execute_query(
-                "MATCH (n) WHERE id(n) = $id DELETE n",
-                json!({
-                    "id": raw_id,
-                }),
-            )
-            .await?;
-
+        let mut tx = self.backend.begin_tx().await?;
+        tx.delete_node(raw_id).await?;
+        tx.commit().await?;
         Ok(())
     }
 }
