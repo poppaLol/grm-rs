@@ -1,0 +1,59 @@
+mod common;
+
+#[cfg(test)]
+mod node_matches_filters_tests {
+    use crate::common::*;
+    use grm_rs::{CompareOp, repo::node_matches_filters};
+
+    use grm_rs::PropertyFilter;
+    use serde_json::json;
+
+    #[test]
+    fn single_failing_filter_should_reject_node() {
+        let user = User { id: UserId(1), name: "Alice".to_string(), age: 20 };
+
+        // This filter should clearly fail for "Alice"
+        let filters = vec![PropertyFilter {
+            key: "name",
+            op: CompareOp::Eq,
+            value: json!("Bob"),
+        }];
+
+        let matches = node_matches_filters(&user, &filters);
+
+        assert!(
+            !matches,
+            "expected user NOT to match filter name == \"Bob\", \
+             but node_matches_filters returned true"
+        );
+    }
+
+    #[test]
+    fn multiple_filters_should_be_and_combined() {
+        let user = User { id: UserId(1), name: "Alice".to_string(), age: 20 };
+
+        // These filters are contradictory: can't be both Alice and Bob.
+        let filters = vec![
+            PropertyFilter {
+                key: "name",
+                op: CompareOp::Eq,
+                value: json!("Alice"),
+            },
+            PropertyFilter {
+                key: "name",
+                op: CompareOp::Eq,
+                value: json!("Bob"),
+            },
+        ];
+
+        let matches = node_matches_filters(&user, &filters);
+
+        // ❗ With the buggy logic, this will also be TRUE,
+        // because failures just `continue` instead of rejecting the node.
+        assert!(
+            !matches,
+            "expected user NOT to match filters name == \"Alice\" AND name == \"Bob\", \
+             but node_matches_filters returned true"
+        );
+    }
+}
