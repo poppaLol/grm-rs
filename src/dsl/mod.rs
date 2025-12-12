@@ -11,7 +11,7 @@ pub use compare::CompareOp;
 pub use property::{Property, PropertyFilter};
 pub use nodepattern::NodePattern;
 pub use graph::{Direction, GraphQuery, MatchClause, Return, VarId,
-    HopMatch, NodeMatch
+    HopMatch, NodeMatch, VarGen
 };
 pub use eval::{numeric_cmp, props_match_filters};
 pub use paging::apply_paging;
