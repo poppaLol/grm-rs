@@ -3,12 +3,13 @@ mod common;
 #[cfg(test)]
 mod tests {
     use crate::common::*;
+
     use serde_json::json;
 
     use grm_rs::dsl::{Direction, MatchClause, Return};
+    use grm_rs::backend::InMemoryBackend;
     use grm_rs::{
-        CompareOp, GrmError, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel,
-        backend::InMemoryBackend,
+        CompareOp, GrmError, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel
     };
 
     #[test]

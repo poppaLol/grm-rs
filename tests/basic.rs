@@ -2,12 +2,17 @@ mod common;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use grm_rs::dsl::{GraphQuery, MatchClause, NodeMatch, Return};
+    use serde_json::json;
+
     use crate::common::*;
-    use grm_rs;
+
+    use grm_rs::{self, NodePattern, Query, VarGen};
     use grm_rs::{
         GraphBackend, GraphTx, NodeModel, NodeRepository, RelRepository, backend::InMemoryBackend,
     };
-    use serde_json::json;
 
     #[test]
     fn models_compile_and_roundtrip() {
@@ -25,77 +30,115 @@ mod tests {
     #[tokio::test]
     async fn in_memory_backend_create_and_match_node() {
         let backend = InMemoryBackend::new();
+        let mut tx = backend.begin_tx().await.expect("begin tx failed");
 
-        //
-        // CREATE a node
-        //
-        let create_result = backend
-            .execute_query(
-                "CREATE (n:User { name: $name }) RETURN n",
-                json!({
-                    "labels": ["User"],
-                    "props": { "name": "Alice" }
-                }),
-            )
+        // CREATE a node (typed)
+        let mut props = BTreeMap::new();
+        props.insert("name".to_string(), json!("Alice"));
+
+        let node = tx
+            .create_node(vec!["User".to_string()], props)
             .await
-            .expect("create failed");
+            .expect("create_node failed");
 
-        assert_eq!(create_result.rows.len(), 1);
+        let created_id = node.id;
+        assert_eq!(node.props.get("name").unwrap(), &json!("Alice"));
 
-        let node_json = &create_result.rows[0].values["n"];
-        let created_id = node_json["id"].as_i64().unwrap();
-        assert_eq!(node_json["props"]["name"], "Alice");
-
-        //
-        // MATCH (n) WHERE id(n) = $id RETURN n
-        //
-        let match_result = backend
-            .execute_query(
-                "MATCH (n) WHERE id(n) = $id RETURN n",
-                json!({ "id": created_id }),
-            )
+        // MATCH by id (typed)
+        let found = tx
+            .find_node_by_id(created_id)
             .await
-            .expect("match failed");
+            .expect("find_node_by_id failed")
+            .expect("node not found");
 
-        assert_eq!(match_result.rows.len(), 1);
-        let matched_node = &match_result.rows[0].values["n"];
+        assert_eq!(found.id, created_id);
+        assert_eq!(found.props.get("name").unwrap(), &json!("Alice"));
 
-        assert_eq!(matched_node["id"].as_i64().unwrap(), created_id);
-        assert_eq!(matched_node["props"]["name"], "Alice");
+        tx.commit().await.expect("commit failed");
     }
 
     #[tokio::test]
-    async fn node_repository_create_and_find() {
+    async fn in_memory_backend_create_and_match_node_via_graphquery() {
         let backend = InMemoryBackend::new();
-        let repo = NodeRepository::<_, User>::new(backend);
+        let mut tx = backend.begin_tx().await.expect("begin tx failed");
 
-        // 1. CREATE
-        let mut user = User {
-            id: UserId(0),
-            name: "Alice".into(),
-            age: 0,
+        // create node
+        let mut props = BTreeMap::new();
+        props.insert("name".to_string(), json!("Alice"));
+        let node = tx
+            .create_node(vec!["User".to_string()], props)
+            .await
+            .expect("create_node failed");
+        let created_id = node.id;
+
+        tx.commit().await.expect("commit failed");
+
+        // build GraphQuery that matches by id
+        let mut vg = VarGen::default();
+        let root = vg.fresh();
+
+        let gq = GraphQuery {
+            matches: vec![MatchClause::Node(NodeMatch {
+                var: root,
+                labels: &["User"],
+                id_filter: Some(created_id),
+                property_filters: vec![],
+            })],
+            where_: vec![],
+            ret: Return::Node(root),
+            limit: None,
+            offset: None,
         };
 
-        repo.create(&mut user).await.unwrap();
-        assert!(user.id.0 > 0, "Backend should assign a non-zero ID");
-
-        // 2. FIND
-        let found = repo
-            .find_by_id(&user.id)
+        let qr = backend
+            .execute_graph(&gq)
             .await
-            .unwrap()
-            .expect("Expected to find user");
+            .expect("execute_graph failed");
+        assert_eq!(qr.rows.len(), 1);
 
-        // 3. ASSERT equality
-        assert_eq!(found.name, user.name);
-        assert_eq!(found.id, user.id);
+        let matched = &qr.rows[0].values["n"];
+        assert_eq!(matched["id"].as_i64().unwrap(), created_id);
+        assert_eq!(matched["props"]["name"], "Alice");
     }
 
     #[tokio::test]
-    async fn node_repository_update() {
-        use grm_rs::NodeRepository;
-        use grm_rs::backend::InMemoryBackend;
+    async fn in_memory_backend_create_and_find_by_name() {
+        //note this test does not match real world use - you will have duplicate
+        //non-unique "name" entries e.g.
+        let backend = InMemoryBackend::new();
+        let mut tx = backend.begin_tx().await.expect("begin tx failed");
 
+        // 1. CREATE
+        let mut props = BTreeMap::new();
+        props.insert("name".to_string(), json!("Alice"));
+        let node = tx
+            .create_node(vec!["User".to_string()], props)
+            .await
+            .expect("create_node failed");
+
+        tx.commit().await.expect("commit failed");
+
+        assert!(node.id > 0, "Backend should assign a non-zero ID");
+
+        // 2. FIND
+        let q = Query::<User>::matching(
+            NodePattern::<User>::new().filter(User::name_prop().eq("Alice")),
+        );
+        let gq = q.compile_to_graph();
+        let qr = backend
+            .execute_graph(&gq)
+            .await
+            .expect("execute_graph failed");
+        assert_eq!(qr.rows.len(), 1);
+
+        // 3. ASSERT equality
+        let matched = &qr.rows[0].values["n"];
+        assert_eq!(matched["id"].as_i64().unwrap(), node.id);
+        assert_eq!(matched["props"]["name"], "Alice");
+    }
+
+    #[tokio::test]
+    async fn in_memory_backend_create_and_update() {
         let backend = InMemoryBackend::new();
         let repo = NodeRepository::<_, User>::new(backend);
 
@@ -109,18 +152,17 @@ mod tests {
         assert!(user.id.0 >= 1);
 
         // Update name
-        user.name = "Bob".into();
+        user.name = "Bob".to_string();
         repo.update(&user).await.unwrap();
 
         // Fetch again
-        let fetched = repo
-            .find_by_id(&user.id)
-            .await
-            .unwrap()
-            .expect("user should exist after update");
+        let q =
+            Query::<User>::matching(NodePattern::<User>::new().filter(User::name_prop().eq("Bob")));
+        let users = repo.query(q).await.expect("query failed");
 
-        assert_eq!(fetched.id, user.id);
-        assert_eq!(fetched.name, "Bob");
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].id, user.id);
+        assert_eq!(users[0].name, "Bob");
     }
 
     #[tokio::test]
@@ -262,49 +304,63 @@ mod tests {
     async fn transaction_rollback_on_error() {
         let backend = InMemoryBackend::new();
 
-        // Start a transaction
+        // 1) Start a transaction
         let mut tx = backend.begin_tx().await.expect("begin_tx failed");
 
-        // 1. Create a node inside the transaction
-        let create_res = tx
-            .execute_query(
-                "CREATE (n:User { name: $name }) RETURN n",
-                json!({
-                    "labels": ["User"],
-                    "props": { "name": "TempUser" }
-                }),
-            )
+        // 2) Create a node inside the transaction (typed)
+        let mut props = BTreeMap::new();
+        props.insert("name".to_string(), json!("TempUser"));
+
+        let node = tx
+            .create_node(vec!["User".to_string()], props)
             .await
-            .expect("create in tx failed");
+            .expect("create_node in tx failed");
 
-        assert_eq!(create_res.rows.len(), 1);
+        let temp_id = node.id;
 
-        let node_json = &create_res.rows[0].values["n"];
-        let temp_id = node_json["id"].as_i64().expect("id not i64");
+        // 3) Cause an error inside the same transaction
+        // In the new world, string queries are unsupported, so this is a natural error source.
+        let err = tx.execute_query("XXXX NOT SUPPORTED XXXX", json!({})).await;
+        assert!(err.is_err(), "expected unsupported query to fail");
 
-        // 2. Cause an error inside the same transaction (unsupported query)
-        let err = tx
-            .execute_query("XXXX THIS IS NOT VALID CYPHER XXXX", json!({}))
-            .await;
-
-        assert!(err.is_err(), "expected invalid query to fail");
-
-        // 3. Roll the transaction back
+        // 4) Roll back
         tx.rollback().await.expect("rollback failed");
 
-        // 4. Verify the node created inside the tx does NOT exist globally
-        let match_res = backend
-            .execute_query(
-                "MATCH (n) WHERE id(n) = $id RETURN n",
-                json!({ "id": temp_id }),
-            )
+        // 5) Verify the node does NOT exist globally
+        let mut tx2 = backend.begin_tx().await.expect("begin_tx failed");
+        let found = tx2
+            .find_node_by_id(temp_id)
             .await
-            .expect("match outside tx failed");
+            .expect("find_node_by_id failed");
+        tx2.commit().await.expect("commit failed");
 
-        assert_eq!(
-            match_res.rows.len(),
-            0,
+        assert!(
+            found.is_none(),
             "node created in rolled-back tx should not be visible"
         );
+    }
+
+    #[tokio::test]
+    async fn simple_transaction_rollback_discards_changes() {
+        let backend = InMemoryBackend::new();
+
+        let mut tx = backend.begin_tx().await.expect("begin_tx failed");
+
+        let mut props = BTreeMap::new();
+        props.insert("name".to_string(), json!("TempUser"));
+
+        let node = tx
+            .create_node(vec!["User".to_string()], props)
+            .await
+            .unwrap();
+        let temp_id = node.id;
+
+        tx.rollback().await.unwrap();
+
+        let mut tx2 = backend.begin_tx().await.unwrap();
+        let found = tx2.find_node_by_id(temp_id).await.unwrap();
+        tx2.commit().await.unwrap();
+
+        assert!(found.is_none());
     }
 }
