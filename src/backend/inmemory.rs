@@ -1,11 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::backend::{GraphBackend, GraphTx, QueryResult, QueryRow};
+use crate::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, VarId};
+use crate::dsl::{apply_paging, numeric_cmp};
 use crate::error::{GrmError, Result};
+use crate::{CompareOp, PropertyFilter};
 
 #[derive(Debug, Clone)]
 pub struct StoredNode {
@@ -13,7 +16,6 @@ pub struct StoredNode {
     pub labels: Vec<String>,
     pub props: BTreeMap<String, Value>,
 }
-
 #[derive(Debug, Clone)]
 pub struct StoredRel {
     pub id: i64,
@@ -80,6 +82,260 @@ impl InMemoryTx {
             working_copy: snapshot,
             committed: false,
         }
+    }
+
+    pub fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
+        // ---- Helpers (kept local to avoid plumbing) ----
+
+        fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bool {
+            // Require all labels in `required` to be present on node.
+            required
+                .iter()
+                .all(|l| node_labels.iter().any(|nl| nl == l))
+        }
+
+        fn stored_node_matches_filters(node: StoredNode, filters: &[PropertyFilter]) -> bool {
+            if filters.is_empty() {
+                return true;
+            }
+
+            for f in filters {
+                let value = match node.props.get(f.key) {
+                    Some(v) => v,
+                    None => return false,
+                };
+
+                let ok = match f.op {
+                    CompareOp::Eq => value == &f.value,
+                    CompareOp::Ne => value != &f.value,
+
+                    CompareOp::Gt => numeric_cmp(value, &f.value, |a, b| a > b),
+                    CompareOp::Ge => numeric_cmp(value, &f.value, |a, b| a >= b),
+                    CompareOp::Lt => numeric_cmp(value, &f.value, |a, b| a < b),
+                    CompareOp::Le => numeric_cmp(value, &f.value, |a, b| a <= b),
+
+                    CompareOp::Contains => {
+                        if let (Some(lhs), Some(rhs)) = (value.as_str(), f.value.as_str()) {
+                            lhs.contains(rhs)
+                        } else {
+                            false
+                        }
+                    }
+                };
+
+                if !ok {
+                    return false;
+                }
+            }
+
+            true
+        }
+
+        fn node_to_row(node: &StoredNode) -> QueryRow {
+            QueryRow {
+                values: BTreeMap::from([(
+                    "n".to_string(),
+                    serde_json::json!({
+                        "id": node.id,
+                        "labels": node.labels,
+                        "props": node.props,
+                    }),
+                )]),
+            }
+        }
+
+        // ---- 1) Determine return var and find the root NodeMatch ----
+
+        let return_var = match q.ret {
+            Return::Node(v) => v,
+            // By construction for Query<M> this is always Node(..)
+            // Keep this defensive for future extensions.
+            //_ => return Err(GrmError::Backend("Only Return::Node is supported in execute_graph_query".into())),
+        };
+
+        // Find the NodeMatch corresponding to the returned var.
+        let root_nm: NodeMatch = q
+            .matches
+            .iter()
+            .find_map(|m| {
+                if let MatchClause::Node(nm) = m {
+                    if nm.var == return_var {
+                        return Some(nm.clone());
+                    }
+                }
+                None
+            })
+            .ok_or_else(|| {
+                GrmError::Backend("GraphQuery missing root NodeMatch for return var".into())
+            })?;
+
+        // Build a lookup for any additional NodeMatch clauses by var id (end-node filters)
+        let mut node_match_by_var: HashMap<VarId, NodeMatch> = HashMap::new();
+        for m in &q.matches {
+            if let MatchClause::Node(nm) = m {
+                node_match_by_var.insert(nm.var, nm.clone());
+            }
+        }
+
+        // Extract hops in the order they appear. (Your compiler emits a chain.)
+        let hops: Vec<HopMatch> = q
+            .matches
+            .iter()
+            .filter_map(|m| {
+                if let MatchClause::Hop(h) = m {
+                    Some(h.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // ---- 2) Seed candidates from root NodeMatch ----
+        // We represent an execution state as (root_node_id, current_node_id).
+        #[derive(Clone, Copy, Debug)]
+        struct Binding {
+            root: i64,
+            cur: i64,
+        }
+
+        let mut bindings: Vec<Binding> = Vec::new();
+
+        if let Some(id) = root_nm.id_filter {
+            if let Some(node) = self.working_copy.nodes.get(&id) {
+                if labels_match(&node.labels, root_nm.labels)
+                    && stored_node_matches_filters(node.clone(), &root_nm.property_filters)
+                {
+                    bindings.push(Binding {
+                        root: node.id,
+                        cur: node.id,
+                    });
+                }
+            }
+        } else {
+            // Full scan by labels + filters
+            for node in self.working_copy.nodes.values() {
+                if labels_match(&node.labels, root_nm.labels)
+                    && stored_node_matches_filters(node.clone(), &root_nm.property_filters)
+                {
+                    bindings.push(Binding {
+                        root: node.id,
+                        cur: node.id,
+                    });
+                }
+            }
+        }
+
+        // Early out if no roots match
+        if bindings.is_empty() {
+            return Ok(QueryResult { rows: vec![] });
+        }
+
+        // ---- 3) Apply chained hops ----
+        for hop in hops {
+            let end_nm = node_match_by_var.get(&hop.end).cloned();
+
+            let mut next: Vec<Binding> = Vec::new();
+
+            for b in &bindings {
+                // Expand relationships from current node
+                for rel in self.working_copy.rels.values() {
+                    // rel type check
+                    if rel.rel_type != hop.rel_type {
+                        continue;
+                    }
+
+                    // direction check + compute neighbor
+                    let neighbor: Option<i64> = match hop.dir {
+                        Direction::Out => {
+                            if rel.from == b.cur {
+                                Some(rel.to)
+                            } else {
+                                None
+                            }
+                        }
+                        Direction::In => {
+                            if rel.to == b.cur {
+                                Some(rel.from)
+                            } else {
+                                None
+                            }
+                        }
+                        Direction::Both => {
+                            if rel.from == b.cur {
+                                Some(rel.to)
+                            } else if rel.to == b.cur {
+                                Some(rel.from)
+                            } else {
+                                None
+                            }
+                        }
+                    };
+
+                    let Some(end_id) = neighbor else {
+                        continue;
+                    };
+
+                    let Some(end_node) = self.working_copy.nodes.get(&end_id) else {
+                        continue;
+                    };
+
+                    // end labels (from HopMatch)
+                    if !labels_match(&end_node.labels, hop.end_labels) {
+                        continue;
+                    }
+
+                    // optional end node filters (from a NodeMatch on the end var)
+                    if let Some(nm) = &end_nm {
+                        // if nm has id_filter set, enforce it
+                        if let Some(required_id) = nm.id_filter {
+                            if required_id != end_id {
+                                continue;
+                            }
+                        }
+                        // labels in NodeMatch should match too (defensive)
+                        if !labels_match(&end_node.labels, nm.labels) {
+                            continue;
+                        }
+                        if !stored_node_matches_filters(end_node.clone(), &nm.property_filters) {
+                            continue;
+                        }
+                    }
+
+                    next.push(Binding {
+                        root: b.root,
+                        cur: end_id,
+                    });
+                }
+            }
+
+            bindings = next;
+
+            if bindings.is_empty() {
+                return Ok(QueryResult { rows: vec![] });
+            }
+        }
+
+        // ---- 4) Collect roots, stable-dedupe, apply paging ----
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut roots: Vec<i64> = Vec::new();
+
+        for b in &bindings {
+            if seen.insert(b.root) {
+                roots.push(b.root);
+            }
+        }
+
+        let roots = apply_paging(roots, q.offset, q.limit);
+
+        // ---- 5) Emit QueryResult rows ----
+        let mut rows: Vec<QueryRow> = Vec::new();
+        for id in roots {
+            if let Some(node) = self.working_copy.nodes.get(&id) {
+                rows.push(node_to_row(node));
+            }
+        }
+
+        Ok(QueryResult { rows })
     }
 
     /// Parse very small pseudo-Cypher commands
@@ -270,16 +526,17 @@ impl InMemoryTx {
             for (k, v) in props_obj {
                 node.props.insert(k.clone(), v.clone());
             }
-            
+
             result.rows = vec![QueryRow {
-                    values: BTreeMap::from([(
-                        "n".to_string(),
-                        serde_json::json!({
-                            "id": node.id,
-                            "labels": node.labels,
-                            "props": node.props,
-                        }),
-                    )])}];
+                values: BTreeMap::from([(
+                    "n".to_string(),
+                    serde_json::json!({
+                        "id": node.id,
+                        "labels": node.labels,
+                        "props": node.props,
+                    }),
+                )]),
+            }];
         }
 
         Ok(result)
@@ -301,53 +558,56 @@ impl InMemoryTx {
     }
 
     fn match_outgoing(&mut self, params: &Value) -> Result<QueryResult> {
-    let from = params["from"].as_i64().ok_or_else(|| {
-        GrmError::Backend("MATCH outgoing requires from param".into())
-    })?;
+        let from = params["from"]
+            .as_i64()
+            .ok_or_else(|| GrmError::Backend("MATCH outgoing requires from param".into()))?;
 
-    // optional type filter – if missing or empty, treat as wildcard
-    let rel_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        // optional type filter – if missing or empty, treat as wildcard
+        let rel_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-    let mut rows = Vec::new();
+        let mut rows = Vec::new();
 
-    for rel in self.working_copy.rels.values() {
-        if rel.from == from && (rel_type.is_empty() || rel.rel_type == rel_type) {
-            if let Some(node) = self.working_copy.nodes.get(&rel.to) {
-                rows.push(QueryRow {
-                    values: BTreeMap::from([
-                        (
-                            "r".to_string(),
-                            serde_json::json!({
-                                "id": rel.id,
-                                "from": rel.from,
-                                "to": rel.to,
-                                "type": rel.rel_type,
-                                "props": rel.props,
-                            }),
-                        ),
-                        (
-                            "b".to_string(),
-                            serde_json::json!({
-                                "id": node.id,
-                                "labels": node.labels,
-                                "props": node.props,
-                            }),
-                        ),
-                    ]),
-                });
+        for rel in self.working_copy.rels.values() {
+            if rel.from == from && (rel_type.is_empty() || rel.rel_type == rel_type) {
+                if let Some(node) = self.working_copy.nodes.get(&rel.to) {
+                    rows.push(QueryRow {
+                        values: BTreeMap::from([
+                            (
+                                "r".to_string(),
+                                serde_json::json!({
+                                    "id": rel.id,
+                                    "from": rel.from,
+                                    "to": rel.to,
+                                    "type": rel.rel_type,
+                                    "props": rel.props,
+                                }),
+                            ),
+                            (
+                                "b".to_string(),
+                                serde_json::json!({
+                                    "id": node.id,
+                                    "labels": node.labels,
+                                    "props": node.props,
+                                }),
+                            ),
+                        ]),
+                    });
+                }
             }
         }
+
+        Ok(QueryResult { rows })
     }
-
-    Ok(QueryResult { rows })
-}
-
 }
 
 #[async_trait]
 impl GraphTx for InMemoryTx {
     async fn execute_query(&mut self, query: &str, params: Value) -> Result<QueryResult> {
         self.execute_pseudo_cypher(query, &params)
+    }
+
+    async fn execute_graph(&mut self, q: &GraphQuery) -> Result<QueryResult> {
+        self.execute_graph_query(q)
     }
 
     async fn commit(mut self) -> Result<()> {
