@@ -11,4 +11,4 @@ pub use model::{NodeModel, RelModel};
 pub use error::GrmError;
 pub use repo::{NodeRepository, RelRepository};
 pub use grm_rs_macros::*;
-pub use dsl::{NodePattern, Property, PropertyFilter, CompareOp};
+pub use dsl::{NodePattern, Property, PropertyFilter, CompareOp, Query, QueryKind};
