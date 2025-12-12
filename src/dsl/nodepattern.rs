@@ -1,7 +1,52 @@
 use std::marker::PhantomData;
 
-use crate::NodeModel;
 use crate::PropertyFilter;
+use crate::model::{NodeModel, RelModel};
+
+
+#[derive(Debug, Clone)]
+pub struct TraversalStep {
+    pub dir: super::graph::Direction,
+    pub rel_type: &'static str,
+    pub end_labels: &'static [&'static str], // from NodeModel::LABELS
+    pub end_filters: Vec<super::PropertyFilter>,
+    pub end_alias: Option<String>,
+}
+
+pub struct TraversalBuilder<N: NodeModel, R: RelModel> {
+    pat: NodePattern<N>,
+    dir: super::graph::Direction,
+    _r: PhantomData<R>,
+}
+
+impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
+    pub fn to<M: NodeModel>(mut self) -> NodePattern<N> {
+        self.pat.traversals.push(TraversalStep {
+            dir: self.dir,
+            rel_type: R::TYPE,
+            end_labels: M::LABELS,
+            end_filters: vec![],
+            end_alias: None,
+        });
+        self.pat
+    }
+
+    /// Convenience: allow filtering the end node inline
+    pub fn to_where<M: NodeModel>(
+        mut self,
+        build: impl FnOnce(NodePattern<M>) -> NodePattern<M>,
+    ) -> NodePattern<N> {
+        let end_pat = build(NodePattern::<M>::new());
+        self.pat.traversals.push(TraversalStep {
+            dir: self.dir,
+            rel_type: R::TYPE,                   // ✅
+            end_labels: M::LABELS,
+            end_filters: end_pat.property_filters,
+            end_alias: end_pat.alias,
+        });
+        self.pat
+    }
+}
 
 /// A typed representation of a node pattern in a query.
 ///
@@ -20,6 +65,8 @@ pub struct NodePattern<N: NodeModel> {
     /// Property filters applied to this node.
     pub property_filters: Vec<PropertyFilter>,
 
+    pub traversals: Vec<TraversalStep>,
+
     _marker: PhantomData<N>,
 }
 
@@ -31,6 +78,7 @@ impl<N: NodeModel> NodePattern<N> {
             alias: None,
             id: None,
             property_filters: Vec::new(),
+            traversals: vec![],
             _marker: PhantomData,
         }
     }
@@ -66,6 +114,18 @@ impl<N: NodeModel> NodePattern<N> {
     /// Panics if LABELS is empty – your derive macro should guarantee it's not.
     pub fn primary_label(&self) -> &'static str {
         self.labels.first().copied().unwrap_or("")
+    }
+
+    pub fn out<R: RelModel>(self) -> TraversalBuilder<N, R> {
+        TraversalBuilder { pat: self, dir: super::graph::Direction::Out, _r: PhantomData }
+    }
+
+    pub fn incoming<R: RelModel>(self) -> TraversalBuilder<N, R> {
+        TraversalBuilder { pat: self, dir: super::graph::Direction::In, _r: PhantomData }
+    }
+
+    pub fn both<R: RelModel>(self) -> TraversalBuilder<N, R> {
+        TraversalBuilder { pat: self, dir: super::graph::Direction::Both, _r: PhantomData }
     }
 }
 
