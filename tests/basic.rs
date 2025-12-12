@@ -14,6 +14,7 @@ mod tests {
         let user = User {
             id: UserId(1),
             name: "Alice".into(),
+            age: 0,
         };
         let props = user.to_properties();
         let user2 = User::from_properties(UserId(1), props).unwrap();
@@ -72,6 +73,7 @@ mod tests {
         let mut user = User {
             id: UserId(0),
             name: "Alice".into(),
+            age: 0,
         };
 
         repo.create(&mut user).await.unwrap();
@@ -101,6 +103,7 @@ mod tests {
         let mut user = User {
             id: UserId(0),
             name: "Alice".into(),
+            age: 0,
         };
         repo.create(&mut user).await.unwrap();
         assert!(user.id.0 >= 1);
@@ -129,6 +132,7 @@ mod tests {
         let mut user = User {
             id: UserId(0),
             name: "Charlie".into(),
+            age: 0,
         };
         repo.create(&mut user).await.unwrap();
         let user_id = user.id;
@@ -150,12 +154,14 @@ mod tests {
         let mut a = User {
             id: UserId(0),
             name: "Alice".into(),
+            age: 0,
         };
         repo.create(&mut a).await.unwrap();
 
         let mut b = User {
             id: UserId(0),
             name: "Bob".into(),
+            age: 0,
         };
         repo.create(&mut b).await.unwrap();
 
@@ -178,6 +184,7 @@ mod tests {
         let mut user = User {
             id: UserId(0),
             name: "Alice".into(),
+            age: 0,
         };
         user_repo.create(&mut user).await.unwrap();
 
@@ -219,6 +226,7 @@ mod tests {
         let mut user = User {
             id: UserId(0),
             name: "Alice".into(),
+            age: 0,
         };
         user_repo.create(&mut user).await.unwrap();
 
