@@ -2,7 +2,7 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use grm_rs::dsl::{GraphQuery, MatchClause, NodeMatch, Return};
     use serde_json::json;
@@ -11,7 +11,7 @@ mod tests {
 
     use grm_rs::{self, NodePattern, Query, VarGen};
     use grm_rs::{
-        GraphBackend, GraphTx, NodeModel, NodeRepository, RelRepository, backend::InMemoryBackend,
+        GraphBackend, GraphTx, InMemoryBackend, NodeModel, NodeRepository, RelRepository, Result,
     };
 
     #[test]
@@ -362,5 +362,138 @@ mod tests {
         tx2.commit().await.unwrap();
 
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn execute_graph_out_any_matches_any_relationship_type() -> Result<()> {
+        // Create: (User)-[:LIKED]->(Post)
+        // Then query: match (User)-[*out_any*]->(Post) should return the User
+
+        let backend = InMemoryBackend::new();
+
+        let user_id: i64;
+        {
+            let mut tx = backend.begin_tx().await?;
+
+            let u = tx
+                .create_node(vec!["User".to_string()], Default::default())
+                .await?;
+            let p = tx
+                .create_node(vec!["Post".to_string()], Default::default())
+                .await?;
+
+            tx.create_relationship(u.id, p.id, "LIKED".to_string(), Default::default())
+                .await?;
+
+            tx.commit().await?;
+            user_id = u.id;
+        }
+
+        // Build typed query: User.out_any().to::<Post>()
+        let q = Query::<User>::matching(NodePattern::<User>::new().out_any().to::<Post>());
+
+        let gq = q.compile_to_graph();
+
+        let mut tx = backend.begin_tx().await?;
+        let qr = tx.execute_graph(&gq).await?;
+        tx.commit().await?;
+
+        // Query returns root nodes ("n") – should include the user
+        let got_ids: Vec<i64> = qr
+            .rows
+            .iter()
+            .filter_map(|row| {
+                row.values
+                    .get("n")
+                    .and_then(|v| v.get("id"))
+                    .and_then(|id| id.as_i64())
+            })
+            .collect();
+
+        assert!(
+            got_ids.contains(&user_id),
+            "expected out_any traversal to match User via non-typed relationship"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tx_incoming_returns_from_node_for_matching_type() -> Result<()> {
+        let backend = InMemoryBackend::new();
+
+        let (a_id, b_id, rel_type) = {
+            let mut tx = backend.begin_tx().await?;
+            let a = tx
+                .create_node(vec!["A".to_string()], Default::default())
+                .await?;
+            let b = tx
+                .create_node(vec!["B".to_string()], Default::default())
+                .await?;
+            let rel_type = "R".to_string();
+
+            tx.create_relationship(a.id, b.id, rel_type.clone(), Default::default())
+                .await?;
+            tx.commit().await?;
+            (a.id, b.id, rel_type)
+        };
+
+        let mut tx = backend.begin_tx().await?;
+
+        // incoming to B should yield (rel, A)
+        let incoming_to_b = tx.incoming(b_id, Some(&rel_type)).await?;
+        assert_eq!(incoming_to_b.len(), 1);
+
+        let (_rel, from_node) = &incoming_to_b[0];
+        assert_eq!(from_node.id, a_id);
+
+        // incoming to A should be empty (no rel ends at A)
+        let incoming_to_a = tx.incoming(a_id, Some(&rel_type)).await?;
+        assert!(incoming_to_a.is_empty());
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn tx_both_returns_neighbors_from_outgoing_and_incoming() -> Result<()> {
+        let backend = InMemoryBackend::new();
+
+        let (a_id, b_id, c_id, rel_type) = {
+            let mut tx = backend.begin_tx().await?;
+
+            // Graph shape:
+            //   C -[R]-> A -[R]-> B
+            let a = tx
+                .create_node(vec!["A".to_string()], Default::default())
+                .await?;
+            let b = tx
+                .create_node(vec!["B".to_string()], Default::default())
+                .await?;
+            let c = tx
+                .create_node(vec!["C".to_string()], Default::default())
+                .await?;
+
+            let rel_type = "R".to_string();
+            tx.create_relationship(c.id, a.id, rel_type.clone(), Default::default())
+                .await?;
+            tx.create_relationship(a.id, b.id, rel_type.clone(), Default::default())
+                .await?;
+
+            tx.commit().await?;
+            (a.id, b.id, c.id, rel_type)
+        };
+
+        let mut tx = backend.begin_tx().await?;
+
+        let pairs = tx.both(a_id, Some(&rel_type)).await?;
+
+        let neighbor_ids: BTreeSet<i64> = pairs.into_iter().map(|(_rel, n)| n.id).collect();
+        let expected: BTreeSet<i64> = [b_id, c_id].into_iter().collect();
+
+        assert_eq!(neighbor_ids, expected);
+
+        tx.commit().await?;
+        Ok(())
     }
 }
