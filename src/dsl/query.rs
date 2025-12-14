@@ -1,5 +1,5 @@
 use super::NodePattern;
-use crate::model::NodeModel;
+use crate::{dsl::graph::ReturnMode, model::NodeModel};
 
 /// The kind of query being constructed.
 ///
@@ -26,6 +26,7 @@ pub enum QueryKind<N: NodeModel> {
 #[derive(Debug, Clone)]
 pub struct Query<N: NodeModel> {
     pub kind: QueryKind<N>,
+    pub return_mode: ReturnMode,
 }
 
 impl<N: NodeModel> Query<N> {
@@ -41,6 +42,7 @@ impl<N: NodeModel> Query<N> {
                 limit: None,
                 offset: None,
             },
+            return_mode: ReturnMode::Root
         }
     }
 
@@ -97,5 +99,16 @@ impl<N: NodeModel> Query<N> {
         match &self.kind {
             QueryKind::MatchNode { offset, .. } => *offset,
         }
+    }
+    
+    pub fn return_end(mut self) -> Self {
+        self.return_mode = ReturnMode::End;
+        self
+    }
+
+    // optional symmetry:
+    pub fn return_root(mut self) -> Self {
+        self.return_mode = ReturnMode::Root;
+        self
     }
 }

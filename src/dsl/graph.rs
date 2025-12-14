@@ -94,8 +94,31 @@ pub struct GraphQuery {
     pub offset: Option<usize>,
 }
 
+impl GraphQuery {
+    pub fn return_node(var: VarId) -> Return {
+        Return::Node(var)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReturnMode {
+    #[default]
+    Root,
+    End,
+}
+
+fn end_var_from_matches(matches: &[MatchClause], root: VarId) -> VarId {
+    let mut last = root;
+    for m in matches {
+        if let MatchClause::Node(nm) = m {
+            last = nm.var.clone();
+        }
+    }
+    last
+}
+
 impl<N: NodeModel> Query<N> {
-    pub fn compile_to_graph(&self) -> crate::dsl::graph::GraphQuery {
+    pub fn compile_to_graph(&self) -> GraphQuery {
         let mut vg = VarGen::default();
 
         // root var
@@ -141,10 +164,17 @@ impl<N: NodeModel> Query<N> {
             current = end_id;
         }
 
+        let end_var = end_var_from_matches(&matches, root.id);
+
+        let return_var = match self.return_mode {
+            ReturnMode::Root => root.id,
+            ReturnMode::End => end_var, // last hop end var (or root if no hops)
+        };
+
         GraphQuery {
             matches,
-            where_: vec![], // you can later promote some filters here
-            ret: Return::Node(root.id),
+            where_: vec![],
+            ret: Return::Node(return_var),
             limit: self.limit_value(),
             offset: self.offset_value(),
         }
