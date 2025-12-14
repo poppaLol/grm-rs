@@ -96,7 +96,11 @@ mod tests {
             .expect("execute_graph failed");
         assert_eq!(qr.rows.len(), 1);
 
-        let matched = &qr.rows[0].values["n"];
+        let matched = qr.rows[0]
+            .values
+            .values()
+            .next()
+            .expect("execute_graph row missing return value");
         assert_eq!(matched["id"].as_i64().unwrap(), created_id);
         assert_eq!(matched["props"]["name"], "Alice");
     }
@@ -132,7 +136,11 @@ mod tests {
         assert_eq!(qr.rows.len(), 1);
 
         // 3. ASSERT equality
-        let matched = &qr.rows[0].values["n"];
+        let matched = qr.rows[0]
+            .values
+            .values()
+            .next()
+            .expect("execute_graph row missing return value");
         assert_eq!(matched["id"].as_i64().unwrap(), node.id);
         assert_eq!(matched["props"]["name"], "Alice");
     }
@@ -404,7 +412,8 @@ mod tests {
             .iter()
             .filter_map(|row| {
                 row.values
-                    .get("n")
+                    .values()
+                    .next()
                     .and_then(|v| v.get("id"))
                     .and_then(|id| id.as_i64())
             })

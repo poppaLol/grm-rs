@@ -8,6 +8,8 @@ use std::sync::{
 use common::{AB, CountingBackend};
 use grm_rs::{GraphBackend, GraphTx, InMemoryBackend, NodeModel, RelModel, RelRepository, Result};
 
+use crate::common::AId;
+
 
 /// ---- Counting backend wrapper ----
 /// Counts how many times `commit()` gets called on the tx returned by `begin_tx()`.
@@ -17,13 +19,13 @@ async fn outgoing_from_skips_wrong_labels_and_commits_after_success() -> Result<
     let backend = CountingBackend { inner: InMemoryBackend::new(), commits: commits.clone() };
 
     // Build graph: A -> C (wrong labels for B) should be skipped
-    let a_id: i64;
+    let a_id: AId;
     {
         let mut tx = backend.begin_tx().await?;
         let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
         let c = tx.create_node(vec!["C".to_string()], Default::default()).await?;
         tx.create_relationship(a.id, c.id, AB::TYPE.to_string(), Default::default()).await?;
-        a_id = a.id;
+        a_id = AId(a.id);
         tx.commit().await?;
     }
 
@@ -44,14 +46,14 @@ async fn outgoing_from_does_not_commit_if_decode_fails() -> Result<()> {
     let backend = CountingBackend { inner: InMemoryBackend::new(), commits: commits.clone() };
 
     // Build graph: A -> B (correct labels), but B missing required property so decode fails
-    let a_id: i64;
+    let a_id: AId;
     {
         let mut tx = backend.begin_tx().await?;
         let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
         let b = tx.create_node(vec!["B".to_string()], Default::default()).await?;
         tx.create_relationship(a.id, b.id, AB::TYPE.to_string(), Default::default()).await?;
         tx.commit().await?;
-        a_id = a.id;
+        a_id = AId(a.id);
     }
 
     let repo = RelRepository::<_, AB>::new(backend);
