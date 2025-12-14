@@ -48,7 +48,7 @@ impl VarGen {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Out,
     In,
@@ -130,15 +130,13 @@ impl<N: NodeModel> Query<N> {
                 end_labels: step.end_labels,
             }));
 
-            // add end-node match (so end filters can be applied)
-            if !step.end_filters.is_empty() || step.end_alias.is_some() {
-                matches.push(MatchClause::Node(NodeMatch {
-                    var: end_id,
-                    labels: step.end_labels,
-                    id_filter: None,
-                    property_filters: step.end_filters.clone(),
-                }));
-            }
+            // ALWAYS add end-node match (compiler invariant)
+            matches.push(MatchClause::Node(NodeMatch {
+                var: end_id,
+                labels: step.end_labels,
+                id_filter: None,
+                property_filters: step.end_filters.clone(), // may be empty
+            }));
 
             current = end_id;
         }
