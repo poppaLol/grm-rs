@@ -4,12 +4,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::backend::{GraphBackend, GraphStore, GraphTx, QueryResult, QueryRow, StoredNode, StoredRel};
+use crate::backend::{
+    GraphBackend, GraphStore, GraphTx, QueryResult, QueryRow, StoredNode, StoredRel,
+};
 use crate::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, VarId};
 use crate::dsl::{apply_paging, numeric_cmp};
 use crate::error::{GrmError, Result};
 use crate::{CompareOp, PropertyFilter};
-
 
 #[derive(Clone)]
 pub struct InMemoryBackend {
@@ -40,7 +41,7 @@ impl InMemoryTx {
         }
     }
 
-    pub fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
+    async fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
         // ---- Helpers (kept local to avoid plumbing) ----
 
         fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bool {
@@ -193,47 +194,15 @@ impl InMemoryTx {
             let mut next: Vec<Binding> = Vec::new();
 
             for b in &bindings {
-                // Expand relationships from current node
-                for rel in self.working_copy.rels.values() {
-                    // rel type check
-                    if rel.rel_type != hop.rel_type {
-                        continue;
-                    }
+                // Expand neighbors from current node using GraphTx helpers
+                let pairs: Vec<(StoredRel, StoredNode)> = match hop.dir {
+                    Direction::Out => self.outgoing(b.cur, Some(hop.rel_type)).await?,
+                    Direction::In => self.incoming(b.cur, Some(hop.rel_type)).await?,
+                    Direction::Both => self.both(b.cur, Some(hop.rel_type)).await?,
+                };
 
-                    // direction check + compute neighbor
-                    let neighbor: Option<i64> = match hop.dir {
-                        Direction::Out => {
-                            if rel.from == b.cur {
-                                Some(rel.to)
-                            } else {
-                                None
-                            }
-                        }
-                        Direction::In => {
-                            if rel.to == b.cur {
-                                Some(rel.from)
-                            } else {
-                                None
-                            }
-                        }
-                        Direction::Both => {
-                            if rel.from == b.cur {
-                                Some(rel.to)
-                            } else if rel.to == b.cur {
-                                Some(rel.from)
-                            } else {
-                                None
-                            }
-                        }
-                    };
-
-                    let Some(end_id) = neighbor else {
-                        continue;
-                    };
-
-                    let Some(end_node) = self.working_copy.nodes.get(&end_id) else {
-                        continue;
-                    };
+                for (_rel, end_node) in pairs {
+                    let end_id = end_node.id;
 
                     // end labels (from HopMatch)
                     if !labels_match(&end_node.labels, hop.end_labels) {
@@ -242,7 +211,6 @@ impl InMemoryTx {
 
                     // optional end node filters (from a NodeMatch on the end var)
                     if let Some(nm) = &end_nm {
-                        // if nm has id_filter set, enforce it
                         if let Some(required_id) = nm.id_filter {
                             if required_id != end_id {
                                 continue;
@@ -304,7 +272,7 @@ impl GraphTx for InMemoryTx {
     }
 
     async fn execute_graph(&mut self, q: &GraphQuery) -> Result<QueryResult> {
-        self.execute_graph_query(q)
+        self.execute_graph_query(q).await
     }
 
     async fn create_node(
@@ -336,7 +304,9 @@ impl GraphTx for InMemoryTx {
 
     async fn delete_node(&mut self, id: i64) -> Result<()> {
         self.working_copy.nodes.remove(&id);
-        self.working_copy.rels.retain(|_, rel| rel.from != id && rel.to != id);
+        self.working_copy
+            .rels
+            .retain(|_, rel| rel.from != id && rel.to != id);
         Ok(())
     }
 
@@ -344,8 +314,13 @@ impl GraphTx for InMemoryTx {
         Ok(self.working_copy.nodes.get(&id).cloned())
     }
 
-    async fn find_nodes_by_property(&mut self, key: &str, value: &Value) -> Result<Vec<StoredNode>> {
-        Ok(self.working_copy
+    async fn find_nodes_by_property(
+        &mut self,
+        key: &str,
+        value: &Value,
+    ) -> Result<Vec<StoredNode>> {
+        Ok(self
+            .working_copy
             .nodes
             .values()
             .filter(|n| n.props.get(key).map(|v| v == value).unwrap_or(false))
@@ -363,22 +338,103 @@ impl GraphTx for InMemoryTx {
         let id = self.working_copy.next_rel_id;
         self.working_copy.next_rel_id += 1;
 
-        let rel = StoredRel { id, rel_type, from, to, props };
+        let rel = StoredRel {
+            id,
+            rel_type,
+            from,
+            to,
+            props,
+        };
         self.working_copy.rels.insert(id, rel.clone());
         Ok(rel)
     }
 
-    async fn outgoing(&mut self, from: i64, rel_type: Option<&str>) -> Result<Vec<(StoredRel, StoredNode)>> {
+    async fn outgoing(
+        &mut self,
+        from: i64,
+        rel_type: Option<&str>,
+    ) -> Result<Vec<(StoredRel, StoredNode)>> {
         let mut out = Vec::new();
         for rel in self.working_copy.rels.values() {
-            if rel.from != from { continue; }
+            if rel.from != from {
+                continue;
+            }
             if let Some(t) = rel_type {
-                if rel.rel_type != t { continue; }
+                if rel.rel_type != t {
+                    continue;
+                }
             }
             if let Some(n) = self.working_copy.nodes.get(&rel.to) {
                 out.push((rel.clone(), n.clone()));
             }
         }
+        Ok(out)
+    }
+
+    async fn incoming(
+        &mut self,
+        to: i64,
+        rel_type: Option<&str>,
+    ) -> Result<Vec<(StoredRel, StoredNode)>> {
+        let mut out = Vec::new();
+        for rel in self.working_copy.rels.values() {
+            if rel.to != to {
+                continue;
+            }
+            if let Some(t) = rel_type {
+                if rel.rel_type != t {
+                    continue;
+                }
+            }
+            if let Some(n) = self.working_copy.nodes.get(&rel.from) {
+                out.push((rel.clone(), n.clone()));
+            }
+        }
+        Ok(out)
+    }
+
+    async fn both(
+        &mut self,
+        node: i64,
+        rel_type: Option<&str>,
+    ) -> Result<Vec<(StoredRel, StoredNode)>> {
+        let mut out = Vec::new();
+        let mut seen_rel_ids = std::collections::BTreeSet::new();
+
+        // outgoing neighbors
+        for rel in self.working_copy.rels.values() {
+            if rel.from != node {
+                continue;
+            }
+            if let Some(t) = rel_type {
+                if rel.rel_type != t {
+                    continue;
+                }
+            }
+            if let Some(n) = self.working_copy.nodes.get(&rel.to) {
+                if seen_rel_ids.insert(rel.id) {
+                    out.push((rel.clone(), n.clone()));
+                }
+            }
+        }
+
+        // incoming neighbors
+        for rel in self.working_copy.rels.values() {
+            if rel.to != node {
+                continue;
+            }
+            if let Some(t) = rel_type {
+                if rel.rel_type != t {
+                    continue;
+                }
+            }
+            if let Some(n) = self.working_copy.nodes.get(&rel.from) {
+                if seen_rel_ids.insert(rel.id) {
+                    out.push((rel.clone(), n.clone()));
+                }
+            }
+        }
+
         Ok(out)
     }
 
@@ -412,8 +468,6 @@ impl GraphBackend for InMemoryBackend {
     // Optional: implement directly (otherwise the trait default uses begin_tx + commit)
     async fn execute_graph(&self, q: &GraphQuery) -> Result<QueryResult> {
         let mut tx = InMemoryTx::new(self.store.clone());
-        let out = tx.execute_graph_query(q)?;
-        tx.commit().await?;
-        Ok(out)
+        tx.execute_graph_query(q).await
     }
 }
