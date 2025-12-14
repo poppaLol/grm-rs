@@ -5,9 +5,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::backend::{
-    GraphBackend, GraphStore, GraphTx, QueryResult, QueryRow, StoredNode, StoredRel,
+    GraphBackend, GraphStore, GraphTx, StoredNode, StoredRel,
 };
-use crate::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, VarId};
+use crate::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult, QueryRow, Return, VarId, var_key};
 use crate::dsl::{apply_paging, numeric_cmp};
 use crate::error::{GrmError, Result};
 use crate::{CompareOp, PropertyFilter};
@@ -45,7 +45,6 @@ impl InMemoryTx {
         // ---- Helpers (kept local to avoid plumbing) ----
 
         fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bool {
-            // Require all labels in `required` to be present on node.
             required
                 .iter()
                 .all(|l| node_labels.iter().any(|nl| nl == l))
@@ -88,10 +87,10 @@ impl InMemoryTx {
             true
         }
 
-        fn node_to_row(node: &StoredNode) -> QueryRow {
+        fn node_to_row(key: String, node: &StoredNode) -> QueryRow {
             QueryRow {
                 values: BTreeMap::from([(
-                    "n".to_string(),
+                    key,
                     serde_json::json!({
                         "id": node.id,
                         "labels": node.labels,
@@ -101,36 +100,26 @@ impl InMemoryTx {
             }
         }
 
-        // ---- 1) Determine return var and find the root NodeMatch ----
-
-        let return_var = match q.ret {
-            Return::Node(v) => v,
-            // By construction for Query<M> this is always Node(..)
-            // Keep this defensive for future extensions.
-            //_ => return Err(GrmError::Backend("Only Return::Node is supported in execute_graph_query".into())),
+        // ---- 1) Determine return var and find the true root NodeMatch ----
+        let return_var = match &q.ret {
+            Return::Node(v) => v.clone(),
         };
 
-        // Find the NodeMatch corresponding to the returned var.
+        // Root is the *first* NodeMatch (compiler emits it first).
         let root_nm: NodeMatch = q
             .matches
             .iter()
-            .find_map(|m| {
-                if let MatchClause::Node(nm) = m {
-                    if nm.var == return_var {
-                        return Some(nm.clone());
-                    }
-                }
-                None
+            .find_map(|m| match m {
+                MatchClause::Node(nm) => Some(nm.clone()),
+                _ => None,
             })
-            .ok_or_else(|| {
-                GrmError::Backend("GraphQuery missing root NodeMatch for return var".into())
-            })?;
+            .ok_or_else(|| GrmError::Backend("GraphQuery missing root NodeMatch".into()))?;
 
-        // Build a lookup for any additional NodeMatch clauses by var id (end-node filters)
+        // Build a lookup for NodeMatch clauses by var id (end-node filters, etc.)
         let mut node_match_by_var: HashMap<VarId, NodeMatch> = HashMap::new();
         for m in &q.matches {
             if let MatchClause::Node(nm) = m {
-                node_match_by_var.insert(nm.var, nm.clone());
+                node_match_by_var.insert(nm.var.clone(), nm.clone());
             }
         }
 
@@ -138,17 +127,14 @@ impl InMemoryTx {
         let hops: Vec<HopMatch> = q
             .matches
             .iter()
-            .filter_map(|m| {
-                if let MatchClause::Hop(h) = m {
-                    Some(h.clone())
-                } else {
-                    None
-                }
+            .filter_map(|m| match m {
+                MatchClause::Hop(h) => Some(h.clone()),
+                _ => None,
             })
             .collect();
 
-        // ---- 2) Seed candidates from root NodeMatch ----
-        // We represent an execution state as (root_node_id, current_node_id).
+        // ---- 2) Seed candidates from *root* NodeMatch ----
+        // Execution state as (root_node_id, current_node_id).
         #[derive(Clone, Copy, Debug)]
         struct Binding {
             root: i64,
@@ -182,7 +168,6 @@ impl InMemoryTx {
             }
         }
 
-        // Early out if no roots match
         if bindings.is_empty() {
             return Ok(QueryResult { rows: vec![] });
         }
@@ -194,7 +179,6 @@ impl InMemoryTx {
             let mut next: Vec<Binding> = Vec::new();
 
             for b in &bindings {
-                // Expand neighbors from current node using GraphTx helpers
                 let rel_type: Option<&str> = hop.rel_type.map(|t| t as &str);
 
                 let pairs: Vec<(StoredRel, StoredNode)> = match hop.dir {
@@ -241,23 +225,34 @@ impl InMemoryTx {
             }
         }
 
-        // ---- 4) Collect roots, stable-dedupe, apply paging ----
+        // ---- 4) Collect returned ids, stable-dedupe, apply paging ----
+        //
+        // For now:
+        // - If returning the root var => return Binding.root
+        // - Otherwise => return Binding.cur (end of chain)
+        //
+        // (Future: if you support returning intermediate vars, Binding will need per-var storage.)
+        let return_is_root = return_var == root_nm.var;
+
         let mut seen: HashSet<i64> = HashSet::new();
-        let mut roots: Vec<i64> = Vec::new();
+        let mut out_ids: Vec<i64> = Vec::new();
 
         for b in &bindings {
-            if seen.insert(b.root) {
-                roots.push(b.root);
+            let id = if return_is_root { b.root } else { b.cur };
+            if seen.insert(id) {
+                out_ids.push(id);
             }
         }
 
-        let roots = apply_paging(roots, q.offset, q.limit);
+        let out_ids = apply_paging(out_ids, q.offset, q.limit);
 
-        // ---- 5) Emit QueryResult rows ----
+        // ---- 5) Emit QueryResult rows (under the return var key) ----
+        let key = var_key(return_var);
         let mut rows: Vec<QueryRow> = Vec::new();
-        for id in roots {
+
+        for id in out_ids {
             if let Some(node) = self.working_copy.nodes.get(&id) {
-                rows.push(node_to_row(node));
+                rows.push(node_to_row(key.clone(), node));
             }
         }
 
