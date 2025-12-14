@@ -1,13 +1,13 @@
 use std::marker::PhantomData;
 
 use crate::PropertyFilter;
+use crate::dsl::Direction;
 use crate::model::{NodeModel, RelModel};
-
 
 #[derive(Debug, Clone)]
 pub struct TraversalStep {
     pub dir: super::graph::Direction,
-    pub rel_type: &'static str,
+    pub rel_type: Option<&'static str>,
     pub end_labels: &'static [&'static str], // from NodeModel::LABELS
     pub end_filters: Vec<super::PropertyFilter>,
     pub end_alias: Option<String>,
@@ -19,11 +19,16 @@ pub struct TraversalBuilder<N: NodeModel, R: RelModel> {
     _r: PhantomData<R>,
 }
 
+pub struct TraversalBuilderAny<N: NodeModel> {
+    pat: NodePattern<N>,
+    dir: Direction,
+}
+
 impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
     pub fn to<M: NodeModel>(mut self) -> NodePattern<N> {
         self.pat.traversals.push(TraversalStep {
             dir: self.dir,
-            rel_type: R::TYPE,
+            rel_type: Some(R::TYPE),
             end_labels: M::LABELS,
             end_filters: vec![],
             end_alias: None,
@@ -39,7 +44,7 @@ impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
         let end_pat = build(NodePattern::<M>::new());
         self.pat.traversals.push(TraversalStep {
             dir: self.dir,
-            rel_type: R::TYPE,                   // ✅
+            rel_type: Some(R::TYPE),
             end_labels: M::LABELS,
             end_filters: end_pat.property_filters,
             end_alias: end_pat.alias,
@@ -47,6 +52,35 @@ impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
         self.pat
     }
 }
+
+impl<N: NodeModel> TraversalBuilderAny<N> {
+    pub fn to<M: NodeModel>(mut self) -> NodePattern<N> {
+        self.pat.traversals.push(TraversalStep {
+            rel_type: None,                // <-- KEY DIFFERENCE
+            dir: self.dir,
+            end_labels: M::LABELS,
+            end_filters: vec![],
+            end_alias: None,
+        });
+        self.pat
+    }
+
+    pub fn to_where<M: NodeModel>(
+        mut self,
+        f: impl FnOnce(NodePattern<M>) -> NodePattern<M>,
+    ) -> NodePattern<N> {
+        let np = f(NodePattern::<M>::new());
+        self.pat.traversals.push(TraversalStep {
+            rel_type: None,
+            dir: self.dir,
+            end_labels: M::LABELS,
+            end_filters: np.property_filters,
+            end_alias: np.alias,
+        });
+        self.pat
+    }
+}
+
 
 /// A typed representation of a node pattern in a query.
 ///
@@ -117,15 +151,47 @@ impl<N: NodeModel> NodePattern<N> {
     }
 
     pub fn out<R: RelModel>(self) -> TraversalBuilder<N, R> {
-        TraversalBuilder { pat: self, dir: super::graph::Direction::Out, _r: PhantomData }
+        TraversalBuilder {
+            pat: self,
+            dir: super::graph::Direction::Out,
+            _r: PhantomData,
+        }
     }
 
     pub fn incoming<R: RelModel>(self) -> TraversalBuilder<N, R> {
-        TraversalBuilder { pat: self, dir: super::graph::Direction::In, _r: PhantomData }
+        TraversalBuilder {
+            pat: self,
+            dir: super::graph::Direction::In,
+            _r: PhantomData,
+        }
     }
 
     pub fn both<R: RelModel>(self) -> TraversalBuilder<N, R> {
-        TraversalBuilder { pat: self, dir: super::graph::Direction::Both, _r: PhantomData }
+        TraversalBuilder {
+            pat: self,
+            dir: super::graph::Direction::Both,
+            _r: PhantomData,
+        }
+    }
+
+    pub fn out_any(self) -> TraversalBuilderAny<N> {
+        TraversalBuilderAny {
+            pat: self,
+            dir: Direction::Out,
+        }
+    }
+
+    pub fn incoming_any(self) -> TraversalBuilderAny<N> {
+        TraversalBuilderAny {
+            pat: self,
+            dir: Direction::In,
+        }
+    }
+
+    pub fn both_any(self) -> TraversalBuilderAny<N> {
+        TraversalBuilderAny {
+            pat: self,
+            dir: Direction::Both,
+        }
     }
 }
-
