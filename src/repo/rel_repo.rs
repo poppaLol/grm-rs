@@ -5,8 +5,8 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     backend::{GraphBackend, GraphTx}, // adjust path if GraphTx is elsewhere
-    model::{NodeModel, RelModel},
-    error::Result
+    error::Result,
+    model::{NodeModel, RelModel}, repo::labels::labels_match,
 };
 
 pub struct RelRepository<B, R>
@@ -24,7 +24,10 @@ where
     R: RelModel,
 {
     pub fn new(backend: B) -> Self {
-        Self { backend, _marker: PhantomData }
+        Self {
+            backend,
+            _marker: PhantomData,
+        }
     }
 
     /// Create a relationship between two nodes (typed).
@@ -58,7 +61,6 @@ where
 
         let mut tx = self.backend.begin_tx().await?;
         let pairs = tx.outgoing(from_raw, Some(R::TYPE)).await?;
-        tx.commit().await?;
 
         let mut out = Vec::with_capacity(pairs.len());
 
@@ -68,11 +70,7 @@ where
             let rel_model = R::from_properties(rel_id, stored_rel.props)?;
 
             // Optional: enforce target node labels match R::To
-            let ok = <R::To as NodeModel>::LABELS
-                .iter()
-                .all(|l| stored_node.labels.iter().any(|sl| sl == l));
-
-            if !ok {
+            if !labels_match(&stored_node.labels, <R::To as NodeModel>::LABELS) {
                 continue;
             }
 
@@ -83,6 +81,37 @@ where
             out.push((rel_model, node_model));
         }
 
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    pub async fn incoming_to(&self, to_id: &<R::To as NodeModel>::Id) -> Result<Vec<(R, R::From)>> {
+        let to_raw: i64 = to_id.clone().into();
+
+        let mut tx = self.backend.begin_tx().await?;
+        let pairs = tx.incoming(to_raw, Some(R::TYPE)).await?;
+
+        let mut out = Vec::with_capacity(pairs.len());
+
+        for (stored_rel, stored_node) in pairs {
+            // Decode relationship model
+            let rel_id: R::Id = stored_rel.id.into();
+            let rel_model = R::from_properties(rel_id, stored_rel.props)?;
+
+            // Enforce node labels match R::From
+            // Optional: enforce target node labels match R::To
+            if !labels_match(&stored_node.labels, <R::From as NodeModel>::LABELS) {
+                continue;
+            }
+
+            // Decode source node model
+            let node_id: <R::From as NodeModel>::Id = stored_node.id.into();
+            let node_model = <R::From as NodeModel>::from_properties(node_id, stored_node.props)?;
+
+            out.push((rel_model, node_model));
+        }
+
+        tx.commit().await?;
         Ok(out)
     }
 }
