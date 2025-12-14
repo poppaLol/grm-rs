@@ -4,10 +4,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::backend::{
-    GraphBackend, GraphStore, GraphTx, StoredNode, StoredRel,
+use crate::backend::{GraphBackend, GraphStore, GraphTx, StoredNode, StoredRel};
+use crate::dsl::{
+    Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult, QueryRow, Return, VarId,
 };
-use crate::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult, QueryRow, Return, VarId, var_key};
 use crate::dsl::{apply_paging, numeric_cmp};
 use crate::error::{GrmError, Result};
 use crate::{CompareOp, PropertyFilter};
@@ -87,10 +87,10 @@ impl InMemoryTx {
             true
         }
 
-        fn node_to_row(key: String, node: &StoredNode) -> QueryRow {
+        fn node_to_row(var: VarId, node: &StoredNode) -> QueryRow {
             QueryRow {
                 values: BTreeMap::from([(
-                    key,
+                    var,
                     serde_json::json!({
                         "id": node.id,
                         "labels": node.labels,
@@ -226,12 +226,6 @@ impl InMemoryTx {
         }
 
         // ---- 4) Collect returned ids, stable-dedupe, apply paging ----
-        //
-        // For now:
-        // - If returning the root var => return Binding.root
-        // - Otherwise => return Binding.cur (end of chain)
-        //
-        // (Future: if you support returning intermediate vars, Binding will need per-var storage.)
         let return_is_root = return_var == root_nm.var;
 
         let mut seen: HashSet<i64> = HashSet::new();
@@ -247,12 +241,11 @@ impl InMemoryTx {
         let out_ids = apply_paging(out_ids, q.offset, q.limit);
 
         // ---- 5) Emit QueryResult rows (under the return var key) ----
-        let key = var_key(return_var);
         let mut rows: Vec<QueryRow> = Vec::new();
 
         for id in out_ids {
             if let Some(node) = self.working_copy.nodes.get(&id) {
-                rows.push(node_to_row(key.clone(), node));
+                rows.push(node_to_row(return_var, node));
             }
         }
 
