@@ -72,6 +72,22 @@ pub trait GraphTx {
         Err(GrmError::Backend("outgoing not supported".into()))
     }
 
+    async fn incoming(
+        &mut self,
+        _to: i64,
+        _rel_type: Option<&str>,
+    ) -> Result<Vec<(StoredRel, StoredNode)>> {
+        Err(GrmError::Backend("incoming not supported".into()))
+    }
+
+    async fn both(
+        &mut self,
+        _node: i64,
+        _rel_type: Option<&str>,
+    ) -> Result<Vec<(StoredRel, StoredNode)>> {
+        Err(GrmError::Backend("both not supported".into()))
+    }
+
     async fn commit(self) -> Result<()>;
     async fn rollback(self) -> Result<()>;
 }
