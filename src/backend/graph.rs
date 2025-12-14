@@ -2,17 +2,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use crate::{GrmError, StoredNode, StoredRel, GraphQuery, Result};
-
-#[derive(Debug, Clone)]
-pub struct QueryRow {
-    pub values: std::collections::BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone)]
-pub struct QueryResult {
-    pub rows: Vec<QueryRow>,
-}
+use crate::{GraphQuery, GrmError, StoredNode, StoredRel, dsl::QueryResult, error::Result};
 
 #[async_trait]
 pub trait GraphTx {
