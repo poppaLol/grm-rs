@@ -208,11 +208,55 @@ It is intended for:
 
 ---
 
+Projection v1 + Typed Kernel Results (GraphQuery → QueryResult)
+
+This addendum captures the latest work: projection/return control is now real, and query execution returns typed kernel values keyed by VarId (no stringly "n" conventions, no var_key).
+
+What changed recently
+Projection v1: explicit return target
+
+GraphQuery already had a singular ret: Return. We extended the DSL/compiler so users can choose what node is returned:
+
+default: return the root node
+
+new: .return_end() returns the end node of the traversal chain
+
+This is achieved by compiling Query<M> to GraphQuery with:
+
+ret = Return::Node(<root_var>) by default
+
+ret = Return::Node(<end_var>) when .return_end() is used
+
+In-memory executor semantics updated (correct + explicit)
+
+The in-memory executor now:
+
+Seeds from the real root NodeMatch (first MatchClause::Node), independent of what is returned.
+
+Applies chained HopMatch traversal using GraphTx::{outgoing,incoming,both} with correct wildcard semantics when rel_type == None.
+
+Collects returned IDs based on GraphQuery.ret:
+
+returning root var ⇒ return Binding.root
+
+returning end var ⇒ return Binding.cur
+
+Emits QueryRow results keyed by VarId, not String.
+
+Typed kernel result shape (no JSON blob keys)
+
+QueryRow now carries strongly-shaped graph facts (kernel-level), not ad-hoc JSON with magic keys:
+
+QueryRow.values: BTreeMap<VarId, Value>
+
+Value::Node(NodeValue { id, labels, props })
+
+This makes repo decoding and future Neo4j mapping much safer and more direct.
+
 ## 🚧 Roadmap (Short Term)
 
 Planned next steps:
 
-* Projection control (`return_end`, custom returns)
 * Adjacency indexes for performance
 * Persisted backends
 * Neo4j backend
