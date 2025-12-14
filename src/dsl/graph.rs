@@ -5,10 +5,6 @@ use std::marker::PhantomData;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(pub u32);
 
-pub fn var_key(v: VarId) -> String {
-    format!("v{}", v.0)
-}
-
 #[derive(Debug, Clone)]
 pub struct NodeVar<N: NodeModel> {
     pub id: VarId,
@@ -101,6 +97,13 @@ pub struct GraphQuery {
 impl GraphQuery {
     pub fn return_node(var: VarId) -> Return {
         Return::Node(var)
+    }
+
+    #[inline]
+    pub fn return_var(&self) -> VarId {
+        match self.ret {
+            Return::Node(v) => v,
+        }
     }
 }
 
