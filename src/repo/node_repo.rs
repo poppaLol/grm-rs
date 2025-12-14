@@ -3,25 +3,35 @@ use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
 
-use crate::backend::{GraphBackend, GraphTx, QueryResult};
-use crate::dsl::Query;
+use crate::GraphQuery;
+use crate::backend::{GraphBackend, GraphTx};
+use crate::dsl::{Query, QueryResult, Return, var_key};
 use crate::error::{GrmError, Result};
 use crate::model::NodeModel;
 
 /// Decode QueryResult rows (from execute_graph) into models.
 /// Convention: each row contains key "n" => { id, labels, props }.
-fn decode_nodes<M: NodeModel>(qr: QueryResult) -> Result<Vec<M>> {
+fn decode_nodes<M: NodeModel>(gq: &GraphQuery, qr: QueryResult) -> Result<Vec<M>> {
     let mut out = Vec::with_capacity(qr.rows.len());
 
-    for row in qr.rows {
-        let v = row.values.get("n")
-            .ok_or_else(|| GrmError::Backend("execute_graph row missing key 'n'".into()))?;
+    let return_var = match &gq.ret {
+        Return::Node(v) => v,
+    };
+    let key = var_key(*return_var);
 
-        let raw_id = v.get("id")
+    for row in qr.rows {
+        let v = row
+            .values
+            .get(key.as_str())
+            .ok_or_else(|| GrmError::Backend("execute_graph row missing return var".into()))?;
+
+        let raw_id = v
+            .get("id")
             .and_then(|x| x.as_i64())
             .ok_or_else(|| GrmError::Backend("node missing/invalid id".into()))?;
 
-        let props_obj = v.get("props")
+        let props_obj = v
+            .get("props")
             .and_then(|x| x.as_object())
             .ok_or_else(|| GrmError::Backend("node missing/invalid props".into()))?;
 
@@ -56,14 +66,26 @@ where
     M: NodeModel,
 {
     pub fn new(backend: B) -> Self {
-        Self { backend, _marker: PhantomData }
+        Self {
+            backend,
+            _marker: PhantomData,
+        }
+    }
+
+    pub async fn query_from<R>(&self, q: Query<R>) -> Result<Vec<M>>
+    where
+        R: NodeModel,
+    {
+        let gq = q.compile_to_graph();
+        let qr = self.backend.execute_graph(&gq).await?;
+        decode_nodes::<M>(&gq, qr)
     }
 
     /// Option A sugar: Query<M> -> compile_to_graph -> execute_graph -> decode.
     pub async fn query(&self, q: Query<M>) -> Result<Vec<M>> {
         let gq = q.compile_to_graph();
         let qr = self.backend.execute_graph(&gq).await?;
-        decode_nodes::<M>(qr)
+        decode_nodes::<M>(&gq, qr)
     }
 
     /// Create a node using typed tx CRUD.
@@ -92,7 +114,9 @@ where
             Some(stored) => {
                 // Optional defensive label check (recommended)
                 // If you don’t want this, remove it.
-                let ok = M::LABELS.iter().all(|l| stored.labels.iter().any(|sl| sl == l));
+                let ok = M::LABELS
+                    .iter()
+                    .all(|l| stored.labels.iter().any(|sl| sl == l));
                 if !ok {
                     return Ok(None);
                 }
