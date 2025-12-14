@@ -50,7 +50,7 @@ mod node_matches_filters_tests {
         let props = user.to_properties();
         let matches = props_match_filters(&props, &filters);
 
-        // ❗ With the buggy logic, this will also be TRUE,
+        // With the buggy logic, this will also be TRUE,
         // because failures just `continue` instead of rejecting the node.
         assert!(
             !matches,

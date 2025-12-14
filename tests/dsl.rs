@@ -6,10 +6,10 @@ mod tests {
 
     use serde_json::json;
 
-    use grm_rs::dsl::{Direction, MatchClause, Return};
     use grm_rs::backend::InMemoryBackend;
+    use grm_rs::dsl::{Direction, MatchClause, Return};
     use grm_rs::{
-        CompareOp, GrmError, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel
+        CompareOp, GrmError, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel,
     };
 
     #[test]
@@ -258,7 +258,6 @@ mod tests {
 
     #[test]
     fn compile_to_graph_multihop_chains_correctly() {
-        // (User)-[:AUTHORED]->(Post)-[:AUTHORED]->(Post) is silly but good for chaining shape
         let p = NodePattern::<User>::new()
             .out::<Authored>()
             .to::<Post>()
@@ -267,8 +266,8 @@ mod tests {
 
         let g = Query::matching(p).compile_to_graph();
 
-        // root node + hop + hop (no end node matches because no end filters)
-        assert_eq!(g.matches.len(), 3);
+        // Option A: root node + (hop + end node) + (hop + end node)
+        assert_eq!(g.matches.len(), 5);
 
         let root_var = match &g.matches[0] {
             MatchClause::Node(nm) => nm.var,
@@ -283,12 +282,33 @@ mod tests {
             _ => panic!("expected hop1"),
         };
 
-        match &g.matches[2] {
+        // end node match for hop1
+        let end1_var = match &g.matches[2] {
+            MatchClause::Node(nm) => nm.var,
+            _ => panic!("expected end1 node match"),
+        };
+        assert_eq!(
+            end1_var, hop1_end,
+            "end1 NodeMatch should target hop1 end var"
+        );
+
+        let hop2_end = match &g.matches[3] {
             MatchClause::Hop(h) => {
                 assert_eq!(h.start, hop1_end, "hop2 should start at hop1 end");
+                h.end
             }
             _ => panic!("expected hop2"),
-        }
+        };
+
+        // end node match for hop2
+        let end2_var = match &g.matches[4] {
+            MatchClause::Node(nm) => nm.var,
+            _ => panic!("expected end2 node match"),
+        };
+        assert_eq!(
+            end2_var, hop2_end,
+            "end2 NodeMatch should target hop2 end var"
+        );
     }
 
     #[test]
@@ -322,7 +342,9 @@ mod tests {
 
     #[test]
     fn compile_to_graph_preserves_incoming_direction() {
-        let p = NodePattern::<User>::new().incoming::<Authored>().to::<Post>();
+        let p = NodePattern::<User>::new()
+            .incoming::<Authored>()
+            .to::<Post>();
 
         let g = Query::matching(p).compile_to_graph();
 
@@ -342,5 +364,55 @@ mod tests {
             MatchClause::Hop(h) => assert!(matches!(h.dir, Direction::Both)),
             other => panic!("expected hop match, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn compile_to_graph_multihop_incoming_chains_correctly() {
+        // (User)<-[:AUTHORED]-(Post)<-[:AUTHORED]-(Post) also silly but good for chaining shape
+        let p = NodePattern::<User>::new()
+            .incoming::<Authored>()
+            .to::<Post>()
+            .incoming::<Authored>()
+            .to::<Post>();
+
+        let g = Query::matching(p).compile_to_graph();
+
+        // Option A: root node + (hop + end node) + (hop + end node)
+        assert_eq!(g.matches.len(), 5);
+
+        let root_var = match &g.matches[0] {
+            MatchClause::Node(nm) => nm.var,
+            _ => panic!("expected root node"),
+        };
+
+        let hop1_end = match &g.matches[1] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.start, root_var);
+                assert_eq!(h.dir, Direction::In);
+                h.end
+            }
+            _ => panic!("expected hop1"),
+        };
+
+        let end1_var = match &g.matches[2] {
+            MatchClause::Node(nm) => nm.var,
+            _ => panic!("expected end1 node match"),
+        };
+        assert_eq!(end1_var, hop1_end);
+
+        let hop2_end = match &g.matches[3] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.start, hop1_end, "hop2 should start at hop1 end");
+                assert_eq!(h.dir, Direction::In);
+                h.end
+            }
+            _ => panic!("expected hop2"),
+        };
+
+        let end2_var = match &g.matches[4] {
+            MatchClause::Node(nm) => nm.var,
+            _ => panic!("expected end2 node match"),
+        };
+        assert_eq!(end2_var, hop2_end);
     }
 }
