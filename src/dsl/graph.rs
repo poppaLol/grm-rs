@@ -72,7 +72,7 @@ pub struct NodeMatch {
 #[derive(Debug, Clone)]
 pub struct HopMatch {
     pub start: VarId,
-    pub rel_type: &'static str,
+    pub rel_type: Option<&'static str>,
     pub rel_var: VarId,
     pub dir: Direction,
     pub end: VarId,

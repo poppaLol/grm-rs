@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(p.traversals.len(), 1);
         let step = &p.traversals[0];
         assert!(matches!(step.dir, Direction::Out));
-        assert_eq!(step.rel_type, Authored::TYPE);
+        assert_eq!(step.rel_type, Some(Authored::TYPE));
         assert_eq!(step.end_labels, Post::LABELS);
         assert!(step.end_filters.is_empty());
         assert!(step.end_alias.is_none());
@@ -231,7 +231,7 @@ mod tests {
         let end_var = match &g.matches[1] {
             MatchClause::Hop(h) => {
                 assert_eq!(h.start, root_var);
-                assert_eq!(h.rel_type, Authored::TYPE);
+                assert_eq!(h.rel_type, Some(Authored::TYPE));
                 assert!(matches!(h.dir, Direction::Out));
                 assert_eq!(h.end_labels, Post::LABELS);
                 h.end
@@ -414,5 +414,27 @@ mod tests {
             _ => panic!("expected end2 node match"),
         };
         assert_eq!(end2_var, hop2_end);
+    }
+
+    #[test]
+    fn compile_to_graph_out_any_sets_rel_type_none() {
+        let p = NodePattern::<User>::new().out_any().to::<Post>();
+
+        let g = Query::matching(p).compile_to_graph();
+
+        // With Option A end NodeMatch emission:
+        // root node, hop, end node
+        assert_eq!(g.matches.len(), 3);
+
+        match &g.matches[1] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.dir, Direction::Out);
+                assert!(
+                    h.rel_type.is_none(),
+                    "out_any should compile to HopMatch.rel_type = None"
+                );
+            }
+            _ => panic!("expected hop"),
+        }
     }
 }

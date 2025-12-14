@@ -195,10 +195,12 @@ impl InMemoryTx {
 
             for b in &bindings {
                 // Expand neighbors from current node using GraphTx helpers
+                let rel_type: Option<&str> = hop.rel_type.map(|t| t as &str);
+
                 let pairs: Vec<(StoredRel, StoredNode)> = match hop.dir {
-                    Direction::Out => self.outgoing(b.cur, Some(hop.rel_type)).await?,
-                    Direction::In => self.incoming(b.cur, Some(hop.rel_type)).await?,
-                    Direction::Both => self.both(b.cur, Some(hop.rel_type)).await?,
+                    Direction::Out => self.outgoing(b.cur, rel_type).await?,
+                    Direction::In => self.incoming(b.cur, rel_type).await?,
+                    Direction::Both => self.both(b.cur, rel_type).await?,
                 };
 
                 for (_rel, end_node) in pairs {
