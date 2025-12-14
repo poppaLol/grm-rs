@@ -16,6 +16,11 @@ use serde_json::Value;
 typed_id!(UserId);
 typed_id!(PostId);
 typed_id!(AuthoredId);
+typed_id!(BId);
+typed_id!(AId);
+typed_id!(CId);
+typed_id!(ABId);
+typed_id!(ACId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
 pub struct User {
@@ -47,7 +52,7 @@ pub struct Authored {
 pub struct A {
     #[grm(id)]
     #[serde(skip)]
-    id: i64,
+    id: AId,
 }
 
 #[allow(dead_code)]
@@ -55,9 +60,17 @@ pub struct A {
 pub struct B {
     #[grm(id)]
     #[serde(skip)]
-    id: i64,
+    id: BId,
     // required property so decode can fail
     must_have: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
+pub struct C {
+    #[grm(id)]
+    #[serde(skip)]
+    id: CId
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RelModel)]
@@ -65,7 +78,15 @@ pub struct B {
 pub struct AB {
     #[grm(id)]
     #[serde(skip)]
-    id: i64,
+    id: ABId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RelModel)]
+#[grm(from = "A", to = "C", ty = "AC")]
+pub struct AC {
+    #[grm(id)]
+    #[serde(skip)]
+    id: ACId,
 }
 
 #[derive(Clone)]
@@ -145,7 +166,7 @@ impl<T: GraphTx + Send> GraphTx for CountingTx<T> {
         &mut self,
         query: &str,
         params: serde_json::Value,
-    ) -> grm_rs::error::Result<grm_rs::backend::QueryResult> {
+    ) -> Result<QueryResult> {
         self.inner.execute_query(query, params).await
     }
 }

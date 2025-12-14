@@ -515,7 +515,8 @@ mod tests {
             .iter()
             .filter_map(|row| {
                 row.values
-                    .get("n")
+                    .values()
+                    .next()
                     .and_then(|v| v.get("id"))
                     .and_then(|id| id.as_i64())
             })
@@ -571,7 +572,8 @@ mod tests {
             .iter()
             .filter_map(|row| {
                 row.values
-                    .get("n")
+                    .values()
+                    .next()
                     .and_then(|v| v.get("id"))
                     .and_then(|id| id.as_i64())
             })
