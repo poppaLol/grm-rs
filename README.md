@@ -27,29 +27,37 @@ Define your graph schema using Rust structs:
 
 ```rust
 use grm_rs::{NodeModel, RelModel, typed_id};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 typed_id!(UserId);
 typed_id!(PostId);
 typed_id!(AuthoredId);
 
-#[derive(Serialize, Deserialize, NodeModel)]
-struct User {
-    id: UserId,
-    name: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
+pub struct User {
+    #[grm(id)]
+    #[serde(skip)]
+    pub(crate) id: UserId,
+    pub name: String,
+    pub age: i32,
 }
 
-#[derive(Serialize, Deserialize, NodeModel)]
-struct Post {
-    id: PostId,
-    title: String,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
+pub struct Post {
+    #[grm(id)]
+    #[serde(skip)]
+    pub id: PostId,
+    pub title: String,
 }
 
-#[derive(Serialize, Deserialize, RelModel)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RelModel)]
 #[grm(from = "User", to = "Post", ty = "AUTHORED")]
-struct Authored {
-    id: AuthoredId,
-    year: i32,
+pub struct Authored {
+    #[grm(id)]
+    #[serde(skip)]
+    pub id: AuthoredId,
+    pub year: u64,
 }
 ```
 
