@@ -5,24 +5,17 @@ use serde_json::Value as JsonValue;
 
 use crate::GraphQuery;
 use crate::backend::{GraphBackend, GraphTx};
-use crate::dsl::{Query, QueryResult, Return, var_key};
+use crate::dsl::{Query, QueryResult};
 use crate::error::{GrmError, Result};
 use crate::model::NodeModel;
 
 /// Decode QueryResult rows (from execute_graph) into models.
-/// Convention: each row contains key "n" => { id, labels, props }.
 fn decode_nodes<M: NodeModel>(gq: &GraphQuery, qr: QueryResult) -> Result<Vec<M>> {
     let mut out = Vec::with_capacity(qr.rows.len());
 
-    let return_var = match &gq.ret {
-        Return::Node(v) => v,
-    };
-    let key = var_key(*return_var);
-
     for row in qr.rows {
         let v = row
-            .values
-            .get(key.as_str())
+            .get_returned(gq)
             .ok_or_else(|| GrmError::Backend("execute_graph row missing return var".into()))?;
 
         let raw_id = v
