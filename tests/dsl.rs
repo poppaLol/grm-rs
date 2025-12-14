@@ -2,6 +2,8 @@ mod common;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use crate::common::*;
 
     use serde_json::json;
@@ -9,7 +11,7 @@ mod tests {
     use grm_rs::backend::InMemoryBackend;
     use grm_rs::dsl::{Direction, MatchClause, Return};
     use grm_rs::{
-        CompareOp, GrmError, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel,
+        CompareOp, GraphBackend, GraphTx, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel, Result
     };
 
     #[test]
@@ -73,7 +75,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_users_by_eq_filter_on_name() -> Result<(), GrmError> {
+    async fn query_users_by_eq_filter_on_name() -> Result<()> {
         let backend = InMemoryBackend::new();
         let repo: NodeRepository<_, User> = NodeRepository::new(backend.clone());
 
@@ -124,7 +126,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn query_user_by_id_and_filters() -> Result<(), GrmError> {
+    async fn query_user_by_id_and_filters() -> Result<()> {
         let backend = InMemoryBackend::new();
         let repo: NodeRepository<_, User> = NodeRepository::new(backend.clone());
 
@@ -436,5 +438,150 @@ mod tests {
             }
             _ => panic!("expected hop"),
         }
+    }
+
+    #[test]
+    fn compile_to_graph_incoming_any_sets_rel_type_none() {
+        let p = NodePattern::<User>::new().incoming_any().to::<Post>();
+
+        let g = Query::matching(p).compile_to_graph();
+
+        // Option A invariant: root node, hop, end node
+        assert_eq!(g.matches.len(), 3);
+
+        match &g.matches[1] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.dir, Direction::In);
+                assert!(
+                    h.rel_type.is_none(),
+                    "incoming_any should compile to HopMatch.rel_type = None"
+                );
+            }
+            _ => panic!("expected hop"),
+        }
+    }
+
+    #[test]
+    fn compile_to_graph_both_any_sets_rel_type_none() {
+        let p = NodePattern::<User>::new().both_any().to::<Post>();
+
+        let g = Query::matching(p).compile_to_graph();
+
+        // Option A invariant: root node, hop, end node
+        assert_eq!(g.matches.len(), 3);
+
+        match &g.matches[1] {
+            MatchClause::Hop(h) => {
+                assert_eq!(h.dir, Direction::Both);
+                assert!(
+                    h.rel_type.is_none(),
+                    "both_any should compile to HopMatch.rel_type = None"
+                );
+            }
+            _ => panic!("expected hop"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_graph_incoming_any_matches_any_relationship_type() -> Result<()> {
+        let backend = InMemoryBackend::new();
+
+        // Make: (Post)-[:LIKED]->(User)
+        let user_id: i64;
+        {
+            let mut tx = backend.begin_tx().await?;
+            let u = tx
+                .create_node(vec!["User".to_string()], Default::default())
+                .await?;
+            let p = tx
+                .create_node(vec!["Post".to_string()], Default::default())
+                .await?;
+            tx.create_relationship(p.id, u.id, "LIKED".to_string(), Default::default())
+                .await?;
+            user_id = u.id;
+            tx.commit().await?;
+        }
+
+        // Query: match (User)<-[*]-(Post)
+        let q = Query::<User>::matching(NodePattern::<User>::new().incoming_any().to::<Post>());
+        let gq = q.compile_to_graph();
+
+        let mut tx = backend.begin_tx().await?;
+        let qr = tx.execute_graph(&gq).await?;
+        tx.commit().await?;
+
+        let got_ids: BTreeSet<i64> = qr
+            .rows
+            .iter()
+            .filter_map(|row| {
+                row.values
+                    .get("n")
+                    .and_then(|v| v.get("id"))
+                    .and_then(|id| id.as_i64())
+            })
+            .collect();
+
+        assert!(
+            got_ids.contains(&user_id),
+            "incoming_any should match User via any rel type"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execute_graph_both_any_matches_incoming_or_outgoing_relationships() -> Result<()> {
+        let backend = InMemoryBackend::new();
+
+        // Make:
+        //   (User)-[:BOOKMARKED]->(Post1)
+        //   (Post2)-[:LIKED]->(User)
+        // both_any from User to Post should match either direction, and still return the User root.
+        let user_id: i64;
+        {
+            let mut tx = backend.begin_tx().await?;
+            let u = tx
+                .create_node(vec!["User".to_string()], Default::default())
+                .await?;
+            let p1 = tx
+                .create_node(vec!["Post".to_string()], Default::default())
+                .await?;
+            let p2 = tx
+                .create_node(vec!["Post".to_string()], Default::default())
+                .await?;
+
+            tx.create_relationship(u.id, p1.id, "BOOKMARKED".to_string(), Default::default())
+                .await?;
+            tx.create_relationship(p2.id, u.id, "LIKED".to_string(), Default::default())
+                .await?;
+
+            user_id = u.id;
+            tx.commit().await?;
+        }
+
+        let q = Query::<User>::matching(NodePattern::<User>::new().both_any().to::<Post>());
+        let gq = q.compile_to_graph();
+
+        let mut tx = backend.begin_tx().await?;
+        let qr = tx.execute_graph(&gq).await?;
+        tx.commit().await?;
+
+        let got_ids: BTreeSet<i64> = qr
+            .rows
+            .iter()
+            .filter_map(|row| {
+                row.values
+                    .get("n")
+                    .and_then(|v| v.get("id"))
+                    .and_then(|id| id.as_i64())
+            })
+            .collect();
+
+        assert!(
+            got_ids.contains(&user_id),
+            "both_any should match User via incoming or outgoing rels"
+        );
+
+        Ok(())
     }
 }
