@@ -406,7 +406,7 @@ mod tests {
         let qr = tx.execute_graph(&gq).await?;
         tx.commit().await?;
 
-        // Query returns root nodes ("n") – should include the user
+        // Query returns nodes indicated by "ret"
         let got_ids: Vec<i64> = qr
             .rows
             .iter()
