@@ -207,8 +207,8 @@ It is intended for:
 * prototyping graph logic
 
 ---
-````markdown
-# Projection v1 + Typed Kernel Results  
+
+## Projection v1 + Typed Kernel Results  
 **(GraphQuery → QueryResult)**
 
 This addendum captures the latest work: **projection / return control is now real**, and query execution now returns **typed kernel values keyed by `VarId`** — no stringly `"n"` conventions and no `var_key`.
@@ -236,7 +236,6 @@ When compiling `Query<M>` into `GraphQuery`:
 - **Default**
   ```rust
   ret = Return::Node(<root_var>)
-````
 
 * **With `.return_end()`**
 
@@ -244,7 +243,7 @@ When compiling `Query<M>` into `GraphQuery`:
   ret = Return::Node(<end_var>)
   ```
 
-This preserves a single return target while allowing precise projection control.
+This preserves a single return target while allowing precise projection control. This needs more work to allow selection of any available part of the query path, but lays the foundation for arbitrary projection.
 
 ---
 
@@ -320,11 +319,9 @@ Value::Node(NodeValue {
 * ✅ Projection v1 introduces **explicit return control**
 * ✅ Executor behavior is now **correct, explicit, and decoupled**
 * ✅ Query results are **typed, structured, and kernel-safe**
-* ❌ No more magic strings or loosely-shaped JSON blobs
+* 🏋 No more magic strings or loosely-shaped JSON blobs
 
 This lays a solid foundation for richer projections, safer execution, and cleaner integrations going forward.
-
-
 
 ## 🚧 Roadmap (Short Term)
 
