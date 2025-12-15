@@ -207,51 +207,124 @@ It is intended for:
 * prototyping graph logic
 
 ---
+````markdown
+# Projection v1 + Typed Kernel Results  
+**(GraphQuery → QueryResult)**
 
-Projection v1 + Typed Kernel Results (GraphQuery → QueryResult)
+This addendum captures the latest work: **projection / return control is now real**, and query execution now returns **typed kernel values keyed by `VarId`** — no stringly `"n"` conventions and no `var_key`.
 
-This addendum captures the latest work: projection/return control is now real, and query execution returns typed kernel values keyed by VarId (no stringly "n" conventions, no var_key).
+---
 
-What changed recently
-Projection v1: explicit return target
+## What Changed Recently
 
-GraphQuery already had a singular ret: Return. We extended the DSL/compiler so users can choose what node is returned:
+### 🚀 Projection v1: Explicit Return Target
 
-default: return the root node
+`GraphQuery` already supported a singular `ret: Return`. The DSL and compiler were extended so users can now **explicitly choose which node is returned**.
 
-new: .return_end() returns the end node of the traversal chain
+#### Behavior
 
-This is achieved by compiling Query<M> to GraphQuery with:
+- **Default**  
+  Returns the **root node** of the query.
 
-ret = Return::Node(<root_var>) by default
+- **New**  
+  `.return_end()` returns the **end node of the traversal chain**.
 
-ret = Return::Node(<end_var>) when .return_end() is used
+#### Compilation Semantics
 
-In-memory executor semantics updated (correct + explicit)
+When compiling `Query<M>` into `GraphQuery`:
 
-The in-memory executor now:
+- **Default**
+  ```rust
+  ret = Return::Node(<root_var>)
+````
 
-Seeds from the real root NodeMatch (first MatchClause::Node), independent of what is returned.
+* **With `.return_end()`**
 
-Applies chained HopMatch traversal using GraphTx::{outgoing,incoming,both} with correct wildcard semantics when rel_type == None.
+  ```rust
+  ret = Return::Node(<end_var>)
+  ```
 
-Collects returned IDs based on GraphQuery.ret:
+This preserves a single return target while allowing precise projection control.
 
-returning root var ⇒ return Binding.root
+---
 
-returning end var ⇒ return Binding.cur
+### 🧠 In-Memory Executor Semantics (Correct + Explicit)
 
-Emits QueryRow results keyed by VarId, not String.
+The in-memory executor was updated to fully align with the new projection model.
 
-Typed kernel result shape (no JSON blob keys)
+#### Execution Flow
 
-QueryRow now carries strongly-shaped graph facts (kernel-level), not ad-hoc JSON with magic keys:
+1. **Root Seeding**
 
-QueryRow.values: BTreeMap<VarId, Value>
+   * Always seeds from the *real root* `NodeMatch`
+   * Determined by the first `MatchClause::Node`
+   * Independent of what is ultimately returned
 
-Value::Node(NodeValue { id, labels, props })
+2. **Traversal**
 
-This makes repo decoding and future Neo4j mapping much safer and more direct.
+   * Applies chained `HopMatch` traversal
+   * Uses:
+
+     ```rust
+     GraphTx::{outgoing, incoming, both}
+     ```
+   * Correct wildcard semantics when:
+
+     ```rust
+     rel_type == None
+     ```
+
+3. **Result Collection**
+
+   * Based on `GraphQuery.ret`:
+
+     * Returning **root var** → `Binding.root`
+     * Returning **end var** → `Binding.cur`
+
+---
+
+### 🧩 Typed Kernel Result Shape (No JSON Blob Keys)
+
+Query results are now **strongly typed at the kernel level**, removing ad-hoc JSON blobs and magic string keys.
+
+#### New Result Model
+
+```rust
+QueryRow {
+  values: BTreeMap<VarId, Value>
+}
+```
+
+#### Value Shape
+
+```rust
+Value::Node(NodeValue {
+  id,
+  labels,
+  props
+})
+```
+
+#### Key Improvements
+
+* Results keyed by **`VarId`**, not `String`
+* No `"n"`, `"m"`, or other stringly conventions
+* Strongly shaped graph facts
+* Safer repository decoding
+* Direct and future-proof Neo4j mapping
+
+---
+
+## Summary
+
+* ✅ Projection v1 introduces **explicit return control**
+* ✅ Executor behavior is now **correct, explicit, and decoupled**
+* ✅ Query results are **typed, structured, and kernel-safe**
+* ❌ No more magic strings or loosely-shaped JSON blobs
+
+This lays a solid foundation for richer projections, safer execution, and cleaner integrations going forward.
+
+
 
 ## 🚧 Roadmap (Short Term)
 
