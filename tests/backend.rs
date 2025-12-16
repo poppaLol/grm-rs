@@ -4,7 +4,7 @@ mod common;
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use grm_rs::dsl::{GraphQuery, MatchClause, NodeMatch, Return};
+    use grm_rs::dsl::{GraphQuery, KernelValue, MatchClause, NodeMatch, Return};
     use serde_json::json;
 
     use crate::common::*;
@@ -96,13 +96,10 @@ mod tests {
             .expect("execute_graph failed");
         assert_eq!(qr.rows.len(), 1);
 
-        let matched = qr.rows[0]
-            .values
-            .values()
-            .next()
-            .expect("execute_graph row missing return value");
-        assert_eq!(matched["id"].as_i64().unwrap(), created_id);
-        assert_eq!(matched["props"]["name"], "Alice");
+        let node = qr.rows[0].get_returned(&gq).unwrap().as_node().unwrap();
+
+        assert_eq!(node.id, created_id);
+        assert_eq!(node.props["name"], "Alice");
     }
 
     #[tokio::test]
@@ -136,13 +133,10 @@ mod tests {
         assert_eq!(qr.rows.len(), 1);
 
         // 3. ASSERT equality
-        let matched = qr.rows[0]
-            .values
-            .values()
-            .next()
-            .expect("execute_graph row missing return value");
-        assert_eq!(matched["id"].as_i64().unwrap(), node.id);
-        assert_eq!(matched["props"]["name"], "Alice");
+        let node = qr.rows[0].get_returned(&gq).unwrap().as_node().unwrap();
+
+        assert_eq!(node.id, node.id);
+        assert_eq!(node.props["name"], "Alice");
     }
 
     #[tokio::test]
@@ -411,11 +405,9 @@ mod tests {
             .rows
             .iter()
             .filter_map(|row| {
-                row.values
-                    .values()
-                    .next()
-                    .and_then(|v| v.get("id"))
-                    .and_then(|id| id.as_i64())
+                row.values.values().next().and_then(|v| match v {
+                    KernelValue::Node(n) => Some(n.id)
+                })
             })
             .collect();
 

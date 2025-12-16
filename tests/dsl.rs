@@ -9,9 +9,10 @@ mod tests {
     use serde_json::json;
 
     use grm_rs::backend::InMemoryBackend;
-    use grm_rs::dsl::{Direction, MatchClause, Return};
+    use grm_rs::dsl::{Direction, KernelValue, MatchClause, Return};
     use grm_rs::{
-        CompareOp, GraphBackend, GraphTx, NodeModel, NodePattern, NodeRepository, Query, QueryKind, RelModel, Result
+        CompareOp, GraphBackend, GraphTx, NodeModel, NodePattern, NodeRepository, Query, QueryKind,
+        RelModel, Result,
     };
 
     #[test]
@@ -514,11 +515,9 @@ mod tests {
             .rows
             .iter()
             .filter_map(|row| {
-                row.values
-                    .values()
-                    .next()
-                    .and_then(|v| v.get("id"))
-                    .and_then(|id| id.as_i64())
+                row.values.values().next().and_then(|v| match v {
+                    KernelValue::Node(n) => Some(n.id)
+                })
             })
             .collect();
 
@@ -571,11 +570,9 @@ mod tests {
             .rows
             .iter()
             .filter_map(|row| {
-                row.values
-                    .values()
-                    .next()
-                    .and_then(|v| v.get("id"))
-                    .and_then(|id| id.as_i64())
+                row.values.values().next().and_then(|v| match v {
+                    KernelValue::Node(n) => Some(n.id)
+                })
             })
             .collect();
 
