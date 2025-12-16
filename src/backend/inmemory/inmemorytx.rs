@@ -1,3 +1,4 @@
+use log::trace;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -136,7 +137,7 @@ impl InMemoryTx {
         }
     }
 
-    fn seed_bindings(&self, root_nm: &NodeMatch) -> Vec<Binding> {
+    fn seed_roots(&self, root_nm: &NodeMatch) -> Vec<Binding> {
         let mut bindings = Vec::new();
 
         if let Some(id) = root_nm.id_filter {
@@ -160,7 +161,7 @@ impl InMemoryTx {
         bindings
     }
 
-    async fn apply_hops(
+    async fn traverse_hops(
         &mut self,
         mut bindings: Vec<Binding>,
         ctx: &ExecCtx,
@@ -219,18 +220,21 @@ impl InMemoryTx {
     }
 
     pub async fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
+        // ---- 1) Build the execution context
         let ctx = ExecCtx::build(q)?;
 
         // ---- 2) Seed candidates from *root* NodeMatch ----
         // Execution state as (root_node_id, current_node_id).
-        let mut bindings = self.seed_bindings(&ctx.root_nm);
+        let mut bindings = self.seed_roots(&ctx.root_nm);
+        trace!("inmemory.exec: seeded {} bindings (root)", bindings.len());
 
         if bindings.is_empty() {
             return Ok(QueryResult { rows: vec![] });
         }
 
         // ---- 3) Apply chained hops ----
-        bindings = self.apply_hops(bindings, &ctx).await?;
+        bindings = self.traverse_hops(bindings, &ctx).await?;
+        trace!("inmemory.exec: {} bindings after hops", bindings.len());
 
         if bindings.is_empty() {
             return Ok(QueryResult { rows: vec![] });
@@ -240,6 +244,7 @@ impl InMemoryTx {
         let plan = ReturnPlan::new(q, &ctx.root_nm.var);
 
         let ids = plan.collect_ids(&bindings);
+        trace!("inmemory.exec: {} returned ids ({:?})", ids.len(), q.ret);
         let ids = apply_paging(ids, q.offset, q.limit);
 
         let rows = plan.emit_rows(self, ids);
