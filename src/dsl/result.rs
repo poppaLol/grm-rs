@@ -15,7 +15,7 @@ pub struct QueryResult {
 impl QueryRow {
     pub fn get_returned(&self, gq: &GraphQuery) -> Option<&Value> {
         match gq.ret {
-            Return::Node(var) => self.values.get(&var),
+            Return::Node(var) | Return::Rel(var) => self.values.get(&var),
         }
     }
 }
