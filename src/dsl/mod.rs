@@ -6,6 +6,7 @@ mod graph;
 mod eval;
 mod paging;
 mod result;
+mod kernel;
 
 pub use query::{Query, QueryKind};
 pub use compare::CompareOp;
@@ -17,3 +18,4 @@ pub use graph::{Direction, GraphQuery, MatchClause, Return, VarId,
 pub use eval::{numeric_cmp, props_match_filters};
 pub use paging::apply_paging;
 pub use result::{QueryResult,QueryRow};
+pub use kernel::{KernelNodeId,KernelRelId,Props};

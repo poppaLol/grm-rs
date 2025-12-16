@@ -1,14 +1,17 @@
 pub mod backend;
-pub mod model;
-pub mod error;
-pub mod repo;
-pub mod macros;
 pub mod dsl;
+pub mod error;
+pub mod macros;
+pub mod model;
+pub mod repo;
 
 // Re-exports for convenient use
-pub use backend::{GraphBackend, GraphTx, StoredNode, StoredRel, InMemoryBackend};
-pub use model::{NodeModel, RelModel};
+pub use backend::{GraphBackend, GraphTx, InMemoryBackend, StoredNode, StoredRel};
+pub use dsl::{
+    CompareOp, GraphQuery, NodePattern, Property, PropertyFilter, Props, Query, QueryKind,
+    QueryResult, VarGen,
+};
 pub use error::{GrmError, Result};
-pub use repo::{NodeRepository, RelRepository};
 pub use grm_rs_macros::*;
-pub use dsl::{NodePattern, Property, PropertyFilter, CompareOp, GraphQuery, Query, QueryKind, VarGen, QueryResult};
+pub use model::{NodeModel, RelModel};
+pub use repo::{NodeRepository, RelRepository};
