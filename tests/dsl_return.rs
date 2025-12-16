@@ -22,8 +22,7 @@ mod tests {
     fn ret_node_var(q: &GraphQuery) -> VarId {
         match &q.ret {
             Return::Node(v) => v.clone(),
-            // If you later add more Return variants, keep this strict:
-            //_ => panic!("Expected Return::Node"),
+            _ => panic!("Expected Return::Node"),
         }
     }
 
