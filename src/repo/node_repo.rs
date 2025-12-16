@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
+use crate::dsl::KernelValue;
 use serde_json::Value as JsonValue;
-use crate::dsl::KernelValue; 
 
 use crate::GraphQuery;
 use crate::backend::{GraphBackend, GraphTx};
@@ -31,7 +31,6 @@ fn decode_nodes<M: NodeModel>(gq: &GraphQuery, qr: QueryResult) -> Result<Vec<M>
 
     Ok(out)
 }
-
 
 /// Decode a StoredNode into M.
 fn decode_stored_node<M: NodeModel>(id: i64, props: BTreeMap<String, JsonValue>) -> Result<M> {
@@ -73,6 +72,16 @@ where
         let gq = q.compile_to_graph();
         let qr = self.backend.execute_graph(&gq).await?;
         decode_nodes::<M>(&gq, qr)
+    }
+
+    // needed to prove out some functionality - TODO - replace and bring this together with other funcs
+    pub async fn query_kernel_from<R>(&self, q: Query<R>) -> Result<(GraphQuery, QueryResult)>
+    where
+        R: NodeModel,
+    {
+        let gq = q.compile_to_graph();
+        let qr = self.backend.execute_graph(&gq).await?;
+        Ok((gq, qr))
     }
 
     /// Create a node using typed tx CRUD.
