@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-
-use serde_json::Value;
+use crate::Props;
 
 #[derive(Debug, Clone)]
 pub struct StoredRel {
@@ -8,5 +6,5 @@ pub struct StoredRel {
     pub rel_type: String,
     pub from: i64,
     pub to: i64,
-    pub props: BTreeMap<String, Value>,
+    pub props: Props,
 }
