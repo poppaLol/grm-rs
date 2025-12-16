@@ -6,7 +6,8 @@ use serde_json::Value;
 
 use crate::backend::{GraphBackend, GraphStore, GraphTx, StoredNode, StoredRel};
 use crate::dsl::{
-    Direction, GraphQuery, HopMatch, KernelValue, MatchClause, NodeMatch, NodeValue, QueryResult, QueryRow, Return, VarId
+    Direction, GraphQuery, HopMatch, KernelValue, MatchClause, NodeMatch, NodeValue, QueryResult,
+    QueryRow, RelValue, VarId,
 };
 use crate::dsl::{apply_paging, numeric_cmp};
 use crate::error::{GrmError, Result};
@@ -100,10 +101,24 @@ impl InMemoryTx {
             }
         }
 
+        fn rel_to_row(var: VarId, rel: &StoredRel) -> QueryRow {
+            QueryRow {
+                values: BTreeMap::from([(
+                    var,
+                    KernelValue::Rel(RelValue {
+                        id: rel.id,
+                        ty: rel.rel_type.clone(),
+                        from: rel.from,
+                        to: rel.to,
+                        props: rel.props.clone(),
+                    }),
+                )]),
+            }
+        }
+
         // ---- 1) Determine return var and find the true root NodeMatch ----
-        let return_var = match &q.ret {
-            Return::Node(v) => v.clone(),
-        };
+        let return_var=q.return_var();
+        let return_is_rel = q.return_is_rel();
 
         // Root is the *first* NodeMatch (compiler emits it first).
         let root_nm: NodeMatch = q
@@ -135,10 +150,11 @@ impl InMemoryTx {
 
         // ---- 2) Seed candidates from *root* NodeMatch ----
         // Execution state as (root_node_id, current_node_id).
-        #[derive(Clone, Copy, Debug)]
+        #[derive(Clone, Debug)]
         struct Binding {
             root: i64,
             cur: i64,
+            rels: HashMap<VarId, StoredRel>,
         }
 
         let mut bindings: Vec<Binding> = Vec::new();
@@ -151,6 +167,7 @@ impl InMemoryTx {
                     bindings.push(Binding {
                         root: node.id,
                         cur: node.id,
+                        rels: HashMap::new(),
                     });
                 }
             }
@@ -163,6 +180,7 @@ impl InMemoryTx {
                     bindings.push(Binding {
                         root: node.id,
                         cur: node.id,
+                        rels: HashMap::new(),
                     });
                 }
             }
@@ -211,9 +229,13 @@ impl InMemoryTx {
                         }
                     }
 
+                    let mut rels = b.rels.clone();
+                    rels.insert(hop.rel_var.clone(), _rel);
+
                     next.push(Binding {
                         root: b.root,
                         cur: end_id,
+                        rels,
                     });
                 }
             }
@@ -226,15 +248,24 @@ impl InMemoryTx {
         }
 
         // ---- 4) Collect returned ids, stable-dedupe, apply paging ----
-        let return_is_root = return_var == root_nm.var;
-
         let mut seen: HashSet<i64> = HashSet::new();
         let mut out_ids: Vec<i64> = Vec::new();
 
-        for b in &bindings {
-            let id = if return_is_root { b.root } else { b.cur };
-            if seen.insert(id) {
-                out_ids.push(id);
+        if return_is_rel {
+            for b in &bindings {
+                if let Some(rel) = b.rels.get(&return_var) {
+                    if seen.insert(rel.id) {
+                        out_ids.push(rel.id);
+                    }
+                }
+            }
+        } else {
+            let return_is_root = return_var == root_nm.var;
+            for b in &bindings {
+                let id = if return_is_root { b.root } else { b.cur };
+                if seen.insert(id) {
+                    out_ids.push(id);
+                }
             }
         }
 
@@ -244,8 +275,14 @@ impl InMemoryTx {
         let mut rows: Vec<QueryRow> = Vec::new();
 
         for id in out_ids {
-            if let Some(node) = self.working_copy.nodes.get(&id) {
-                rows.push(node_to_row(return_var, node));
+            if return_is_rel {
+                if let Some(rel) = self.working_copy.rels.get(&id) {
+                    rows.push(rel_to_row(return_var.clone(), rel));
+                }
+            } else {
+                if let Some(node) = self.working_copy.nodes.get(&id) {
+                    rows.push(node_to_row(return_var.clone(), node));
+                }
             }
         }
 
