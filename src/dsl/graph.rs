@@ -82,7 +82,8 @@ pub struct HopMatch {
 #[derive(Debug, Clone)]
 pub enum Return {
     Node(VarId),
-    // future: Rel(VarId), Tuple(Vec<VarId>), Subgraph, Path, etc.
+    Rel(VarId),
+    // future: Tuple(Vec<VarId>), Subgraph, Path, etc.
 }
 
 #[derive(Debug, Clone)]
@@ -99,13 +100,35 @@ impl GraphQuery {
         Return::Node(var)
     }
 
-    #[inline]
+    pub fn return_rel(var: VarId) -> Return {
+        Return::Rel(var)
+    }
+
     pub fn return_var(&self) -> VarId {
         match self.ret {
-            Return::Node(v) => v,
+            Return::Node(v) | Return::Rel(v) => v,
         }
     }
+
+    pub fn return_kind(&self) -> ReturnKind {
+        match self.ret {
+            Return::Node(_) => ReturnKind::Node,
+            Return::Rel(_) => ReturnKind::Rel,
+        }
+    }
+
+    /// Convenience for executors / repos
+    pub fn return_is_rel(&self) -> bool {
+        matches!(self.ret, Return::Rel(_))
+    }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnKind {
+    Node,
+    Rel,
+}
+
 
 #[derive(Debug, Clone)]
 pub struct NodeValue {
@@ -115,9 +138,19 @@ pub struct NodeValue {
 }
 
 #[derive(Debug, Clone)]
+pub struct RelValue {
+    pub id: i64,
+    pub ty: String,
+    pub from: i64,
+    pub to: i64,
+    pub props: Props,
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Node(NodeValue),
-    // TODO: Rel(RelValue), Path(PathValue), Scalar(...)
+    Rel(RelValue),
+    // TODO Path(PathValue), Scalar(...)
 }
 
 #[allow(unreachable_patterns)]
