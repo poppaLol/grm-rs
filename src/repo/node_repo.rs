@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
+use crate::dsl::KernelValue; 
 
 use crate::GraphQuery;
 use crate::backend::{GraphBackend, GraphTx};
@@ -10,6 +11,7 @@ use crate::error::{GrmError, Result};
 use crate::model::NodeModel;
 
 /// Decode QueryResult rows (from execute_graph) into models.
+#[allow(unreachable_patterns)]
 fn decode_nodes<M: NodeModel>(gq: &GraphQuery, qr: QueryResult) -> Result<Vec<M>> {
     let mut out = Vec::with_capacity(qr.rows.len());
 
@@ -18,26 +20,18 @@ fn decode_nodes<M: NodeModel>(gq: &GraphQuery, qr: QueryResult) -> Result<Vec<M>
             .get_returned(gq)
             .ok_or_else(|| GrmError::Backend("execute_graph row missing return var".into()))?;
 
-        let raw_id = v
-            .get("id")
-            .and_then(|x| x.as_i64())
-            .ok_or_else(|| GrmError::Backend("node missing/invalid id".into()))?;
+        let node = match v {
+            KernelValue::Node(n) => n,
+            //this is unreachable at this time - but retained for future - TODO
+            _ => return Err(GrmError::Backend("expected node return value".into())),
+        };
 
-        let props_obj = v
-            .get("props")
-            .and_then(|x| x.as_object())
-            .ok_or_else(|| GrmError::Backend("node missing/invalid props".into()))?;
-
-        let props: BTreeMap<String, JsonValue> = props_obj
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        out.push(M::from_properties(raw_id.into(), props)?);
+        out.push(M::from_properties(node.id.into(), node.props.clone())?);
     }
 
     Ok(out)
 }
+
 
 /// Decode a StoredNode into M.
 fn decode_stored_node<M: NodeModel>(id: i64, props: BTreeMap<String, JsonValue>) -> Result<M> {
