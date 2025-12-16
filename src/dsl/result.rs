@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde_json::Value;
-
-use crate::{GraphQuery, dsl::VarId};
+use crate::{GraphQuery, dsl::{Return, VarId, graph::Value}};
 
 #[derive(Debug, Clone)]
 pub struct QueryRow {
@@ -15,14 +13,9 @@ pub struct QueryResult {
 }
 
 impl QueryRow {
-    #[inline]
-    pub fn get(&self, var: VarId) -> Option<&serde_json::Value> {
-        self.values.get(&var)
-    }
-
-    /// Convenience for your current “single return” world:
-    #[inline]
-    pub fn get_returned(&self, q: &GraphQuery) -> Option<&serde_json::Value> {
-        self.get(q.return_var())
+    pub fn get_returned(&self, gq: &GraphQuery) -> Option<&Value> {
+        match gq.ret {
+            Return::Node(var) => self.values.get(&var),
+        }
     }
 }
