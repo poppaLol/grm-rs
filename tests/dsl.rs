@@ -255,8 +255,10 @@ mod tests {
 
         // Return should be root var (User)
         debug_assert!(matches!(g.ret, Return::Node(_)));
-        let Return::Node(v) = g.ret;
-        assert_eq!(v, root_var);
+        match g.ret {
+            Return::Node(v) => assert_eq!(v, root_var),
+            other => panic!("expected Return::Node, got {:?}", other),
+        }
     }
 
     #[test]
@@ -516,7 +518,8 @@ mod tests {
             .iter()
             .filter_map(|row| {
                 row.values.values().next().and_then(|v| match v {
-                    KernelValue::Node(n) => Some(n.id)
+                    KernelValue::Node(n) => Some(n.id),
+                    __ => panic!("expected rel"),
                 })
             })
             .collect();
@@ -571,7 +574,8 @@ mod tests {
             .iter()
             .filter_map(|row| {
                 row.values.values().next().and_then(|v| match v {
-                    KernelValue::Node(n) => Some(n.id)
+                    KernelValue::Node(n) => Some(n.id),
+                    _ => panic!("expected rel"),
                 })
             })
             .collect();

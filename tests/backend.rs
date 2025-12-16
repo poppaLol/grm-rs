@@ -406,7 +406,8 @@ mod tests {
             .iter()
             .filter_map(|row| {
                 row.values.values().next().and_then(|v| match v {
-                    KernelValue::Node(n) => Some(n.id)
+                    KernelValue::Node(n) => Some(n.id),
+                    _ => panic!("expected node"),
                 })
             })
             .collect();
