@@ -1,14 +1,22 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::backend::inmemory::returnplan::ReturnPlan;
 use crate::backend::{GraphStore, GraphTx, StoredNode, StoredRel};
 use crate::dsl::{
-    Direction, GraphQuery, HopMatch, KernelValue, MatchClause, NodeMatch, NodeValue, QueryResult,
-    QueryRow, RelValue, VarId,
+    Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult,
+    VarId,
 };
 use crate::dsl::{apply_paging, numeric_cmp};
 use crate::error::{GrmError, Result};
 use crate::{CompareOp, PropertyFilter};
+
+#[derive(Clone, Debug)]
+pub struct Binding {
+    pub root: i64,
+    pub cur: i64,
+    pub rels: HashMap<VarId, StoredRel>,
+}
 
 #[derive(Clone)]
 pub struct InMemoryBackend {
@@ -85,38 +93,6 @@ impl InMemoryTx {
             true
         }
 
-        fn node_to_row(var: VarId, node: &StoredNode) -> QueryRow {
-            QueryRow {
-                values: BTreeMap::from([(
-                    var,
-                    KernelValue::Node(NodeValue {
-                        id: node.id,
-                        labels: node.labels.clone(),
-                        props: node.props.clone(),
-                    }),
-                )]),
-            }
-        }
-
-        fn rel_to_row(var: VarId, rel: &StoredRel) -> QueryRow {
-            QueryRow {
-                values: BTreeMap::from([(
-                    var,
-                    KernelValue::Rel(RelValue {
-                        id: rel.id,
-                        ty: rel.rel_type.clone(),
-                        from: rel.from,
-                        to: rel.to,
-                        props: rel.props.clone(),
-                    }),
-                )]),
-            }
-        }
-
-        // ---- 1) Determine return var and find the true root NodeMatch ----
-        let return_var=q.return_var();
-        let return_is_rel = q.return_is_rel();
-
         // Root is the *first* NodeMatch (compiler emits it first).
         let root_nm: NodeMatch = q
             .matches
@@ -147,13 +123,6 @@ impl InMemoryTx {
 
         // ---- 2) Seed candidates from *root* NodeMatch ----
         // Execution state as (root_node_id, current_node_id).
-        #[derive(Clone, Debug)]
-        struct Binding {
-            root: i64,
-            cur: i64,
-            rels: HashMap<VarId, StoredRel>,
-        }
-
         let mut bindings: Vec<Binding> = Vec::new();
 
         if let Some(id) = root_nm.id_filter {
@@ -245,44 +214,12 @@ impl InMemoryTx {
         }
 
         // ---- 4) Collect returned ids, stable-dedupe, apply paging ----
-        let mut seen: HashSet<i64> = HashSet::new();
-        let mut out_ids: Vec<i64> = Vec::new();
+        let plan = ReturnPlan::new(q, &root_nm.var);
 
-        if return_is_rel {
-            for b in &bindings {
-                if let Some(rel) = b.rels.get(&return_var) {
-                    if seen.insert(rel.id) {
-                        out_ids.push(rel.id);
-                    }
-                }
-            }
-        } else {
-            let return_is_root = return_var == root_nm.var;
-            for b in &bindings {
-                let id = if return_is_root { b.root } else { b.cur };
-                if seen.insert(id) {
-                    out_ids.push(id);
-                }
-            }
-        }
+        let ids = plan.collect_ids(&bindings);
+        let ids = apply_paging(ids, q.offset, q.limit);
 
-        let out_ids = apply_paging(out_ids, q.offset, q.limit);
-
-        // ---- 5) Emit QueryResult rows (under the return var key) ----
-        let mut rows: Vec<QueryRow> = Vec::new();
-
-        for id in out_ids {
-            if return_is_rel {
-                if let Some(rel) = self.working_copy.rels.get(&id) {
-                    rows.push(rel_to_row(return_var.clone(), rel));
-                }
-            } else {
-                if let Some(node) = self.working_copy.nodes.get(&id) {
-                    rows.push(node_to_row(return_var.clone(), node));
-                }
-            }
-        }
-
+        let rows = plan.emit_rows(self, ids);
         Ok(QueryResult { rows })
     }
 }
