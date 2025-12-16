@@ -1,4 +1,4 @@
-use crate::Query;
+use crate::{Props, Query};
 use crate::{NodeModel, RelModel};
 use std::marker::PhantomData;
 
@@ -103,6 +103,30 @@ impl GraphQuery {
     pub fn return_var(&self) -> VarId {
         match self.ret {
             Return::Node(v) => v,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeValue {
+    pub id: i64,
+    pub labels: Vec<String>,
+    pub props: Props,
+}
+
+#[derive(Debug, Clone)]
+pub enum Value {
+    Node(NodeValue),
+    // TODO: Rel(RelValue), Path(PathValue), Scalar(...)
+}
+
+#[allow(unreachable_patterns)]
+// TODO - decide on unreachable pattern stuff
+impl Value {
+    pub fn as_node(&self) -> Option<&NodeValue> {
+        match self {
+            Value::Node(n) => Some(n),
+            _ => None,
         }
     }
 }
