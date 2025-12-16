@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::backend::{GraphBackend, GraphStore, GraphTx, StoredNode, StoredRel};
 use crate::dsl::{
-    Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult, QueryRow, Return, VarId,
+    Direction, GraphQuery, HopMatch, KernelValue, MatchClause, NodeMatch, NodeValue, QueryResult, QueryRow, Return, VarId
 };
 use crate::dsl::{apply_paging, numeric_cmp};
 use crate::error::{GrmError, Result};
@@ -91,10 +91,10 @@ impl InMemoryTx {
             QueryRow {
                 values: BTreeMap::from([(
                     var,
-                    serde_json::json!({
-                        "id": node.id,
-                        "labels": node.labels,
-                        "props": node.props,
+                    KernelValue::Node(NodeValue {
+                        id: node.id,
+                        labels: node.labels.clone(),
+                        props: node.props.clone(),
                     }),
                 )]),
             }
