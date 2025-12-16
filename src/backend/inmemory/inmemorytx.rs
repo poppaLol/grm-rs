@@ -1,10 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use serde_json::Value;
-
-use crate::backend::{GraphBackend, GraphStore, GraphTx, StoredNode, StoredRel};
+use crate::backend::{GraphStore, GraphTx, StoredNode, StoredRel};
 use crate::dsl::{
     Direction, GraphQuery, HopMatch, KernelValue, MatchClause, NodeMatch, NodeValue, QueryResult,
     QueryRow, RelValue, VarId,
@@ -15,7 +12,7 @@ use crate::{CompareOp, PropertyFilter};
 
 #[derive(Clone)]
 pub struct InMemoryBackend {
-    store: Arc<Mutex<GraphStore>>,
+    pub store: Arc<Mutex<GraphStore>>,
 }
 
 impl InMemoryBackend {
@@ -27,13 +24,13 @@ impl InMemoryBackend {
 }
 
 pub struct InMemoryTx {
-    store: Arc<Mutex<GraphStore>>,
-    working_copy: GraphStore,
-    committed: bool,
+    pub store: Arc<Mutex<GraphStore>>,
+    pub working_copy: GraphStore,
+    pub committed: bool,
 }
 
 impl InMemoryTx {
-    fn new(store: Arc<Mutex<GraphStore>>) -> Self {
+    pub fn new(store: Arc<Mutex<GraphStore>>) -> Self {
         let snapshot = store.lock().unwrap().clone_store();
         Self {
             store,
@@ -42,7 +39,7 @@ impl InMemoryTx {
         }
     }
 
-    async fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
+    pub async fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
         // ---- Helpers (kept local to avoid plumbing) ----
 
         fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bool {
@@ -287,214 +284,5 @@ impl InMemoryTx {
         }
 
         Ok(QueryResult { rows })
-    }
-}
-
-#[async_trait]
-impl GraphTx for InMemoryTx {
-    async fn execute_query(&mut self, _query: &str, _params: Value) -> Result<QueryResult> {
-        Err(GrmError::Backend(
-            "InMemory backend does not support string queries; use typed APIs".into(),
-        ))
-    }
-
-    async fn execute_graph(&mut self, q: &GraphQuery) -> Result<QueryResult> {
-        self.execute_graph_query(q).await
-    }
-
-    async fn create_node(
-        &mut self,
-        labels: Vec<String>,
-        props: BTreeMap<String, Value>,
-    ) -> Result<StoredNode> {
-        let id = self.working_copy.next_node_id;
-        self.working_copy.next_node_id += 1;
-
-        let node = StoredNode { id, labels, props };
-        self.working_copy.nodes.insert(id, node.clone());
-        Ok(node)
-    }
-
-    async fn update_node(
-        &mut self,
-        id: i64,
-        props: BTreeMap<String, Value>,
-    ) -> Result<Option<StoredNode>> {
-        if let Some(node) = self.working_copy.nodes.get_mut(&id) {
-            for (k, v) in props {
-                node.props.insert(k, v);
-            }
-            return Ok(Some(node.clone()));
-        }
-        Ok(None)
-    }
-
-    async fn delete_node(&mut self, id: i64) -> Result<()> {
-        self.working_copy.nodes.remove(&id);
-        self.working_copy
-            .rels
-            .retain(|_, rel| rel.from != id && rel.to != id);
-        Ok(())
-    }
-
-    async fn find_node_by_id(&mut self, id: i64) -> Result<Option<StoredNode>> {
-        Ok(self.working_copy.nodes.get(&id).cloned())
-    }
-
-    async fn find_nodes_by_property(
-        &mut self,
-        key: &str,
-        value: &Value,
-    ) -> Result<Vec<StoredNode>> {
-        Ok(self
-            .working_copy
-            .nodes
-            .values()
-            .filter(|n| n.props.get(key).map(|v| v == value).unwrap_or(false))
-            .cloned()
-            .collect())
-    }
-
-    async fn create_relationship(
-        &mut self,
-        from: i64,
-        to: i64,
-        rel_type: String,
-        props: BTreeMap<String, Value>,
-    ) -> Result<StoredRel> {
-        let id = self.working_copy.next_rel_id;
-        self.working_copy.next_rel_id += 1;
-
-        let rel = StoredRel {
-            id,
-            rel_type,
-            from,
-            to,
-            props,
-        };
-        self.working_copy.rels.insert(id, rel.clone());
-        Ok(rel)
-    }
-
-    async fn outgoing(
-        &mut self,
-        from: i64,
-        rel_type: Option<&str>,
-    ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        let mut out = Vec::new();
-        for rel in self.working_copy.rels.values() {
-            if rel.from != from {
-                continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
-            if let Some(n) = self.working_copy.nodes.get(&rel.to) {
-                out.push((rel.clone(), n.clone()));
-            }
-        }
-        Ok(out)
-    }
-
-    async fn incoming(
-        &mut self,
-        to: i64,
-        rel_type: Option<&str>,
-    ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        let mut out = Vec::new();
-        for rel in self.working_copy.rels.values() {
-            if rel.to != to {
-                continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
-            if let Some(n) = self.working_copy.nodes.get(&rel.from) {
-                out.push((rel.clone(), n.clone()));
-            }
-        }
-        Ok(out)
-    }
-
-    async fn both(
-        &mut self,
-        node: i64,
-        rel_type: Option<&str>,
-    ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        let mut out = Vec::new();
-        let mut seen_rel_ids = std::collections::BTreeSet::new();
-
-        // outgoing neighbors
-        for rel in self.working_copy.rels.values() {
-            if rel.from != node {
-                continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
-            if let Some(n) = self.working_copy.nodes.get(&rel.to) {
-                if seen_rel_ids.insert(rel.id) {
-                    out.push((rel.clone(), n.clone()));
-                }
-            }
-        }
-
-        // incoming neighbors
-        for rel in self.working_copy.rels.values() {
-            if rel.to != node {
-                continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
-            if let Some(n) = self.working_copy.nodes.get(&rel.from) {
-                if seen_rel_ids.insert(rel.id) {
-                    out.push((rel.clone(), n.clone()));
-                }
-            }
-        }
-
-        Ok(out)
-    }
-
-    async fn commit(mut self) -> Result<()> {
-        let mut global = self.store.lock().unwrap();
-        *global = self.working_copy.clone();
-        self.committed = true;
-        Ok(())
-    }
-
-    async fn rollback(mut self) -> Result<()> {
-        self.committed = true;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl GraphBackend for InMemoryBackend {
-    type Tx = InMemoryTx;
-
-    async fn execute_query(&self, _query: &str, _params: Value) -> Result<QueryResult> {
-        Err(GrmError::Backend(
-            "InMemoryBackend does not support string queries; use execute_graph (typed)".into(),
-        ))
-    }
-
-    async fn begin_tx(&self) -> Result<Self::Tx> {
-        Ok(InMemoryTx::new(self.store.clone()))
-    }
-
-    // Optional: implement directly (otherwise the trait default uses begin_tx + commit)
-    async fn execute_graph(&self, q: &GraphQuery) -> Result<QueryResult> {
-        let mut tx = InMemoryTx::new(self.store.clone());
-        tx.execute_graph_query(q).await
     }
 }
