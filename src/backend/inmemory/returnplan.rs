@@ -64,8 +64,8 @@ impl ReturnPlan {
             ReturnPlan::Rel { var } => {
                 for b in bindings {
                     if let Some(rel) = b.rels.get(var) {
-                        if seen.insert(rel.id) {
-                            out.push(rel.id);
+                        if seen.insert(*rel) {
+                            out.push(*rel);
                         }
                     }
                 }
