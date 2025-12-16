@@ -1,5 +1,5 @@
-use crate::{Props, Query};
 use crate::{NodeModel, RelModel};
+use crate::{Props, Query};
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -129,7 +129,6 @@ pub enum ReturnKind {
     Rel,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct NodeValue {
     pub id: i64,
@@ -169,6 +168,7 @@ pub enum ReturnMode {
     #[default]
     Root,
     End,
+    Rel,
 }
 
 fn end_var_from_matches(matches: &[MatchClause], root: VarId) -> VarId {
@@ -201,7 +201,7 @@ impl<N: NodeModel> Query<N> {
         // traversals: minimal = treat each step as a hop from root for now
         // (later: chain them properly for multi-hop)
         let mut current = root.id;
-
+        let mut last_rel_var: Option<VarId> = None;
         for step in &self.node_pattern().traversals {
             // allocate vars for rel and end node
             let rel_id = vg.fresh();
@@ -224,21 +224,26 @@ impl<N: NodeModel> Query<N> {
                 id_filter: None,
                 property_filters: step.end_filters.clone(), // may be empty
             }));
-
+            last_rel_var = Some(rel_id);
             current = end_id;
         }
 
         let end_var = end_var_from_matches(&matches, root.id);
 
         let return_var = match self.return_mode {
-            ReturnMode::Root => root.id,
-            ReturnMode::End => end_var, // last hop end var (or root if no hops)
+            ReturnMode::Root => Return::Node(root.id),
+            ReturnMode::End => Return::Node(end_var),
+            ReturnMode::Rel => {
+                let rel_var = last_rel_var
+                    .expect("return_rel used with no traversal");
+                Return::Rel(rel_var)
+            }
         };
 
         GraphQuery {
             matches,
             where_: vec![],
-            ret: Return::Node(return_var),
+            ret: return_var,
             limit: self.limit_value(),
             offset: self.offset_value(),
         }
