@@ -12,7 +12,7 @@ mod tests {
     use grm_rs::dsl::{Direction, KernelValue, MatchClause, Return};
     use grm_rs::{
         CompareOp, GraphBackend, GraphTx, NodeModel, NodePattern, NodeRepository, Query, QueryKind,
-        RelModel, Result,
+        RelModel, RelRepository, Result,
     };
 
     #[test]
@@ -584,6 +584,55 @@ mod tests {
             got_ids.contains(&user_id),
             "both_any should match User via incoming or outgoing rels"
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn return_relationship_from_traversal() -> Result<()> {
+        let backend = InMemoryBackend::new();
+        let u_repo = NodeRepository::<_, User>::new(backend.clone());
+        let p_repo = NodeRepository::<_, Post>::new(backend.clone());
+        let authored = RelRepository::<_, Authored>::new(backend.clone());
+
+        // Seed some data via the existing repository API.
+        let mut u1 = User {
+            id: UserId(0),
+            name: "Alice".into(),
+            age: 30,
+        };
+        let mut p1 = Post {
+            id: PostId(0),
+            title: "Hello".into(),
+        };
+        let mut auth = Authored {
+            id: AuthoredId::default(),
+            year: 2024,
+        };
+
+        u_repo.create(&mut u1).await?;
+        p_repo.create(&mut p1).await?;
+        // create relationship
+        authored.create_between(&u1.id, &p1.id, &mut auth).await?;
+
+        // query: User -[AUTHORED]-> Post, return rel
+        let q = Query::<User>::matching(
+            NodePattern::<User>::new()
+                .filter(User::name_prop().eq("Alice"))
+                .out::<Authored>()
+                .to::<Post>(),
+        )
+        .return_rel();
+        
+        // need to query this from the user repo for now, but will
+        // prefer arbitrary node or rel repo in future
+        let (gq, qr) = u_repo.query_kernel_from(q).await?;
+        assert_eq!(qr.rows.len(), 1);
+
+        match qr.rows[0].get_returned(&gq).unwrap() {
+            KernelValue::Rel(r) => assert_eq!(r.ty, "AUTHORED"),
+            _ => panic!("expected rel"),
+        }
 
         Ok(())
     }
