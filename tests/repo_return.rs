@@ -23,7 +23,7 @@ async fn repo_query_return_end_returns_end_nodes_not_root() -> Result<()> {
         (a.id, c.id)
     };
 
-    // ---- Act: query rooted at A, traverse AB to B, but return END ----
+    // ---- Act: query rooted at A, traverse AC to C, but return END ----
     let q = Query::<A>::matching(
         NodePattern::<A>::new()
             .with_id(AId(a_id))
@@ -32,7 +32,7 @@ async fn repo_query_return_end_returns_end_nodes_not_root() -> Result<()> {
     )
     .return_end();
 
-    // Execute via the *B* repository so decode target is the end node model.
+    // Execute via the *C* repository so decode target is the end node model.
     let repo = NodeRepository::<_, C>::new(backend);
 
     let results: Vec<C> = repo.query_from(q).await?;
