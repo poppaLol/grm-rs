@@ -111,4 +111,10 @@ impl<N: NodeModel> Query<N> {
         self.return_mode = ReturnMode::Root;
         self
     }
+
+    // get a relationship
+    pub fn return_rel(mut self) -> Self {
+        self.return_mode = ReturnMode::Rel;
+        self
+    }
 }
