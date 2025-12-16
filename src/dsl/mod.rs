@@ -13,9 +13,9 @@ pub use compare::CompareOp;
 pub use property::{Property, PropertyFilter};
 pub use nodepattern::NodePattern;
 pub use graph::{Direction, GraphQuery, MatchClause, Return, VarId,
-    HopMatch, NodeMatch, VarGen, Value as KernelValue, NodeValue
+    HopMatch, NodeMatch, VarGen, Value as KernelValue, NodeValue, RelValue
 };
 pub use eval::{numeric_cmp, props_match_filters};
 pub use paging::apply_paging;
 pub use result::{QueryResult,QueryRow};
-pub use kernel::{KernelNodeId,KernelRelId,Props};
+pub use kernel::{KernelNodeId, KernelRelId, Props};
