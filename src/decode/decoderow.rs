@@ -10,6 +10,7 @@ pub trait DecodeFromRow: Sized {
     fn decode(gq: &GraphQuery, row: &QueryRow) -> Result<Self>;
 }
 
+#[allow(dead_code)]
 pub fn decode_many<M: DecodeFromRow>(gq: &GraphQuery, qr: &QueryResult) -> Result<Vec<M>> {
     qr.rows.iter().map(|row| M::decode(gq, row)).collect()
 }
