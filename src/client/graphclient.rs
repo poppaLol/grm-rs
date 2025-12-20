@@ -1,5 +1,5 @@
 use crate::{
-    DecodeFromRow, GraphBackend, GraphTx, dsl::{GraphQuery, Query, QueryResult, QueryRow}, error::{GrmError, Result}, model::NodeModel
+    DecodeFromRow, GraphBackend, GraphTx, dsl::{GraphQuery, Query, QueryResult}, error::{GrmError, Result}, model::NodeModel
 };
 
 // Returned by `Transaction::execute` so callers can inspect kernel IR + raw kernel rows.
