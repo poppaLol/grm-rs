@@ -81,7 +81,7 @@ where
     {
         let gq = q.compile_to_graph();
         let qr = self.backend.execute_graph(&gq).await?;
-        Ok((gq, qr))
+        Ok((gq, qr))    
     }
 
     /// Create a node using typed tx CRUD.
