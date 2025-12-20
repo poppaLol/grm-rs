@@ -1,5 +1,9 @@
 use crate::{
-    DecodeFromRow, GraphBackend, GraphTx, dsl::{GraphQuery, Query, QueryResult}, error::{GrmError, Result}, model::NodeModel
+    DecodeFromRow, GraphBackend, GraphTx, RelModel,
+    decode::decode_rel_from_row,
+    dsl::{GraphQuery, Query, QueryResult, Return},
+    error::{GrmError, Result},
+    model::NodeModel,
 };
 
 // Returned by `Transaction::execute` so callers can inspect kernel IR + raw kernel rows.
@@ -17,7 +21,6 @@ impl QueryExecution {
             .collect()
     }
 }
-
 
 // Cheap-to-clone entrypoint (pool/session/config façade).
 #[derive(Clone)]
@@ -103,6 +106,30 @@ impl<T: GraphTx + Send> Transaction<T> {
             .collect()
     }
 
+    pub async fn query_rel<RRoot, RRel>(&mut self, q: Query<RRoot>) -> Result<Vec<RRel>>
+    where
+        RRoot: NodeModel,
+        RRel: RelModel,
+    {
+        let exec = self.execute(q).await?;
+
+        // Optional safety: ensure the query is actually returning a rel.
+        match exec.gq.ret {
+            Return::Rel(_) => {}
+            _ => {
+                return Err(crate::GrmError::Mapping(
+                "query_rel called but query return is not Return::Rel; did you forget .return_rel()?".into()
+            ));
+            }
+        }
+
+        exec.qr
+            .rows
+            .iter()
+            .map(|row| decode_rel_from_row::<RRel>(&exec.gq, row))
+            .collect()
+    }
+
     // Commit consumes the tx (enforced by `GraphTx`).
     pub async fn commit(mut self) -> Result<()> {
         let tx = self.take_inner()?;
@@ -115,4 +142,3 @@ impl<T: GraphTx + Send> Transaction<T> {
         tx.rollback().await
     }
 }
-
