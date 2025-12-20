@@ -1,36 +1,14 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use crate::dsl::KernelValue;
+use crate::client::QueryExecution;
 use serde_json::Value as JsonValue;
 
-use crate::GraphQuery;
 use crate::backend::{GraphBackend, GraphTx};
-use crate::dsl::{Query, QueryResult};
-use crate::error::{GrmError, Result};
+use crate::dsl::Query;
+use crate::error::Result;
 use crate::model::NodeModel;
-
-/// Decode QueryResult rows (from execute_graph) into models.
-#[allow(unreachable_patterns)]
-fn decode_nodes<M: NodeModel>(gq: &GraphQuery, qr: QueryResult) -> Result<Vec<M>> {
-    let mut out = Vec::with_capacity(qr.rows.len());
-
-    for row in qr.rows {
-        let v = row
-            .get_returned(gq)
-            .ok_or_else(|| GrmError::Backend("execute_graph row missing return var".into()))?;
-
-        let node = match v {
-            KernelValue::Node(n) => n,
-            //this is unreachable at this time - but retained for future - TODO
-            _ => return Err(GrmError::Backend("expected node return value".into())),
-        };
-
-        out.push(M::from_properties(node.id.into(), node.props.clone())?);
-    }
-
-    Ok(out)
-}
+use crate::{DecodeFromRow, GraphClient};
 
 /// Decode a StoredNode into M.
 fn decode_stored_node<M: NodeModel>(id: i64, props: BTreeMap<String, JsonValue>) -> Result<M> {
@@ -58,30 +36,20 @@ where
         }
     }
 
-    pub async fn query_from<R>(&self, q: Query<R>) -> Result<Vec<M>>
-    where
-        R: NodeModel,
-    {
-        let gq = q.compile_to_graph();
-        let qr = self.backend.execute_graph(&gq).await?;
-        decode_nodes::<M>(&gq, qr)
+    pub async fn execute<R: NodeModel>(&self, q: Query<R>) -> Result<QueryExecution> {
+        let client = GraphClient::new(self.backend.clone());
+        let mut tx = client.transaction().await?;
+        let exec = tx.execute(q).await?;
+        tx.commit().await?;
+        Ok(exec)
     }
 
-    /// Option A sugar: Query<M> -> compile_to_graph -> execute_graph -> decode.
-    pub async fn query(&self, q: Query<M>) -> Result<Vec<M>> {
-        let gq = q.compile_to_graph();
-        let qr = self.backend.execute_graph(&gq).await?;
-        decode_nodes::<M>(&gq, qr)
-    }
-
-    // needed to prove out some functionality - TODO - replace and bring this together with other funcs
-    pub async fn query_kernel_from<R>(&self, q: Query<R>) -> Result<(GraphQuery, QueryResult)>
+    pub async fn fetch<R: NodeModel>(&self, q: Query<R>) -> Result<Vec<M>>
     where
-        R: NodeModel,
+        M: DecodeFromRow,
     {
-        let gq = q.compile_to_graph();
-        let qr = self.backend.execute_graph(&gq).await?;
-        Ok((gq, qr))    
+        let exec = self.execute(q).await?;
+        exec.decode_all::<M>()
     }
 
     /// Create a node using typed tx CRUD.

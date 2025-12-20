@@ -35,7 +35,7 @@ async fn repo_query_return_end_returns_end_nodes_not_root() -> Result<()> {
     // Execute via the *C* repository so decode target is the end node model.
     let repo = NodeRepository::<_, C>::new(backend);
 
-    let results: Vec<C> = repo.query_from(q).await?;
+    let results: Vec<C> = repo.fetch(q).await?;
 
     // ---- Assert: returned nodes are B (the end), and include the created b_id ----
     assert_eq!(results.len(), 1);
