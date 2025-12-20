@@ -115,7 +115,7 @@ mod tests {
         let q = Query::matching(pattern).limit(10);
 
         // Execute via the new DSL-driven entrypoint
-        let mut users = repo.query(q).await?;
+        let mut users = repo.fetch(q).await?;
 
         // We expect Alice + Alicia, but not Bob
         users.sort_by(|a, b| a.name.cmp(&b.name));
@@ -152,7 +152,7 @@ mod tests {
 
         let q = Query::matching(pattern);
 
-        let users = repo.query(q).await?;
+        let users = repo.fetch(q).await?;
 
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].name, "Charlie");
@@ -626,7 +626,8 @@ mod tests {
         
         // need to query this from the user repo for now, but will
         // prefer arbitrary node or rel repo in future
-        let (gq, qr) = u_repo.query_kernel_from(q).await?;
+        let exec = u_repo.execute(q).await?;
+        let (gq, qr) = (exec.gq, exec.qr);
         assert_eq!(qr.rows.len(), 1);
 
         match qr.rows[0].get_returned(&gq).unwrap() {
