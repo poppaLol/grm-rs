@@ -198,8 +198,7 @@ impl<N: NodeModel> Query<N> {
 
         let mut matches = vec![root_match];
 
-        // traversals: minimal = treat each step as a hop from root for now
-        // (later: chain them properly for multi-hop)
+        // traversals with multi-hop chaining enabled
         let mut current = root.id;
         let mut last_rel_var: Option<VarId> = None;
         for step in &self.node_pattern().traversals {
