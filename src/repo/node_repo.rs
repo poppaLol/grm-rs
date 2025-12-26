@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use crate::client::QueryExecution;
+use crate::client::{QueryExecution, Transaction};
 use serde_json::Value as JsonValue;
 
 use crate::backend::{GraphBackend, GraphTx};
@@ -130,5 +130,16 @@ where
         tx.delete_node(raw_id).await?;
         tx.commit().await?;
         Ok(())
+    }
+}
+
+pub struct NodeRepo<'a, T: GraphTx + Send, M> {
+    tx: &'a mut Transaction<T>,
+    _marker: std::marker::PhantomData<M>,
+}
+
+impl<'a, T: GraphTx + Send, M> NodeRepo<'a, T, M> {
+    pub fn new(tx: &'a mut Transaction<T>) -> Self {
+        Self { tx, _marker: std::marker::PhantomData }
     }
 }
