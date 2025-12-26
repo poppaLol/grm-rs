@@ -69,10 +69,19 @@ pub struct Transaction<T: GraphTx + Send> {
 }
 
 impl<T: GraphTx + Send> Transaction<T> {
-    fn inner_mut(&mut self) -> Result<&mut T> {
-        self.inner
-            .as_mut()
-            .ok_or_else(|| GrmError::Backend("transaction already finished".into()))
+    #[inline]
+    fn backend_mut(&mut self) -> Result<&mut T> {
+        self.inner.as_mut().ok_or(GrmError::TransactionClosed)
+    }
+
+    #[inline]
+    fn take_backend(&mut self) -> Result<T> {
+        self.inner.take().ok_or(GrmError::TransactionClosed)
+    }
+
+    #[inline]
+    pub fn tx_mut(&mut self) -> Result<&mut T> {
+        self.backend_mut()
     }
 
     fn take_inner(&mut self) -> Result<T> {
@@ -81,9 +90,11 @@ impl<T: GraphTx + Send> Transaction<T> {
             .ok_or_else(|| GrmError::Backend("transaction already finished".into()))
     }
 
-    // Lowest-level escape hatch: access the backend tx directly.
-    pub fn tx_mut(&mut self) -> Result<&mut T> {
-        self.inner_mut()
+        #[inline]
+    fn inner_mut(&mut self) -> crate::Result<&mut T> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| GrmError::TransactionClosed)
     }
 
     pub async fn execute<R: NodeModel>(&mut self, q: Query<R>) -> Result<QueryExecution> {
