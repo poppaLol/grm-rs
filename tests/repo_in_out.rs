@@ -112,7 +112,7 @@ async fn repo_incoming_to_skips_wrong_from_labels() -> Result<()> {
     let repo = RelRepository::<_, AB>::new(backend);
 
     let incoming = repo.incoming_to(&b_id.into()).await?;
-    assert!(incoming.is_empty(), "should skip nodes whose labels don’t match R::From");
+    assert!(incoming.is_empty(), "should skip nodes whose labels don't match R::From");
 
     Ok(())
 }
