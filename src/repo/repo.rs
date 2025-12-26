@@ -1,6 +1,7 @@
 use crate::{
     DecodeFromRow, GraphTx, NodeModel, Query, RelModel,
     client::{QueryExecution, Transaction},
+    repo::{NodeRepositoryTx, RelRepositoryTx},
 };
 
 pub struct Repo<'a, T: GraphTx + Send> {
@@ -36,4 +37,13 @@ impl<'a, T: GraphTx + Send> Repo<'a, T> {
     {
         self.tx.query_rel::<R, Rel>(q).await
     }
+
+    pub fn nodes<M: NodeModel>(&mut self) -> NodeRepositoryTx<'_, T, M> {
+        NodeRepositoryTx::new(self.tx)
+    }
+
+    pub fn rels<R: RelModel>(&mut self) -> RelRepositoryTx<'_, T, R> {
+        RelRepositoryTx::new(self.tx)
+    }
 }
+
