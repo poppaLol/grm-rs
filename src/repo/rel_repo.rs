@@ -4,9 +4,11 @@ use std::marker::PhantomData;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    backend::{GraphBackend, GraphTx}, // adjust path if GraphTx is elsewhere
+    backend::{GraphBackend, GraphTx},
+    client::Transaction,
     error::Result,
-    model::{NodeModel, RelModel}, repo::labels::labels_match,
+    model::{NodeModel, RelModel},
+    repo::labels::labels_match,
 };
 
 pub struct RelRepository<B, R>
@@ -113,5 +115,19 @@ where
 
         tx.commit().await?;
         Ok(out)
+    }
+}
+
+pub struct RelRepo<'a, T: GraphTx + Send, R> {
+    tx: &'a mut Transaction<T>,
+    _marker: std::marker::PhantomData<R>,
+}
+
+impl<'a, T: GraphTx + Send, R> RelRepo<'a, T, R> {
+    pub fn new(tx: &'a mut Transaction<T>) -> Self {
+        Self {
+            tx,
+            _marker: std::marker::PhantomData,
+        }
     }
 }
