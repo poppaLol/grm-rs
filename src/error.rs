@@ -13,6 +13,9 @@ pub enum GrmError {
 
     #[error("constraint violation: {0}")]
     Constraint(String),
+
+    #[error("tx already committed/rolled back")]
+    TransactionClosed
 }
 
 pub type Result<T> = std::result::Result<T, GrmError>;
