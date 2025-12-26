@@ -5,12 +5,16 @@ mod node_matches_filters_tests {
     use crate::common::*;
     use grm_rs::{CompareOp, dsl::props_match_filters};
 
-    use grm_rs::{NodeModel, PropertyFilter};
+    use grm_rs::{GraphClient, InMemoryBackend, NodeModel, PropertyFilter, Result};
     use serde_json::json;
 
     #[test]
     fn single_failing_filter_should_reject_node() {
-        let user = User { id: UserId(1), name: "Alice".to_string(), age: 20 };
+        let user = User {
+            id: UserId(1),
+            name: "Alice".to_string(),
+            age: 20,
+        };
 
         // This filter should clearly fail for "Alice"
         let filters = vec![PropertyFilter {
@@ -31,7 +35,11 @@ mod node_matches_filters_tests {
 
     #[test]
     fn multiple_filters_should_be_and_combined() {
-        let user = User { id: UserId(1), name: "Alice".to_string(), age: 20 };
+        let user = User {
+            id: UserId(1),
+            name: "Alice".to_string(),
+            age: 20,
+        };
 
         // These filters are contradictory: can't be both Alice and Bob.
         let filters = vec![
@@ -57,5 +65,21 @@ mod node_matches_filters_tests {
             "expected user NOT to match filters name == \"Alice\" AND name == \"Bob\", \
              but node_matches_filters returned true"
         );
+    }
+
+    #[tokio::test]
+    async fn repo_is_short_lived_so_commit_is_possible() -> Result<()> {
+        let backend = InMemoryBackend::new();
+        let client = GraphClient::new(backend);
+
+        let mut tx = client.transaction().await?;
+
+        // Create the repo and drop it immediately
+        let _repo = tx.repo();
+        drop(_repo);
+
+        // If repo borrowing was wrong, this would not compile or would fail to commit
+        tx.commit().await?;
+        Ok(())
     }
 }
