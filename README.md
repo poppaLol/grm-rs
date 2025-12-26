@@ -372,6 +372,83 @@ By standardising on these kernel types, grm-rs avoids loosely-typed JSON blobs a
 
 ---
 
+#### Recent work (2025/12/26) Transaction-oriented repositories (new common use of repo)
+
+grm-rs now uses a transaction-first execution model. A transaction is the unit of work; repositories are lightweight, typed façades over an active transaction.
+
+##### What changed:
+
+Previously, repositories owned a backend and implicitly managed transaction lifecycle:
+
+`begin_tx → do work → commit/rollback`
+
+This made composition awkward and hid atomicity.
+
+We have now refactored the system so that:
+
+* Transactions own lifecycle (begin / commit / rollback)
+* Repositories are tx-scoped and never manage lifecycle
+
+All graph operations (node + relationship CRUD, traversal, queries) execute within a single explicit transaction
+
+The new mental model
+
+```rust
+let mut tx = client.transaction().await?;
+
+{
+    let mut repo = tx.repo();
+
+    repo.nodes::<User>().create(&mut user).await?;
+    repo.nodes::<Post>().create(&mut post).await?;
+
+    repo.rels::<Authored>()
+        .create_between(&user.id(), &post.id(), &mut authored)
+        .await?;
+
+    let q = Query::<User>::matching(
+        NodePattern::<User>::new()
+            .out::<Authored>()
+            .to::<Post>()
+    );
+
+    let users: Vec<User> = repo.query(q).await?;
+}
+
+tx.commit().await?;
+```
+
+Transaction is the unit of work
+
+`tx.repo()` returns a single graph handle
+
+`repo.nodes::<M>()` and `repo.rels::<R>()` are typed, tx-scoped repos
+
+No hidden transactions, no implicit commits
+
+##### Backwards compatibility
+
+The original backend-owned repositories still exist as autocommit façades: 
+* They begin and commit a transaction internally
+* They delegate all logic to the new tx-scoped repositories
+* They will be deprecated once users migrate to the tx-first API
+
+This refactor unlocks:
+* True atomic multi-step graph operations
+* Clean composition of node + relationship work
+* A consistent execution model across backends
+* A solid foundation for:
+  * Neo4j support
+  * Other persistent backends
+* Connection pooling and session management
+
+##### Backend implications
+
+All backends now implement the same GraphTx contract. The transaction boundary is explicit and enforced, making it straightforward to add:
+* Neo4j (via execute_graph → Cypher translation)
+* In-memory persistence
+* Future distributed or pooled backends
+
 ## Summary
 
 * ✅ Projection v1 introduces **explicit return control**
