@@ -8,6 +8,8 @@ It provides:
 * 🪪 **Typed ID newtypes (`UserId`, `PostId`, …)**
 * 🔧 **Derive macros (`#[derive(NodeModel)]`, `#[derive(RelModel)]`)**
 * 🗄️ **Repository layer for CRUD + traversal**
+* 🔍 **Typed graph traversal DSL**
+* 🧠 **Backend-agnostic kernel IR (`GraphQuery`)**
 * 🧪 **In-memory graph backend for testing**
 * 🔁 **Transaction support (commit + rollback)**
 * 🔍 **Typed graph traversal DSL**
@@ -65,9 +67,44 @@ IDs are **explicit and typed**, not hidden properties.
 
 ---
 
-### 🗄️ Typed CRUD via Repositories
+### 🔁 Transactions (Unit of Work)
 
 Repositories are thin, typed wrappers over the backend:
+
+All graph operations run inside explicit transactions.
+
+The recommended entrypoint is `GraphClient`, which yields a transaction:
+
+```rust
+let client = GraphClient::new(backend);
+let mut tx = client.transaction().await?;
+```
+
+Transactions support:
+
+* atomicity
+* explicit commit / rollback
+* backend-agnostic execution of the kernel IR
+
+```rust
+tx.commit().await?;
+```
+
+If an error occurs, you can roll back:
+
+```rust
+tx.rollback().await?;
+```
+
+---
+
+### 🗄️ Typed CRUD (Repositories + Transactions)
+
+Repositories still provide typed convenience helpers for CRUD and adjacency traversal.
+Query execution is now transaction-first, and repositories are expected to become
+transaction-scoped over time.
+
+Repositories are thin, typed wrappers over the backend (current shape):
 
 ```rust
 let user = user_repo.create(&mut user).await?;
@@ -106,7 +143,7 @@ This finds `User` nodes that have an outgoing `AUTHORED` relationship to a `Post
 
 ---
 
-#### Directional traversal
+#### ⛓️ Directional traversal
 
 All directions are supported:
 
@@ -120,7 +157,7 @@ These are enforced at compile time via the `RelModel` definition.
 
 ---
 
-#### Any-relationship traversal (wildcard)
+#### 🔃 Any-relationship traversal (wildcard)
 
 For exploratory or schema-light queries, you can traverse **any relationship type**:
 
@@ -144,7 +181,29 @@ Available variants:
 
 ---
 
-#### Multi-hop traversal
+#### 🔁 Returning Relationships
+
+In addition to returning nodes, queries can explicitly return relationships.
+This is useful when the relationship itself carries meaning or data (timestamps, weights, roles, etc.) and you want to work with it as a first-class typed model.
+
+The traversal DSL remains the same — the only difference is the projection. By calling .return_rel(), the query returns the relationship from the final hop, which can then be decoded into a strongly typed RelModel.
+
+```rust
+// Query: (User)-[AUTHORED]->(Post), return the relationship
+let q = Query::<User>::matching(
+    NodePattern::<User>::new()
+        .filter(User::name_prop().eq("Alice"))
+        .out::<Authored>()
+        .to::<Post>(),
+)
+.return_rel();
+
+let rels: Vec<Authored> = tx.query_rel(q).await?;
+```
+
+This avoids string-based projections and keeps both traversal and results fully type-safe.
+
+#### 💫 Multi-hop traversal
 
 Traversal steps can be chained naturally:
 
@@ -284,25 +343,24 @@ The in-memory executor was updated to fully align with the new projection model.
 
 ### 🧩 Typed Kernel Result Shape (No JSON Blob Keys)
 
-Query results are now **strongly typed at the kernel level**, removing ad-hoc JSON blobs and magic string keys.
+Query execution produces typed kernel results, independent of any backend or storage representation.
 
-#### New Result Model
+Each result "*row*" (or entity) contains one or more values keyed by internal variable identifiers, with no reliance on positional ordering or string keys.
 
-```rust
-QueryRow {
-  values: BTreeMap<VarId, Value>
-}
-```
-
-#### Value Shape
+At the kernel level, returned values are represented as:
 
 ```rust
-Value::Node(NodeValue {
-  id,
-  labels,
-  props
-})
+KernelValue::Node(NodeValue { id, labels, props })
+KernelValue::Rel(RelValue { id, ty, from, to, props })
 ```
+
+This makes the shape of query results explicit and predictable:
+
+Nodes include their internal ID, labels, and property map
+
+Relationships include their ID, type, endpoints, and property map
+
+By standardising on these kernel types, grm-rs avoids loosely-typed JSON blobs and enables safe, structured decoding into user-defined models, while remaining compatible with multiple backends (including future Neo4j support).
 
 #### Key Improvements
 
