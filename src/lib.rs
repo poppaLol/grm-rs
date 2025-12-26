@@ -16,6 +16,6 @@ pub use dsl::{
 pub use error::{GrmError, Result};
 pub use grm_rs_macros::*;
 pub use model::{NodeModel, RelModel};
-pub use repo::{NodeRepository, RelRepository};
+pub use repo::{NodeRepository, RelRepository, Repo};
 pub use client::GraphClient;
-pub use decode::DecodeFromRow;
+pub use decode::{DecodeFromRow, labels_match};
