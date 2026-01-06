@@ -2,7 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use grm_rs::{GraphBackend, GraphTx, InMemoryBackend, QueryResult, Result, StoredNode, StoredRel};
+use grm_rs::{GraphBackend, GraphQuery, GraphTx, InMemoryBackend, QueryResult, Result, StoredNode, StoredRel};
 use serde_json::Value;
 
 
@@ -80,11 +80,7 @@ impl<T: GraphTx + Send> GraphTx for CountingTx<T> {
         self.inner.both(node, rel_type).await
     }
 
-    async fn execute_query(
-        &mut self,
-        query: &str,
-        params: serde_json::Value,
-    ) -> Result<QueryResult> {
-        self.inner.execute_query(query, params).await
+    async fn execute_graph(&mut self, q: &GraphQuery) -> Result<QueryResult> {
+        self.inner.execute_graph(q).await
     }
 }
