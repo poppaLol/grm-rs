@@ -22,7 +22,7 @@ impl QueryExecution {
     }
 }
 
-// Cheap-to-clone entrypoint (pool/session/config façade).
+// Cheap-to-clone entrypoint (pool/connector).
 #[derive(Clone)]
 pub struct GraphClient<B: GraphBackend> {
     backend: B,
@@ -57,6 +57,7 @@ impl<B: GraphBackend> GraphClient<B> {
     }
 }
 
+//GraphConnection is the expression of a "live session" with a db
 #[derive(Clone)]
 pub struct GraphConnection<B: GraphBackend> {
     backend: B,
