@@ -15,7 +15,10 @@ pub enum GrmError {
     Constraint(String),
 
     #[error("tx already committed/rolled back")]
-    TransactionClosed
+    TransactionClosed,
+
+    #[error("operation not supported by backend: {0}")]
+    NotSupported(&'static str)
 }
 
 pub type Result<T> = std::result::Result<T, GrmError>;
