@@ -69,7 +69,7 @@ async fn tx_query_rel_returns_typed_authored() {
 
     tx.tx_mut()
         .expect("tx finished")
-        .create_relationship(user.id, post.id, "AUTHORED".to_string(), rel_props)
+        .create_relationship(user.id, post.id, "AUTHORED", rel_props)
         .await
         .expect("create relationship failed");
 
