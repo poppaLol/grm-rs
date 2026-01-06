@@ -17,7 +17,7 @@ async fn repo_query_return_end_returns_end_nodes_not_root() -> Result<()> {
         let mut tx = backend.begin_tx().await?;
         let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
         let c = tx.create_node(vec!["C".to_string()], Default::default()).await?;
-        tx.create_relationship(a.id, c.id, AC::TYPE.to_string(), Default::default())
+        tx.create_relationship(a.id, c.id, AC::TYPE, Default::default())
             .await?;
         tx.commit().await?;
         (a.id, c.id)

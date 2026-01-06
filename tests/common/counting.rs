@@ -61,7 +61,7 @@ impl<T: GraphTx + Send> GraphTx for CountingTx<T> {
         &mut self,
         from: i64,
         to: i64,
-        rel_type: String,
+        rel_type: &str,
         props: std::collections::BTreeMap<String, serde_json::Value>,
     ) -> grm_rs::error::Result<StoredRel> {
         self.inner.create_relationship(from, to, rel_type, props).await

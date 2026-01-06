@@ -499,7 +499,7 @@ mod tests {
             let p = tx
                 .create_node(vec!["Post".to_string()], Default::default())
                 .await?;
-            tx.create_relationship(p.id, u.id, "LIKED".to_string(), Default::default())
+            tx.create_relationship(p.id, u.id, "LIKED", Default::default())
                 .await?;
             user_id = u.id;
             tx.commit().await?;
@@ -553,9 +553,9 @@ mod tests {
                 .create_node(vec!["Post".to_string()], Default::default())
                 .await?;
 
-            tx.create_relationship(u.id, p1.id, "BOOKMARKED".to_string(), Default::default())
+            tx.create_relationship(u.id, p1.id, "BOOKMARKED", Default::default())
                 .await?;
-            tx.create_relationship(p2.id, u.id, "LIKED".to_string(), Default::default())
+            tx.create_relationship(p2.id, u.id, "LIKED", Default::default())
                 .await?;
 
             user_id = u.id;

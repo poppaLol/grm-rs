@@ -24,7 +24,7 @@ async fn outgoing_from_skips_wrong_labels_and_commits_after_success() -> Result<
         let mut tx = backend.begin_tx().await?;
         let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
         let c = tx.create_node(vec!["C".to_string()], Default::default()).await?;
-        tx.create_relationship(a.id, c.id, AB::TYPE.to_string(), Default::default()).await?;
+        tx.create_relationship(a.id, c.id, AB::TYPE, Default::default()).await?;
         a_id = AId(a.id);
         tx.commit().await?;
     }
@@ -51,7 +51,7 @@ async fn outgoing_from_does_not_commit_if_decode_fails() -> Result<()> {
         let mut tx = backend.begin_tx().await?;
         let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
         let b = tx.create_node(vec!["B".to_string()], Default::default()).await?;
-        tx.create_relationship(a.id, b.id, AB::TYPE.to_string(), Default::default()).await?;
+        tx.create_relationship(a.id, b.id, AB::TYPE, Default::default()).await?;
         tx.commit().await?;
         a_id = AId(a.id);
     }
@@ -77,7 +77,7 @@ async fn repo_incoming_to_returns_from_node() -> Result<()> {
         let mut tx = backend.begin_tx().await?;
         let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
         let b = tx.create_node(vec!["B".to_string()], Default::default()).await?;
-        tx.create_relationship(a.id, b.id, AB::TYPE.to_string(), Default::default()).await?;
+        tx.create_relationship(a.id, b.id, AB::TYPE, Default::default()).await?;
         tx.commit().await?;
         (a.id, b.id)
     };
@@ -104,7 +104,7 @@ async fn repo_incoming_to_skips_wrong_from_labels() -> Result<()> {
         let mut tx = backend.begin_tx().await?;
         let x = tx.create_node(vec!["X".to_string()], Default::default()).await?; // WRONG label (should be A)
         let b = tx.create_node(vec!["B".to_string()], Default::default()).await?;
-        tx.create_relationship(x.id, b.id, AB::TYPE.to_string(), Default::default()).await?;
+        tx.create_relationship(x.id, b.id, AB::TYPE, Default::default()).await?;
         tx.commit().await?;
         b.id
     };

@@ -57,7 +57,7 @@ async fn execute_graph_out_any_matches_any_relationship_type() -> Result<()> {
         let u = tx.create_node(vec!["User".to_string()], Default::default()).await?;
         let p = tx.create_node(vec!["Post".to_string()], Default::default()).await?;
 
-        tx.create_relationship(u.id, p.id, "LIKED".to_string(), Default::default()).await?;
+        tx.create_relationship(u.id, p.id, "LIKED", Default::default()).await?;
 
         tx.commit().await?;
         user_id = u.id;
