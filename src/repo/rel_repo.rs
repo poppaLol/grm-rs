@@ -103,7 +103,7 @@ where
         let stored = self
             .tx
             .tx_mut()?
-            .create_relationship(from_raw, to_raw, R::TYPE.to_string(), props)
+            .create_relationship(from_raw, to_raw, R::TYPE, props)
             .await?;
 
         rel.set_id(stored.id.into());
