@@ -1,15 +1,23 @@
 use std::collections::BTreeMap;
 
+use crate::{GraphQuery, GrmError, StoredNode, StoredRel, dsl::QueryResult, error::Result};
 use async_trait::async_trait;
 use serde_json::Value;
-use crate::{GraphQuery, GrmError, StoredNode, StoredRel, dsl::QueryResult, error::Result};
 
 #[async_trait]
 pub trait GraphTx {
-    async fn execute_query(&mut self, query: &str, params: Value) -> Result<QueryResult>;
+    async fn execute_query(
+        &mut self,
+        _query: &str,
+        _params: Value
+    ) -> Result<QueryResult> {
+        Err(GrmError::NotSupported("execute_query"))
+    }
 
-    async fn execute_graph(&mut self, _q: &GraphQuery) -> Result<QueryResult> {
-        Err(GrmError::Backend("execute_graph not supported".into()))
+    async fn execute_graph(
+        &mut self, _q: &GraphQuery
+    ) -> Result<QueryResult> {
+        Err(GrmError::NotSupported("execute_graph"))
     }
 
     async fn create_node(
@@ -17,7 +25,7 @@ pub trait GraphTx {
         _labels: Vec<String>,
         _props: BTreeMap<String, Value>,
     ) -> Result<StoredNode> {
-        Err(GrmError::Backend("create_node not supported".into()))
+        Err(GrmError::NotSupported("create_node"))
     }
 
     async fn update_node(
@@ -25,15 +33,15 @@ pub trait GraphTx {
         _id: i64,
         _props: BTreeMap<String, Value>,
     ) -> Result<Option<StoredNode>> {
-        Err(GrmError::Backend("update_node not supported".into()))
+        Err(GrmError::NotSupported("update_node"))
     }
 
     async fn delete_node(&mut self, _id: i64) -> Result<()> {
-        Err(GrmError::Backend("delete_node not supported".into()))
+        Err(GrmError::NotSupported("delete_node"))
     }
 
     async fn find_node_by_id(&mut self, _id: i64) -> Result<Option<StoredNode>> {
-        Err(GrmError::Backend("find_node_by_id not supported".into()))
+        Err(GrmError::NotSupported("find_node_by_id"))
     }
 
     async fn find_nodes_by_property(
@@ -41,17 +49,17 @@ pub trait GraphTx {
         _key: &str,
         _value: &Value,
     ) -> Result<Vec<StoredNode>> {
-        Err(GrmError::Backend("find_nodes_by_property not supported".into()))
+        Err(GrmError::NotSupported("find_nodes_by_property"))
     }
 
     async fn create_relationship(
         &mut self,
         _from: i64,
         _to: i64,
-        _rel_type: String,
+        _rel_type: &str,
         _props: BTreeMap<String, Value>,
     ) -> Result<StoredRel> {
-        Err(GrmError::Backend("create_relationship not supported".into()))
+        Err(GrmError::NotSupported("create_relationship"))
     }
 
     async fn outgoing(
@@ -59,7 +67,7 @@ pub trait GraphTx {
         _from: i64,
         _rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        Err(GrmError::Backend("outgoing not supported".into()))
+        Err(GrmError::NotSupported("outgoing"))
     }
 
     async fn incoming(
@@ -67,7 +75,7 @@ pub trait GraphTx {
         _to: i64,
         _rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        Err(GrmError::Backend("incoming not supported".into()))
+        Err(GrmError::NotSupported("incoming"))
     }
 
     async fn both(
@@ -75,7 +83,7 @@ pub trait GraphTx {
         _node: i64,
         _rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        Err(GrmError::Backend("both not supported".into()))
+        Err(GrmError::NotSupported("both"))
     }
 
     async fn commit(self) -> Result<()>;
