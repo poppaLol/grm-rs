@@ -16,9 +16,7 @@ pub trait GraphTx {
 
     async fn execute_graph(
         &mut self, _q: &GraphQuery
-    ) -> Result<QueryResult> {
-        Err(GrmError::NotSupported("execute_graph"))
-    }
+    ) -> Result<QueryResult>;
 
     async fn create_node(
         &mut self,
