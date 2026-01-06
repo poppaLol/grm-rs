@@ -77,7 +77,7 @@ impl GraphTx for InMemoryTx {
         &mut self,
         from: i64,
         to: i64,
-        rel_type: String,
+        rel_type: &str,
         props: BTreeMap<String, Value>,
     ) -> Result<StoredRel> {
         let id = self.working_copy.next_rel_id;
@@ -85,7 +85,7 @@ impl GraphTx for InMemoryTx {
 
         let rel = StoredRel {
             id,
-            rel_type,
+            rel_type: rel_type.to_string(),
             from,
             to,
             props,
