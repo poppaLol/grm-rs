@@ -49,7 +49,6 @@ pub struct A {
     id: AId,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
 pub struct B {
     #[grm(id)]
@@ -59,7 +58,6 @@ pub struct B {
     must_have: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
 pub struct C {
     #[grm(id)]
