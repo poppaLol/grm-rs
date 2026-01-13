@@ -1,13 +1,16 @@
 use log::trace;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::backend::inmemory::returnplan::ReturnPlan;
+use super::returnplan::{stored_node_to_kernel, stored_rel_to_kernel, ReturnPlan};
 use crate::backend::{GraphStore, GraphTx, StoredNode};
-use crate::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult, VarId};
-use crate::dsl::{apply_paging, numeric_cmp};
+use crate::dsl::{
+    Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult,
+    VarId,
+};
+use crate::dsl::numeric_cmp;
 use crate::error::{GrmError, Result};
-use crate::{CompareOp, PropertyFilter};
+use crate::{CompareOp, PropertyFilter, QueryRow, ReturnKind};
 
 fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bool {
     required
@@ -15,7 +18,7 @@ fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bo
         .all(|l| node_labels.iter().any(|nl| nl == l))
 }
 
-fn stored_node_matches_filters(node: StoredNode, filters: &[PropertyFilter]) -> bool {
+fn stored_node_matches_filters(node: &StoredNode, filters: &[PropertyFilter]) -> bool {
     if filters.is_empty() {
         return true;
     }
@@ -52,19 +55,84 @@ fn stored_node_matches_filters(node: StoredNode, filters: &[PropertyFilter]) -> 
     true
 }
 
+fn select_bindings_for_return(q: &GraphQuery, bindings: Vec<Binding>) -> Vec<Binding> {
+    let ret_var = q.return_var();
+    let ret_kind = q.return_kind();
+
+    let mut seen = HashSet::<i64>::new();
+    let mut out = Vec::new();
+
+    for b in bindings {
+        let id_opt = match ret_kind {
+            ReturnKind::Node => b.nodes.get(&ret_var).copied(),
+            ReturnKind::Rel => b.rels.get(&ret_var).copied(),
+        };
+
+        let Some(id) = id_opt else { continue };
+
+        if seen.insert(id) {
+            out.push(b);
+        }
+    }
+
+    // Apply paging to rows/bindings
+    let off = q.offset.unwrap_or(0);
+    if off >= out.len() {
+        return vec![];
+    }
+    out.drain(0..off);
+
+    if let Some(lim) = q.limit {
+        out.truncate(lim);
+    }
+
+    out
+}
+
+fn emit_rows_from_bindings(tx: &InMemoryTx, bindings: Vec<Binding>) -> Vec<QueryRow> {
+    let mut rows = Vec::with_capacity(bindings.len());
+
+    for b in bindings {
+        let mut values = std::collections::BTreeMap::new();
+
+        // node vars (root + hop end vars)
+        for (var, id) in b.nodes {
+            if let Some(node) = tx.working_copy.nodes.get(&id) {
+                values.insert(var, stored_node_to_kernel(node));
+            }
+        }
+
+        // rel vars
+        for (var, id) in b.rels {
+            if let Some(rel) = tx.working_copy.rels.get(&id) {
+                values.insert(var, stored_rel_to_kernel(rel));
+            }
+        }
+
+        rows.push(QueryRow { values });
+    }
+
+    rows
+}
+
 #[derive(Clone, Debug)]
 pub struct Binding {
     pub root: i64,
     pub cur: i64,
     pub rels: HashMap<VarId, i64>,
+    pub nodes: HashMap<VarId, i64>,
 }
 
 impl Binding {
-    fn new_root(id: i64) -> Self {
+    pub fn new_root(root_var: VarId, root_id: i64) -> Self {
+        let mut nodes = HashMap::new();
+        nodes.insert(root_var, root_id);
+
         Self {
-            root: id,
-            cur: id,
+            root: root_id,
+            cur: root_id,
             rels: HashMap::new(),
+            nodes,
         }
     }
 }
@@ -143,17 +211,17 @@ impl InMemoryTx {
         if let Some(id) = root_nm.id_filter {
             if let Some(node) = self.working_copy.nodes.get(&id) {
                 if labels_match(&node.labels, root_nm.labels)
-                    && stored_node_matches_filters(node.clone(), &root_nm.property_filters)
+                    && stored_node_matches_filters(node, &root_nm.property_filters)
                 {
-                    bindings.push(Binding::new_root(node.id));
+                    bindings.push(Binding::new_root(root_nm.var, node.id));
                 }
             }
         } else {
             for node in self.working_copy.nodes.values() {
                 if labels_match(&node.labels, root_nm.labels)
-                    && stored_node_matches_filters(node.clone(), &root_nm.property_filters)
+                    && stored_node_matches_filters(node, &root_nm.property_filters)
                 {
-                    bindings.push(Binding::new_root(node.id));
+                    bindings.push(Binding::new_root(root_nm.var, node.id));
                 }
             }
         }
@@ -194,18 +262,21 @@ impl InMemoryTx {
                         if !labels_match(&end_node.labels, nm.labels) {
                             continue;
                         }
-                        if !stored_node_matches_filters(end_node.clone(), &nm.property_filters) {
+                        if !stored_node_matches_filters(&end_node, &nm.property_filters) {
                             continue;
                         }
                     }
 
                     let mut rels = b.rels.clone();
-                    rels.insert(hop.rel_var.clone(), rel.id);
+                    rels.insert(hop.rel_var, rel.id);
+                    let mut nodes = b.nodes.clone();
+                    nodes.insert(hop.end, end_node.id);
 
                     next.push(Binding {
                         root: b.root,
                         cur: end_node.id,
                         rels,
+                        nodes,
                     });
                 }
             }
@@ -245,9 +316,12 @@ impl InMemoryTx {
 
         let ids = plan.collect_ids(&bindings);
         trace!("inmemory.exec: {} returned ids ({:?})", ids.len(), q.ret);
-        let ids = apply_paging(ids, q.offset, q.limit);
+        //let ids = apply_paging(ids, q.offset, q.limit);
 
-        let rows = plan.emit_rows(self, ids);
+        let selected = select_bindings_for_return(q, bindings);
+
+        // ---- 5) Emit full binding rows ----
+        let rows = emit_rows_from_bindings(self, selected);
         Ok(QueryResult { rows })
     }
 }
