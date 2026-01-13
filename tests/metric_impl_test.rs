@@ -1,0 +1,201 @@
+/* This was an exercise in matching the codebase functionality to a user test case
+ *
+ * A Paragraph may be linked to a Metric by a CONTAINS relationship. POC Code here
+ * shows how the library can be used to acheive this.
+ */
+use grm_rs::{
+    GraphClient, InMemoryBackend, KernelValue, NodeModel, NodePattern, Query, RelModel, Result,
+    ReturnKind, typed_id,
+};
+use serde::{Deserialize, Serialize};
+
+typed_id!(MetricId);
+typed_id!(ParagraphId);
+typed_id!(ContainsId);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
+pub struct Metric {
+    #[grm(id)]
+    #[serde(skip)]
+    pub(crate) id: MetricId,
+    pub name: String,
+    pub value: i32,
+    pub start_date: String,
+    pub end_date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
+pub struct Paragraph {
+    #[grm(id)]
+    #[serde(skip)]
+    pub id: ParagraphId,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RelModel)]
+#[grm(from = "Paragraph", to = "Metric", ty = "CONTAINS")]
+pub struct Contains {
+    #[grm(id)]
+    #[serde(skip)]
+    pub id: ContainsId,
+}
+
+#[tokio::test]
+async fn test_document_schema_construction() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let client = GraphClient::new(backend);
+    let mut tx = client.transaction().await?;
+
+    let (para_id, para2_id, metric_id) = {
+        let mut repo = tx.repo();
+
+        let mut para = Paragraph {
+            id: ParagraphId::default(),
+            content: "I am a paragraph about metric number 1 which is the miles per hour I type"
+                .into(),
+        };
+
+        let mut para2 = Paragraph {
+            id: ParagraphId::default(),
+            content:
+                "I am a second paragraph about metric number 1 which is the miles per hour I type"
+                    .into(),
+        };
+
+        let mut metric = Metric {
+            end_date: "Tomorrow".into(),
+            start_date: "Yesterday".into(),
+            id: MetricId::default(),
+            name: "Laurie Types At this speed".into(),
+            value: 1,
+        };
+
+        repo.nodes::<Paragraph>().create(&mut para).await?;
+        repo.nodes::<Paragraph>().create(&mut para2).await?;
+        repo.nodes::<Metric>().create(&mut metric).await?;
+
+        let mut cont = Contains {
+            id: ContainsId::default(),
+        };
+        let mut cont2 = Contains {
+            id: ContainsId::default(),
+        };
+
+        repo.rels::<Contains>()
+            .create_between(&para.id, &metric.id, &mut cont)
+            .await?;
+        repo.rels::<Contains>()
+            .create_between(&para2.id, &metric.id, &mut cont2)
+            .await?;
+
+        (para.id.clone(), para2.id.clone(), metric.id.clone())
+    };
+
+    assert_ne!(para_id, ParagraphId::default());
+    assert_ne!(para2_id, ParagraphId::default());
+    assert_ne!(metric_id, MetricId::default());
+
+    // Query: (Paragraph)-[Contains]->(Metric) returning Paragraph by default
+    let q: Query<_> = Query::<Paragraph>::matching(
+        NodePattern::<Paragraph>::new()
+            .out::<Contains>()
+            .to::<Metric>(),
+    );
+
+    let exec = tx.execute(q).await?;
+
+    // Validate query invariants (good for catching compiler issues)
+    exec.gq.validate()?;
+
+    let bound = exec.gq.bound_vars();
+    let ret_var = exec.gq.return_var();
+    let ret_kind = exec.gq.return_kind();
+
+    assert!(!exec.qr.rows.is_empty());
+
+    // Assert: every row contains all bound vars
+    for row in &exec.qr.rows {
+        for v in &bound {
+            assert!(
+                row.values.contains_key(v),
+                "row missing bound var {:?}; keys={:?}",
+                v,
+                row.values.keys().collect::<Vec<_>>()
+            );
+        }
+
+        // Assert: return var has correct kind
+        match ret_kind {
+            ReturnKind::Node => assert!(matches!(
+                row.values.get(&ret_var),
+                Some(KernelValue::Node(_))
+            )),
+            ReturnKind::Rel => assert!(matches!(
+                row.values.get(&ret_var),
+                Some(KernelValue::Rel(_))
+            )),
+        }
+    }
+
+    // ---- Show the results (debug-style) ----
+    // Extract returned Paragraph kernel ids (i64) and print a readable summary.
+    let mut returned_paragraph_kernel_ids: Vec<i64> = Vec::new();
+
+    for (i, row) in exec.qr.rows.iter().enumerate() {
+        eprintln!("--- row {} ---", i);
+
+        // Sort by VarId for stable output (VarId likely implements Ord; if not, remove sort)
+        let mut items: Vec<_> = row.values.iter().collect();
+        items.sort_by_key(|(k, _)| *k);
+
+        for (var, kv) in items {
+            match kv {
+                KernelValue::Node(n) => {
+                    eprintln!(
+                        "  {:?} => Node(id={}, labels={:?}, props_keys={:?})",
+                        var,
+                        n.id,
+                        n.labels,
+                        n.props.keys().collect::<Vec<_>>()
+                    );
+
+                    // If this node is the return var, collect it
+                    if *var == ret_var {
+                        returned_paragraph_kernel_ids.push(n.id);
+                    }
+                }
+                KernelValue::Rel(r) => {
+                    eprintln!(
+                        "  {:?} => Rel(id={}, type={}, from={}, to={}, props_keys={:?})",
+                        var,
+                        r.id,
+                        r.ty,
+                        r.from,
+                        r.to,
+                        r.props.keys().collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
+
+    // ---- Assert we got our paragraph back ----
+    //
+    // ParagraphId is likely a typed wrapper around i64 and implements Into<i64>.
+    // If not, replace with whatever "extract raw i64" you have.
+    let para_raw: i64 = para_id.clone().into();
+    let para2_raw: i64 = para2_id.clone().into();
+
+    assert!(
+        returned_paragraph_kernel_ids.contains(&para_raw)
+            || returned_paragraph_kernel_ids.contains(&para2_raw),
+        "expected returned paragraphs to include created ones; got={:?}, expected one of {:?} or {:?}",
+        returned_paragraph_kernel_ids,
+        para_raw,
+        para2_raw
+    );
+
+    tx.commit().await?;
+
+    Ok(())
+}
