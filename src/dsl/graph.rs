@@ -1,5 +1,4 @@
-use crate::{NodeModel, RelModel};
-use crate::{Props, Query};
+use crate::{GrmError, NodeModel, Props, Query, RelModel, Result};
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -120,6 +119,80 @@ impl GraphQuery {
     /// Convenience for executors / repos
     pub fn return_is_rel(&self) -> bool {
         matches!(self.ret, Return::Rel(_))
+    }
+
+    /// The first bound node var in the match chain.
+    pub fn root_var(&self) -> VarId {
+        match self.matches.first() {
+            Some(MatchClause::Node(n)) => n.var,
+            _ => panic!("GraphQuery invariant violated: first match clause must be Node"),
+        }
+    }
+
+    /// The last bound node var in the match chain.
+    /// If there are no hops, this is the root var.
+    pub fn end_var(&self) -> VarId {
+        let mut end = self.root_var();
+        for mc in &self.matches {
+            if let MatchClause::Hop(h) = mc {
+                end = h.end;
+            }
+        }
+        end
+    }
+
+    /// All vars introduced by this query (node + rel vars), in match order.
+    pub fn bound_vars(&self) -> Vec<VarId> {
+        let mut out = Vec::new();
+
+        for mc in &self.matches {
+            match mc {
+                MatchClause::Node(n) => out.push(n.var),
+                MatchClause::Hop(h) => {
+                    out.push(h.rel_var);
+                    out.push(h.end);
+                }
+            }
+        }
+
+        // Defensive: prevent accidental duplicates if compiler ever reuses vars.
+        out.dedup();
+        out
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.matches.is_empty() {
+            return Err(GrmError::Mapping("GraphQuery has no match clauses".into()));
+        }
+
+        // first must be node
+        let root = match &self.matches[0] {
+            MatchClause::Node(n) => n.var,
+            _ => return Err(GrmError::Mapping("GraphQuery must start with NodeMatch".into())),
+        };
+
+        // ensure hop start refers to an already-bound node var
+        let mut bound_nodes = std::collections::BTreeSet::new();
+        bound_nodes.insert(root);
+
+        for mc in &self.matches[1..] {
+            match mc {
+                MatchClause::Node(n) => {
+                    bound_nodes.insert(n.var);
+                }
+                MatchClause::Hop(h) => {
+                    if !bound_nodes.contains(&h.start) {
+                        return Err(GrmError::Mapping(format!(
+                            "HopMatch.start {:?} not bound before hop",
+                            h.start
+                        )));
+                    }
+                    bound_nodes.insert(h.end);
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
