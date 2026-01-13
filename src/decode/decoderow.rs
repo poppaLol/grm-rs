@@ -1,5 +1,5 @@
 use crate::{
-    GraphQuery, GrmError, QueryResult, dsl::{KernelValue, QueryRow}, error::Result
+    GraphQuery, GrmError, dsl::{KernelValue, QueryRow}, error::Result
 };
 
 /// Decode a typed value from a single kernel `QueryRow`.
@@ -8,11 +8,6 @@ use crate::{
 /// contract (`QueryRow`) produced by any backend implementing `GraphTx`.
 pub trait DecodeFromRow: Sized {
     fn decode(gq: &GraphQuery, row: &QueryRow) -> Result<Self>;
-}
-
-#[allow(dead_code)]
-pub fn decode_many<M: DecodeFromRow>(gq: &GraphQuery, qr: &QueryResult) -> Result<Vec<M>> {
-    qr.rows.iter().map(|row| M::decode(gq, row)).collect()
 }
 
 /// Decode just the single returned value when the row contains exactly one value.
