@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{GraphQuery, dsl::{Return, VarId, graph::Value}};
+use crate::{GraphQuery, KernelValue, dsl::{Return, VarId, graph::Value}};
 
 #[derive(Debug, Clone)]
 pub struct QueryRow {
@@ -17,5 +17,17 @@ impl QueryRow {
         match gq.ret {
             Return::Node(var) | Return::Rel(var) => self.values.get(&var),
         }
+    }
+
+    pub fn contains_key(&self, v: &VarId) -> bool {
+        self.values.contains_key(v)
+    }
+
+    pub fn get(&self, v: &VarId) -> Option<&KernelValue> {
+        self.values.get(v)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &VarId> {
+        self.values.keys()
     }
 }
