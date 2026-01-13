@@ -11,7 +11,7 @@ pub mod decode;
 pub use backend::{GraphBackend, GraphTx, InMemoryBackend, StoredNode, StoredRel};
 pub use dsl::{
     CompareOp, GraphQuery, NodePattern, Property, PropertyFilter, Props, Query, QueryKind,
-    QueryResult, VarGen, QueryRow
+    QueryResult, VarGen, QueryRow, KernelValue, ReturnKind
 };
 pub use error::{GrmError, Result};
 pub use grm_rs_macros::*;
