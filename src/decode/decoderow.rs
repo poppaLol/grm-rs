@@ -1,5 +1,5 @@
 use crate::{
-    GraphQuery, GrmError, dsl::{KernelValue, QueryRow}, error::Result
+    GraphQuery, GrmError, NodeModel, dsl::{KernelValue, QueryRow, VarId}, error::Result
 };
 
 /// Decode a typed value from a single kernel `QueryRow`.
@@ -23,3 +23,24 @@ impl DecodeFromRow for KernelValue {
         }
     }
 }
+
+#[allow(dead_code)]
+pub trait DecodeFromRowAt: Sized {
+    fn decode_at(gq: &GraphQuery, row: &QueryRow, var: VarId) -> Result<Self>;
+}
+
+impl<M: NodeModel> DecodeFromRowAt for M {
+    fn decode_at(_gq: &GraphQuery, row: &QueryRow, var: VarId) -> Result<Self> {
+        let v = row
+            .get(&var)
+            .ok_or_else(|| GrmError::Backend("row missing var".into()))?;
+
+        let node = match v {
+            KernelValue::Node(n) => n,
+            _ => return Err(GrmError::Backend("expected node at var".into())),
+        };
+
+        M::from_properties(node.id.into(), node.props.clone())
+    }
+}
+

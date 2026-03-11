@@ -1,9 +1,9 @@
 use crate::{
-    dsl::KernelValue,
+    GraphQuery,
+    decode::decoderow::DecodeFromRowAt,
+    dsl::{KernelValue, QueryRow, VarId},
     error::{GrmError, Result},
     model::RelModel,
-    GraphQuery,
-    dsl::QueryRow,
 };
 
 pub fn decode_rel_from_row<R: RelModel>(gq: &GraphQuery, row: &QueryRow) -> Result<R> {
@@ -17,4 +17,12 @@ pub fn decode_rel_from_row<R: RelModel>(gq: &GraphQuery, row: &QueryRow) -> Resu
     };
 
     R::from_properties(rel.id.into(), rel.props.clone())
+}
+
+#[allow(dead_code)]
+pub fn decode_rel_at<R: RelModel>(gq: &GraphQuery, row: &QueryRow, var: VarId) -> Result<R>
+where
+    R: DecodeFromRowAt,
+{
+    R::decode_at(gq, row, var)
 }
