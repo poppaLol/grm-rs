@@ -81,10 +81,6 @@ impl<T: GraphTx + Send> Transaction<T> {
         self.inner.as_mut().ok_or(GrmError::TransactionClosed)
     }
 
-    // fn take_backend(&mut self) -> Result<T> {
-    //     self.inner.take().ok_or(GrmError::TransactionClosed)
-    // }
-
     pub fn tx_mut(&mut self) -> Result<&mut T> {
         self.backend_mut()
     }
@@ -111,7 +107,7 @@ impl<T: GraphTx + Send> Transaction<T> {
         Ok(QueryExecution { gq, qr })
     }
 
-    // Typed decode wrapper (thin). Replace `DecodeFromRow` with your real decode trait.
+    // Typed decode wrapper (thin)
     pub async fn query<R, M: DecodeFromRow>(&mut self, q: Query<R>) -> Result<Vec<M>>
     where
         R: NodeModel,
