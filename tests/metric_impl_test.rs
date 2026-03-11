@@ -4,8 +4,7 @@
  * shows how the library can be used to acheive this.
  */
 use grm_rs::{
-    GraphClient, InMemoryBackend, KernelValue, NodeModel, NodePattern, Query, RelModel, Result,
-    ReturnKind, typed_id,
+    GraphClient, InMemoryBackend, KernelValue, NodeModel, NodePattern, Query, RelModel, Result, ReturnKind, decode::{ResultShape, node, rel}, dsl::NodeValue, typed_id
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +38,13 @@ pub struct Contains {
     #[serde(skip)]
     pub id: ContainsId,
 }
+
+pub fn nodevalue_labels_match<M: NodeModel>(n: &NodeValue) -> bool {
+    M::LABELS
+        .iter()
+        .all(|l| n.labels.iter().any(|nl| nl == l))
+}
+
 
 #[tokio::test]
 async fn test_document_schema_construction() -> Result<()> {
@@ -103,6 +109,44 @@ async fn test_document_schema_construction() -> Result<()> {
     );
 
     let exec = tx.execute(q).await?;
+
+    //test result shaping temp:
+    let row = exec.qr.rows.first().unwrap();
+
+    // Find the var ids by inspecting the row
+    let mut paragraph_var = None;
+    let mut contains_var= None;
+    let mut metric_var = None;
+
+    for v in row.keys().copied() {
+        match row.get(&v).unwrap() {
+            KernelValue::Node(n) => {
+                if nodevalue_labels_match::<Paragraph>(n) {
+                    paragraph_var = Some(v);
+                } else if nodevalue_labels_match::<Metric>(n) {
+                    metric_var = Some(v);
+                }
+            }
+            KernelValue::Rel(_) => {
+                contains_var = Some(v);
+            }
+        }
+    }
+
+    let paragraph_var = paragraph_var.expect("Paragraph var not found in row");
+    let contains_var = contains_var.expect("Contains var not found in row");
+    let metric_var = metric_var.expect("Metric var not found in row");
+
+
+    // Now decode the shaped tuple
+    let shape = (
+        node::<Paragraph>(paragraph_var),
+        rel::<Contains>(contains_var),
+        node::<Metric>(metric_var),
+    );
+
+    // _p is a Paragraph, _c is a Contains, _m is a Metric
+    let (_p, _c, _m): (Paragraph, Contains, Metric) = shape.decode(&exec.gq, row)?;
 
     // Validate query invariants (good for catching compiler issues)
     exec.gq.validate()?;
