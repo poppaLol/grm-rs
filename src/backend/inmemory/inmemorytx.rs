@@ -148,7 +148,6 @@ impl Binding {
 
 struct ExecCtx {
     root_nm: NodeMatch,
-    node_match_by_var: HashMap<VarId, NodeMatch>,
     hops: Vec<HopMatch>,
 }
 
@@ -179,7 +178,6 @@ impl ExecCtx {
 
         Ok(Self {
             root_nm,
-            node_match_by_var,
             hops,
         })
     }
@@ -260,6 +258,35 @@ impl InMemoryTx {
         Ok(results)
     }
 
+    /// Pure function for single-hop traversal logic - no state mutation
+    /// Takes pairs of (rel, end_node) as input for pure computation
+    fn traverse_single_hop_pure(
+        hop: &HopMatch,
+        binding: &Binding,
+        pairs: Vec<(StoredRel, StoredNode)>,
+    ) -> Vec<Binding> {
+        let mut results = Vec::new();
+
+        for (rel, end_node) in pairs {
+            // existing checks stay exactly as-is
+            if !labels_match(&end_node.labels, hop.end_labels) {
+                continue;
+            }
+
+            results.push(Self::create_next_binding(
+                binding.root,
+                binding.cur,
+                &binding.rels,
+                &binding.nodes,
+                rel,
+                end_node.id,
+                hop,
+            ));
+        }
+
+        results
+    }
+
     /// Single-hop traversal - returns new bindings
     async fn traverse_single_hop(
         &mut self,
@@ -269,31 +296,17 @@ impl InMemoryTx {
         let mut results = Vec::new();
 
         for hop in &ctx.hops {
-            let _end_nm = ctx.node_match_by_var.get(&hop.end).cloned();
             let rel_type = hop.rel_type.map(|t| t as &str);
 
+            // Perform the actual async traversal to get pairs
             let pairs = match hop.dir {
                 Direction::Out => self.outgoing(binding.cur, rel_type).await?,
                 Direction::In => self.incoming(binding.cur, rel_type).await?,
                 Direction::Both => self.both(binding.cur, rel_type).await?,
             };
 
-            for (rel, end_node) in pairs {
-                // existing checks stay exactly as-is
-                if !labels_match(&end_node.labels, hop.end_labels) {
-                    continue;
-                }
-
-                results.push(Self::create_next_binding(
-                    binding.root,
-                    binding.cur,
-                    &binding.rels,
-                    &binding.nodes,
-                    rel,
-                    end_node.id,
-                    hop,
-                ));
-            }
+            // Apply pure traversal logic to the fetched data
+            results.extend(Self::traverse_single_hop_pure(hop, &binding, pairs));
         }
 
         Ok(results)
