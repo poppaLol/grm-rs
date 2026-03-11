@@ -62,7 +62,7 @@ fn select_bindings_for_return(q: &GraphQuery, bindings: Vec<Binding>) -> Vec<Bin
 
     // Functional deduplication using fold - collects unique bindings
     // State: (HashSet<i64>, Vec<Binding>)
-    let (mut ids, mut unique_bindings) = bindings.into_iter().fold(
+    let (_ids, unique_bindings) = bindings.into_iter().fold(
         (HashSet::new(), Vec::new()),
         |(mut seen, mut out), b| {
             let id_opt = match ret_kind {
