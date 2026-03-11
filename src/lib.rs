@@ -18,4 +18,4 @@ pub use grm_rs_macros::*;
 pub use model::{NodeModel, RelModel};
 pub use repo::{NodeRepository, RelRepository, Repo};
 pub use client::GraphClient;
-pub use decode::{DecodeFromRow, labels_match};
+pub use decode::{DecodeFromRow, labels_match, node, rel, ResultShape};
