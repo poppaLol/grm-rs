@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use super::returnplan::{stored_node_to_kernel, stored_rel_to_kernel, ReturnPlan};
-use crate::backend::{GraphStore, GraphTx, StoredNode};
+use crate::backend::{GraphStore, GraphTx, StoredNode, StoredRel};
 use crate::dsl::{
     Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult,
     VarId,
@@ -55,6 +55,7 @@ fn stored_node_matches_filters(node: &StoredNode, filters: &[PropertyFilter]) ->
     true
 }
 
+/// Pure function to select bindings for return - no side effects
 fn select_bindings_for_return(q: &GraphQuery, bindings: Vec<Binding>) -> Vec<Binding> {
     let ret_var = q.return_var();
     let ret_kind = q.return_kind();
@@ -89,6 +90,7 @@ fn select_bindings_for_return(q: &GraphQuery, bindings: Vec<Binding>) -> Vec<Bin
     out
 }
 
+/// Pure function to emit rows from bindings - no side effects
 fn emit_rows_from_bindings(tx: &InMemoryTx, bindings: Vec<Binding>) -> Vec<QueryRow> {
     let mut rows = Vec::with_capacity(bindings.len());
 
@@ -205,11 +207,12 @@ impl InMemoryTx {
         }
     }
 
-    fn seed_roots(&self, root_nm: &NodeMatch) -> Vec<Binding> {
+    /// Pure function to seed bindings from roots - no mutation of self
+    fn seed_roots(tx: &InMemoryTx, root_nm: &NodeMatch) -> Vec<Binding> {
         let mut bindings = Vec::new();
 
         if let Some(id) = root_nm.id_filter {
-            if let Some(node) = self.working_copy.nodes.get(&id) {
+            if let Some(node) = tx.working_copy.nodes.get(&id) {
                 if labels_match(&node.labels, root_nm.labels)
                     && stored_node_matches_filters(node, &root_nm.property_filters)
                 {
@@ -217,7 +220,7 @@ impl InMemoryTx {
                 }
             }
         } else {
-            for node in self.working_copy.nodes.values() {
+            for node in tx.working_copy.nodes.values() {
                 if labels_match(&node.labels, root_nm.labels)
                     && stored_node_matches_filters(node, &root_nm.property_filters)
                 {
@@ -229,65 +232,98 @@ impl InMemoryTx {
         bindings
     }
 
+    /// Traverse multiple hops - returns new bindings without mutating self
     async fn traverse_hops(
         &mut self,
-        mut bindings: Vec<Binding>,
+        bindings: Vec<Binding>,
         ctx: &ExecCtx,
     ) -> Result<Vec<Binding>> {
+        // If no hops, return bindings unchanged
+        if ctx.hops.is_empty() {
+            return Ok(bindings);
+        }
+
+        let mut results = Vec::with_capacity(bindings.len());
+
+        for b in bindings {
+            let next = Self::traverse_single_hop(self, b, ctx).await?;
+            results.extend(next);
+        }
+
+        Ok(results)
+    }
+
+    /// Single-hop traversal - returns new bindings
+    async fn traverse_single_hop(
+        &mut self,
+        binding: Binding,
+        ctx: &ExecCtx,
+    ) -> Result<Vec<Binding>> {
+        let mut results = Vec::new();
+
         for hop in &ctx.hops {
-            let end_nm = ctx.node_match_by_var.get(&hop.end).cloned();
-            let mut next = Vec::new();
+            let _end_nm = ctx.node_match_by_var.get(&hop.end).cloned();
+            let rel_type = hop.rel_type.map(|t| t as &str);
 
-            for b in &bindings {
-                let rel_type = hop.rel_type.map(|t| t as &str);
+            let pairs = match hop.dir {
+                Direction::Out => self.outgoing(binding.cur, rel_type).await?,
+                Direction::In => self.incoming(binding.cur, rel_type).await?,
+                Direction::Both => self.both(binding.cur, rel_type).await?,
+            };
 
-                let pairs = match hop.dir {
-                    Direction::Out => self.outgoing(b.cur, rel_type).await?,
-                    Direction::In => self.incoming(b.cur, rel_type).await?,
-                    Direction::Both => self.both(b.cur, rel_type).await?,
-                };
-
-                for (rel, end_node) in pairs {
-                    // existing checks stay exactly as-is
-                    if !labels_match(&end_node.labels, hop.end_labels) {
-                        continue;
-                    }
-
-                    if let Some(nm) = &end_nm {
-                        if let Some(id) = nm.id_filter {
-                            if id != end_node.id {
-                                continue;
-                            }
-                        }
-                        if !labels_match(&end_node.labels, nm.labels) {
-                            continue;
-                        }
-                        if !stored_node_matches_filters(&end_node, &nm.property_filters) {
-                            continue;
-                        }
-                    }
-
-                    let mut rels = b.rels.clone();
-                    rels.insert(hop.rel_var, rel.id);
-                    let mut nodes = b.nodes.clone();
-                    nodes.insert(hop.end, end_node.id);
-
-                    next.push(Binding {
-                        root: b.root,
-                        cur: end_node.id,
-                        rels,
-                        nodes,
-                    });
+            for (rel, end_node) in pairs {
+                // existing checks stay exactly as-is
+                if !labels_match(&end_node.labels, hop.end_labels) {
+                    continue;
                 }
-            }
 
-            bindings = next;
-            if bindings.is_empty() {
-                break;
+                results.push(Self::create_next_binding(
+                    binding.root,
+                    binding.cur,
+                    &binding.rels,
+                    &binding.nodes,
+                    rel,
+                    end_node.id,
+                    hop,
+                ));
             }
         }
 
-        Ok(bindings)
+        Ok(results)
+    }
+
+    /// Builder pattern for new bindings - combines existing values with new ones
+    fn create_next_binding(
+        root: i64,
+        _cur: i64,
+        rels: &HashMap<VarId, i64>,
+        nodes: &HashMap<VarId, i64>,
+        rel: StoredRel,
+        end_node_id: i64,
+        hop: &HopMatch,
+    ) -> Binding {
+        // Collect existing values into new HashMaps
+        let mut new_rels = HashMap::new();
+        let mut new_nodes = HashMap::new();
+
+        for (k, v) in rels {
+            new_rels.insert(*k, *v);
+        }
+
+        for (k, v) in nodes {
+            new_nodes.insert(*k, *v);
+        }
+
+        // Add new values
+        new_rels.insert(hop.rel_var, rel.id);
+        new_nodes.insert(hop.end, end_node_id);
+
+        Binding {
+            root,
+            cur: end_node_id,
+            rels: new_rels,
+            nodes: new_nodes,
+        }
     }
 
     pub async fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
@@ -296,7 +332,7 @@ impl InMemoryTx {
 
         // ---- 2) Seed candidates from *root* NodeMatch ----
         // Execution state as (root_node_id, current_node_id).
-        let mut bindings = self.seed_roots(&ctx.root_nm);
+        let bindings = Self::seed_roots(self, &ctx.root_nm);
         trace!("inmemory.exec: seeded {} bindings (root)", bindings.len());
 
         if bindings.is_empty() {
@@ -304,7 +340,7 @@ impl InMemoryTx {
         }
 
         // ---- 3) Apply chained hops ----
-        bindings = self.traverse_hops(bindings, &ctx).await?;
+        let bindings = Self::traverse_hops(self, bindings, &ctx).await?;
         trace!("inmemory.exec: {} bindings after hops", bindings.len());
 
         if bindings.is_empty() {
