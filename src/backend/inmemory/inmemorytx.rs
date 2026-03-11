@@ -60,34 +60,41 @@ fn select_bindings_for_return(q: &GraphQuery, bindings: Vec<Binding>) -> Vec<Bin
     let ret_var = q.return_var();
     let ret_kind = q.return_kind();
 
-    let mut seen = HashSet::<i64>::new();
-    let mut out = Vec::new();
+    // Functional deduplication using fold - collects unique bindings
+    // State: (HashSet<i64>, Vec<Binding>)
+    let (mut ids, mut unique_bindings) = bindings.into_iter().fold(
+        (HashSet::new(), Vec::new()),
+        |(mut seen, mut out), b| {
+            let id_opt = match ret_kind {
+                ReturnKind::Node => b.nodes.get(&ret_var).copied(),
+                ReturnKind::Rel => b.rels.get(&ret_var).copied(),
+            };
 
-    for b in bindings {
-        let id_opt = match ret_kind {
-            ReturnKind::Node => b.nodes.get(&ret_var).copied(),
-            ReturnKind::Rel => b.rels.get(&ret_var).copied(),
-        };
+            if let Some(id) = id_opt {
+                if seen.insert(id) {
+                    out.push(b);
+                }
+            }
 
-        let Some(id) = id_opt else { continue };
+            (seen, out)
+        },
+    );
 
-        if seen.insert(id) {
-            out.push(b);
-        }
-    }
-
-    // Apply paging to rows/bindings
+    // Apply paging to rows/bindings (stateful operations)
     let off = q.offset.unwrap_or(0);
-    if off >= out.len() {
+    let mut result = unique_bindings;
+
+    if off >= result.len() {
         return vec![];
     }
-    out.drain(0..off);
+
+    result.drain(0..off);
 
     if let Some(lim) = q.limit {
-        out.truncate(lim);
+        result.truncate(lim);
     }
 
-    out
+    result
 }
 
 /// Pure function to emit rows from bindings - no side effects
