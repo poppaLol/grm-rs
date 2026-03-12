@@ -222,12 +222,11 @@ pub struct RelValue {
 pub enum Value {
     Node(NodeValue),
     Rel(RelValue),
-    // TODO Path(PathValue), Scalar(...)
+    Scalar(serde_json::Value),
 }
 
-#[allow(unreachable_patterns)]
-// TODO - decide on unreachable pattern stuff
 impl Value {
+    #[inline]
     pub fn as_node(&self) -> Option<&NodeValue> {
         match self {
             Value::Node(n) => Some(n),

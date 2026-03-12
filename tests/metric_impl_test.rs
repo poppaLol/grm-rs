@@ -130,6 +130,9 @@ async fn test_document_schema_construction() -> Result<()> {
             KernelValue::Rel(_) => {
                 contains_var = Some(v);
             }
+            KernelValue::Scalar(_) => {
+                // Scalar values don't need special handling
+            }
         }
     }
 
@@ -218,6 +221,9 @@ async fn test_document_schema_construction() -> Result<()> {
                         r.to,
                         r.props.keys().collect::<Vec<_>>()
                     );
+                }
+                KernelValue::Scalar(_) => {
+                    eprintln!("  {:?} => Scalar(_)", var);
                 }
             }
         }
