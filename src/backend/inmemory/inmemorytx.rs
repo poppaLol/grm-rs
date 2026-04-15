@@ -10,6 +10,7 @@ use crate::dsl::{
 };
 use crate::dsl::numeric_cmp;
 use crate::error::{GrmError, Result};
+use crate::backend::GraphPersistence;
 use crate::{CompareOp, PropertyFilter, QueryRow, ReturnKind};
 
 fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bool {
@@ -193,6 +194,28 @@ impl InMemoryBackend {
         Self {
             store: Arc::new(Mutex::new(GraphStore::default())),
         }
+    }
+
+    pub fn save_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let store = self.store.lock().unwrap().clone_store();
+        store.save_to_file(path)
+    }
+
+    pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let store = GraphStore::load_from_file(path)?;
+        Ok(Self {
+            store: Arc::new(Mutex::new(store)),
+        })
+    }
+}
+
+impl GraphPersistence for InMemoryBackend {
+    fn save_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        self.save_to_file(path)
+    }
+
+    fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::load_from_file(path)
     }
 }
 
