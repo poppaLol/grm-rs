@@ -8,7 +8,7 @@ pub mod client;
 pub mod decode;
 
 // Re-exports for convenient use
-pub use backend::{GraphBackend, GraphTx, InMemoryBackend, StoredNode, StoredRel};
+pub use backend::{GraphBackend, GraphTx, InMemoryBackend, StoredNode, StoredRel, GraphPersistence};
 pub use dsl::{
     CompareOp, GraphQuery, NodePattern, Property, PropertyFilter, Props, Query, QueryKind,
     QueryResult, VarGen, QueryRow, KernelValue, ReturnKind
@@ -17,5 +17,5 @@ pub use error::{GrmError, Result};
 pub use grm_rs_macros::*;
 pub use model::{NodeModel, RelModel};
 pub use repo::{NodeRepository, RelRepository, Repo};
-pub use client::GraphClient;
+pub use client::{GraphClient, GraphPersistenceAccess};
 pub use decode::{DecodeFromRow, labels_match, node, rel, ResultShape};

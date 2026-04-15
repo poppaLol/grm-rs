@@ -4,6 +4,7 @@ use crate::{
     dsl::{GraphQuery, Query, QueryResult, Return},
     error::{GrmError, Result},
     model::NodeModel,
+    backend::GraphPersistence,
 };
 
 // Returned by `Transaction::execute` so callers can inspect kernel IR + raw kernel rows.
@@ -19,6 +20,25 @@ impl QueryExecution {
             .iter()
             .map(|row| M::decode(&self.gq, row))
             .collect()
+    }
+}
+
+// Wrapper that provides graph persistence access
+pub struct GraphPersistenceAccess<'a, B: GraphBackend + GraphPersistence> {
+    backend: &'a B,
+}
+
+impl<'a, B: GraphBackend + GraphPersistence> GraphPersistenceAccess<'a, B> {
+    pub fn new(backend: &'a B) -> Self {
+        Self { backend }
+    }
+
+    pub fn save_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        self.backend.save_to_file(path)
+    }
+
+    pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<B> {
+        B::load_from_file(path)
     }
 }
 
@@ -54,6 +74,14 @@ impl<B: GraphBackend> GraphClient<B> {
 
     pub fn backend(&self) -> &B {
         &self.backend
+    }
+
+    /// Returns a persistence accessor for the graph backend
+    pub fn persistence(&self) -> Option<GraphPersistenceAccess<'_, B>>
+    where
+        B: GraphPersistence,
+    {
+        Some(GraphPersistenceAccess::new(&self.backend))
     }
 }
 
