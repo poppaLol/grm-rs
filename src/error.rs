@@ -19,6 +19,12 @@ pub enum GrmError {
 
     #[error("operation not supported by backend: {0}")]
     NotSupported(&'static str),
+
+    #[error("cannot save to file: {0}")]
+    SaveAborted(&'static str),
+
+    #[error("cannot load from file: {0}")]
+    LoadAborted(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, GrmError>;
