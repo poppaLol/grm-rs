@@ -1,3 +1,5 @@
+use std::fmt::Binary;
+
 /*
  * This file contains some sample entities we can use for testing the codebase
  * In each case there is a strongly typed ID
@@ -40,6 +42,10 @@ pub struct Authored {
     #[serde(skip)]
     pub id: AuthoredId,
     pub year: u64,
+    #[grm(skip)]
+    pub(crate) from: UserId,
+    #[grm(skip)]
+    pub(crate) to: PostId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, NodeModel)]
@@ -71,6 +77,10 @@ pub struct AB {
     #[grm(id)]
     #[serde(skip)]
     id: ABId,
+    #[grm(skip)]
+    from: AId,
+    #[grm(skip)]
+    to: BId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RelModel)]
@@ -79,4 +89,8 @@ pub struct AC {
     #[grm(id)]
     #[serde(skip)]
     id: ACId,
+    #[grm(skip)]
+    from: AId,
+    #[grm(skip)]
+    to: CId,
 }
