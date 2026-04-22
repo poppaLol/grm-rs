@@ -2,9 +2,17 @@
 name = "grm-rs"
 version = "0.1.0"
 edition = "2024"
+description = "Typed in-memory graph modeling, querying, persistence, and interactive CLI sessions for Rust."
+readme = "README.md"
+repository = "https://github.com/poppaLol/grm-rs"
+homepage = "https://github.com/poppaLol/grm-rs"
+documentation = "https://docs.rs/grm-rs"
+
+[workspace]
+members = ["grm-rs-macros"]
 
 [dependencies]
-grm-rs-macros = { path = "./grm-rs-macros" }
+grm-rs-macros = { version = "0.1.0", path = "./grm-rs-macros" }
 async-trait = "0.1"
 bincode = "1"
 serde = { version = "1", features = ["derive"] }
