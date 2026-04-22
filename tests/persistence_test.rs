@@ -8,6 +8,7 @@ async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
     println!("Testing InMemoryBackend persistence...");
 
     let json_file = "test_graph.json";
+    let bin_file = "test_graph.bin";
 
     // Create a backend and save to file
     let backend = InMemoryBackend::new();
@@ -23,10 +24,19 @@ async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
     println!("  -> Loading from {}...", json_file);
     let _loaded_client = GraphClient::new(InMemoryBackend::load_from_file(json_file)?);
 
+    println!("  -> Saving binary to {}...", bin_file);
+    client.persistence()
+        .expect("Backend does not support persistence")
+        .save_to_binary_file(bin_file)?;
+
+    println!("  -> Loading binary from {}...", bin_file);
+    let _loaded_binary_client = GraphClient::new(InMemoryBackend::load_from_binary_file(bin_file)?);
+
     println!("✓ InMemoryBackend persistence test passed!");
 
     // Clean up
     std::fs::remove_file(json_file)?;
+    std::fs::remove_file(bin_file)?;
     println!("\n✓ Test file removed");
 
     Ok(())
@@ -37,6 +47,7 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
     println!("Testing persistence with typed models...");
 
     let json_file = "test_graph_typed.json";
+    let bin_file = "test_graph_typed.bin";
 
     // Create data using typed models
     let backend = InMemoryBackend::new();
@@ -129,11 +140,34 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
 
     println!("  -> Verifying relationships (skipped - Authored is a RelModel, not NodeModel)");
 
+    println!("  -> Saving binary to {}...", bin_file);
+    client.persistence()
+        .expect("Backend does not support persistence")
+        .save_to_binary_file(bin_file)?;
+
+    println!("  -> Loading binary from {}...", bin_file);
+    let _loaded_binary_client = GraphClient::new(InMemoryBackend::load_from_binary_file(bin_file)?);
+
+    println!("  -> Verifying users from binary load...");
+    let mut tx = _loaded_binary_client.transaction().await?;
+    let users = tx.query::<User, User>(Query::matching(NodePattern::new())).await?;
+    drop(tx);
+
+    assert_eq!(users.len(), 2, "Binary load should have 2 users");
+
+    println!("  -> Verifying posts from binary load...");
+    let mut tx = _loaded_binary_client.transaction().await?;
+    let posts = tx.query::<Post, Post>(Query::matching(NodePattern::new())).await?;
+    drop(tx);
+
+    assert_eq!(posts.len(), 2, "Binary load should have 2 posts");
+
     println!("✓ All typed model persistence tests passed!");
     println!("\nData verified successfully");
 
     // Clean up
     std::fs::remove_file(json_file)?;
+    std::fs::remove_file(bin_file)?;
     println!("\n✓ Test file removed");
 
     Ok(())
