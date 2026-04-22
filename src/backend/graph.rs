@@ -4,6 +4,21 @@ use crate::{GraphQuery, GrmError, StoredNode, StoredRel, dsl::QueryResult, error
 use async_trait::async_trait;
 use serde_json::Value;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendIdType {
+    Int64,
+    Uuid,
+}
+
+impl BackendIdType {
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            Self::Int64 => "int",
+            Self::Uuid => "uuid",
+        }
+    }
+}
+
 #[async_trait]
 pub trait GraphTx {
     async fn execute_query(
@@ -100,5 +115,13 @@ pub trait GraphBackend: Send + Sync + Clone {
         let out = tx.execute_graph(q).await?;
         tx.commit().await?;
         Ok(out)
+    }
+}
+
+pub trait BackendIdentity: GraphBackend {
+    fn node_id_type(&self) -> BackendIdType;
+
+    fn rel_id_type(&self) -> BackendIdType {
+        self.node_id_type()
     }
 }

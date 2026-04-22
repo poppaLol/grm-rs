@@ -6,9 +6,13 @@ pub mod model;
 pub mod repo;
 pub mod client;
 pub mod decode;
+pub mod runtime;
 
 // Re-exports for convenient use
-pub use backend::{GraphBackend, GraphTx, InMemoryBackend, StoredNode, StoredRel, GraphPersistence};
+pub use backend::{
+    BackendIdType, BackendIdentity, GraphBackend, GraphPersistence, GraphTx, InMemoryBackend,
+    StoredNode, StoredRel,
+};
 pub use dsl::{
     CompareOp, GraphQuery, NodePattern, Property, PropertyFilter, Props, Query, QueryKind,
     QueryResult, VarGen, QueryRow, KernelValue, ReturnKind
@@ -19,3 +23,6 @@ pub use model::{NodeModel, RelModel};
 pub use repo::{NodeRepository, RelRepository, Repo};
 pub use client::{GraphClient, GraphPersistenceAccess};
 pub use decode::{DecodeFromRow, labels_match, node, rel, ResultShape};
+pub use runtime::{
+    CliSession, RuntimeField, RuntimeNodeModel, RuntimeValueType, SessionModelCatalog, SessionState,
+};

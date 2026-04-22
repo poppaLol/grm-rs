@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use super::returnplan::{stored_node_to_kernel, stored_rel_to_kernel, ReturnPlan};
-use crate::backend::{GraphStore, GraphTx, StoredNode, StoredRel};
+use crate::backend::{BackendIdType, BackendIdentity, GraphStore, GraphTx, StoredNode, StoredRel};
 use crate::dsl::{
     Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult,
     VarId,
@@ -236,6 +236,12 @@ impl GraphPersistence for InMemoryBackend {
 
     fn load_from_binary_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::load_from_binary_file(path)
+    }
+}
+
+impl BackendIdentity for InMemoryBackend {
+    fn node_id_type(&self) -> BackendIdType {
+        BackendIdType::Int64
     }
 }
 
