@@ -73,7 +73,7 @@ impl<R: RelModel> ResultShape for PickRel<R> {
             _ => return Err(GrmError::Backend("expected rel at var".into())),
         };
 
-        R::from_properties(relv.id.into(), relv.props.clone())
+        R::from_parts(relv.id.into(), relv.from.into(), relv.to.into(), relv.props.clone())
     }
 }
 
