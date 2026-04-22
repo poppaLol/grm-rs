@@ -666,3 +666,91 @@ async fn session_load_restores_graph_and_runtime_schema() {
 
     let _ = fs::remove_file(json_path);
 }
+
+#[tokio::test]
+async fn session_autocommit_persists_changes_until_disabled() {
+    let json_path = "/tmp/grm-session-autocommit-test.json";
+    let _ = fs::remove_file(json_path);
+
+    let input = Cursor::new(format!(
+        "session.autocommit status\nsession.autocommit --json {json_path}\nmodel.define User userId name:string:required\nnode.create User name=Alice\nsession.autocommit status\nsession.autocommit off\nnode.create User name=Bob\nsession.autocommit status\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    let saved = fs::read_to_string(json_path).unwrap();
+
+    assert!(output.contains("Autocommit is disabled."));
+    assert!(output.contains(&format!("Autocommit enabled: --json {json_path}")));
+    assert!(output.contains("Autocommit disabled."));
+    assert!(saved.contains("Alice"));
+    assert!(saved.contains("User"));
+    assert!(!saved.contains("Bob"));
+
+    let _ = fs::remove_file(json_path);
+}
+
+#[tokio::test]
+async fn session_load_triggers_autocommit_target_update() {
+    let source_path = "/tmp/grm-session-autocommit-source.json";
+    let target_path = "/tmp/grm-session-autocommit-target.json";
+    let _ = fs::remove_file(source_path);
+    let _ = fs::remove_file(target_path);
+
+    let seed_input = Cursor::new(format!(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nsession.save --json {source_path}\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut seed_session = CliSession::new(seed_input, output);
+    seed_session.run().await.unwrap();
+
+    let input = Cursor::new(format!(
+        "session.autocommit --json {target_path}\nsession.load --json {source_path}\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    let saved = fs::read_to_string(target_path).unwrap();
+
+    assert!(output.contains("Loaded session from JSON file"));
+    assert!(saved.contains("Alice"));
+    assert!(saved.contains("User"));
+
+    let _ = fs::remove_file(source_path);
+    let _ = fs::remove_file(target_path);
+}
+
+#[tokio::test]
+async fn session_autocommit_supports_binary_targets() {
+    let bin_path = "/tmp/grm-session-autocommit-test.bin";
+    let _ = fs::remove_file(bin_path);
+
+    let input = Cursor::new(format!(
+        "session.autocommit --bin {bin_path}\nmodel.define User userId name:string:required\nnode.create User name=Alice\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+    session.run().await.unwrap();
+
+    let load_input = Cursor::new(format!(
+        "session.load --bin {bin_path}\nnode.find User name=Alice\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut loaded_session = CliSession::new(load_input, output);
+    loaded_session.run().await.unwrap();
+
+    let (_, _, output) = loaded_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(fs::metadata(bin_path).is_ok());
+    assert!(output.contains("Node User userId=1 {name=Alice}"));
+
+    let _ = fs::remove_file(bin_path);
+}

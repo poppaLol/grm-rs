@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +28,18 @@ struct PersistedSession {
 struct BinaryPersistedSession {
     graph: BinaryPersistedGraphStore,
     catalog: SessionModelCatalog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionFileFormat {
+    Json,
+    Binary,
+}
+
+#[derive(Debug, Clone)]
+struct AutocommitTarget {
+    format: SessionFileFormat,
+    path: PathBuf,
 }
 
 impl Default for SessionState {
@@ -469,6 +481,7 @@ pub struct CliSession<R: BufRead, W: Write> {
     reader: R,
     writer: W,
     prompt_name: &'static str,
+    autocommit: Option<AutocommitTarget>,
 }
 
 impl<R: BufRead, W: Write> CliSession<R, W> {
@@ -478,6 +491,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             reader,
             writer,
             prompt_name: "session",
+            autocommit: None,
         }
     }
 
@@ -487,6 +501,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             reader,
             writer,
             prompt_name: "session",
+            autocommit: None,
         }
     }
 
@@ -599,6 +614,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             "edge.delete" => self.handle_edge_delete(args).await?,
             "session.save" => self.handle_session_save(args)?,
             "session.load" => self.handle_session_load(args)?,
+            "session.autocommit" => self.handle_session_autocommit(args)?,
             _ => writeln!(self.writer, "Unknown command: {trimmed}")?,
         }
 
@@ -631,6 +647,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  session.save --bin <path>")?;
         writeln!(self.writer, "  session.load --json <path>")?;
         writeln!(self.writer, "  session.load --bin <path>")?;
+        writeln!(self.writer, "  session.autocommit --json <path>")?;
+        writeln!(self.writer, "  session.autocommit --bin <path>")?;
+        writeln!(self.writer, "  session.autocommit status")?;
+        writeln!(self.writer, "  session.autocommit off")?;
         writeln!(self.writer, "  session.help")?;
         writeln!(self.writer, "  session.exit")?;
         Ok(())
@@ -796,6 +816,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let model =
             RuntimeNodeModel::new(name, id_field_name, self.state.node_id_type(), fields)?;
         self.state.register_model(model.clone())?;
+        self.persist_autocommit()?;
         writeln!(self.writer, "Model '{}' created from script.", model.name)?;
         Ok(())
     }
@@ -826,6 +847,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             fields,
         )?;
         self.state.register_rel_model(model.clone())?;
+        self.persist_autocommit()?;
         writeln!(self.writer, "Link '{}' created from script.", model.name)?;
         Ok(())
     }
@@ -845,6 +867,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         self.state.register_model(model.clone())?;
+        self.persist_autocommit()?;
         writeln!(self.writer, "Model '{}' created.", model.name)?;
 
         if self.prompt_yes_no("Create the first instance now? [y/n]: ")? {
@@ -878,6 +901,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         self.state.register_rel_model(model.clone())?;
+        self.persist_autocommit()?;
         writeln!(self.writer, "Link '{}' created.", model.name)?;
 
         if self.prompt_yes_no("Create the first link now? [y/n]: ")? {
@@ -898,6 +922,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let values = parse_key_value_args(&args[1..])?;
         let created = self.state.create_instance(model_name, &values).await?;
         let model = self.state.model(model_name).ok_or(crate::GrmError::NotFound)?;
+        self.persist_autocommit()?;
         writeln!(
             self.writer,
             "Created node {} with label '{}'. {}={}.",
@@ -917,6 +942,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .update_node_instance(args[0], args[1], &parse_key_value_args(&args[2..])?)
             .await?;
         let model = self.state.model(args[0]).ok_or(crate::GrmError::NotFound)?;
+        self.persist_autocommit()?;
         writeln!(
             self.writer,
             "Updated node {} {}={} {}",
@@ -935,6 +961,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             ));
         }
         self.state.delete_node_instance(args[0], args[1]).await?;
+        self.persist_autocommit()?;
         writeln!(self.writer, "Deleted node {} {}.", args[0], args[1])?;
         Ok(())
     }
@@ -995,6 +1022,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .rel_model(model_name)
             .ok_or(crate::GrmError::NotFound)?;
+        self.persist_autocommit()?;
         writeln!(
             self.writer,
             "Created edge {} of type '{}'. {}={}.",
@@ -1014,6 +1042,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .update_relationship_instance(args[0], args[1], &parse_key_value_args(&args[2..])?)
             .await?;
         let model = self.state.rel_model(args[0]).ok_or(crate::GrmError::NotFound)?;
+        self.persist_autocommit()?;
         writeln!(
             self.writer,
             "Updated edge {} {}={} from={} to={} {}",
@@ -1034,6 +1063,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             ));
         }
         self.state.delete_relationship_instance(args[0], args[1]).await?;
+        self.persist_autocommit()?;
         writeln!(self.writer, "Deleted edge {} {}.", args[0], args[1])?;
         Ok(())
     }
@@ -1108,10 +1138,12 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         match args[0] {
             "--json" => {
                 self.state.load_from_json(args[1])?;
+                self.persist_autocommit()?;
                 writeln!(self.writer, "Loaded session from JSON file '{}'.", args[1])?;
             }
             "--bin" => {
                 self.state.load_from_binary(args[1])?;
+                self.persist_autocommit()?;
                 writeln!(self.writer, "Loaded session from binary file '{}'.", args[1])?;
             }
             _ => {
@@ -1120,6 +1152,52 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 ))
             }
         }
+        Ok(())
+    }
+
+    fn handle_session_autocommit(&mut self, args: &[&str]) -> Result<()> {
+        match args {
+            ["status"] => {
+                if let Some(target) = &self.autocommit {
+                    writeln!(
+                        self.writer,
+                        "Autocommit is enabled: {} {}",
+                        target.format.flag(),
+                        target.path.display()
+                    )?;
+                } else {
+                    writeln!(self.writer, "Autocommit is disabled.")?;
+                }
+            }
+            ["off"] => {
+                self.autocommit = None;
+                writeln!(self.writer, "Autocommit disabled.")?;
+            }
+            [flag, path] => {
+                let format = SessionFileFormat::from_flag(flag).ok_or_else(|| {
+                    crate::GrmError::Constraint(
+                        "usage: session.autocommit --json <path> | session.autocommit --bin <path> | session.autocommit status | session.autocommit off".into(),
+                    )
+                })?;
+                self.autocommit = Some(AutocommitTarget {
+                    format,
+                    path: PathBuf::from(path),
+                });
+                self.persist_autocommit()?;
+                writeln!(
+                    self.writer,
+                    "Autocommit enabled: {} {}",
+                    format.flag(),
+                    path
+                )?;
+            }
+            _ => {
+                return Err(crate::GrmError::Constraint(
+                    "usage: session.autocommit --json <path> | session.autocommit --bin <path> | session.autocommit status | session.autocommit off".into(),
+                ))
+            }
+        }
+
         Ok(())
     }
 
@@ -1257,6 +1335,24 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             name: segments[0].to_string(),
             value_type,
             required,
+        })
+    }
+
+    fn persist_autocommit(&self) -> Result<()> {
+        let Some(target) = &self.autocommit else {
+            return Ok(());
+        };
+
+        match target.format {
+            SessionFileFormat::Json => self.state.save_to_json(&target.path),
+            SessionFileFormat::Binary => self.state.save_to_binary(&target.path),
+        }
+        .map_err(|err| {
+            crate::GrmError::Backend(format!(
+                "autocommit failed for '{}': {}",
+                target.path.display(),
+                err
+            ))
         })
     }
 
@@ -1526,5 +1622,22 @@ fn format_value(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         _ => value.to_string(),
+    }
+}
+
+impl SessionFileFormat {
+    fn from_flag(flag: &str) -> Option<Self> {
+        match flag {
+            "--json" => Some(Self::Json),
+            "--bin" => Some(Self::Binary),
+            _ => None,
+        }
+    }
+
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Json => "--json",
+            Self::Binary => "--bin",
+        }
     }
 }
