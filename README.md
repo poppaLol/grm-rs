@@ -39,12 +39,12 @@ grm(session)>
 
 From there you can:
 
-* define node models interactively with `model create`
-* define node models from a one-line command with `model define`
-* define links interactively with `link create`
-* define links from a one-line command with `link define`
-* inspect models and links with `model list`, `model show <name>`, `link list`, and `link show <name>`
-* create the first node or relationship immediately after a model wizard completes
+* define node models with `model.define`
+* define links with `link.define`
+* create runtime data with `node.create` and `edge.create`
+* query runtime data with `node.find` and `edge.find`
+* inspect definitions with `model.list`, `model.show <name>`, `link.list`, and `link.show <name>`
+* save the current graph with `session.save --json <path>` or `session.save --bin <path>`
 
 ### Bootstrapping From A Script
 
@@ -63,29 +63,46 @@ The script is executed first, and then the CLI drops into the interactive prompt
 Example script commands:
 
 ```text
-model define User userId name:string:required age:int:optional
-model define Post postId title:string:required
-link define Authored User Post authoredId year:int:required
+model.define User userId name:string:required age:int:optional
+model.define Post postId title:string:required
+link.define Authored User Post authoredId year:int:required
+node.create User name=Alice age=42
+node.create Post title=Hello
+edge.create Authored from=1 to=2 year=2024
+node.find User name=Alice
 ```
 
 ### Interactive Commands
 
-Node model commands:
+Definition commands:
 
 ```text
-model create
-model define <Name> <id_field> [field:type:required|optional ...]
-model list
-model show <name>
+model.define [<Name> <id_field> [field:type:required|optional ...]]
+model.list
+model.show <name>
+
+link.define [<Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]]
+link.list
+link.show <name>
 ```
 
-Link commands:
+Data commands:
 
 ```text
-link create
-link define <Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]
-link list
-link show <name>
+node.create <ModelName> [field=value ...]
+node.find <ModelName> [field=value ...]
+
+edge.create <LinkName> from=<id> to=<id> [field=value ...]
+edge.find <LinkName> [from=<id>] [to=<id>] [field=value ...]
+```
+
+Session commands:
+
+```text
+session.help
+session.save --json <path>
+session.save --bin <path>
+session.exit
 ```
 
 ### Notes
