@@ -1,0 +1,6 @@
+# Bootstrap a fresh in-memory session with a couple of runtime models.
+model define User userId name:string:required age:int:optional active:bool:optional
+model define Post postId title:string:required rating:float:optional published:bool:optional
+model list
+model show User
+model show Post
