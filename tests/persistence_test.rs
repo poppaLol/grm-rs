@@ -70,11 +70,15 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
     let mut authored1 = Authored {
         id: AuthoredId::from(1),
         year: 2024,
+        from: UserId::default(),
+        to: PostId::default(),
     };
 
     let mut authored2 = Authored {
         id: AuthoredId::from(2),
         year: 2024,
+        from: UserId::default(),
+        to: PostId::default(),
     };
 
     // Persist to JSON
