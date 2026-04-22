@@ -3,7 +3,7 @@ use std::io::Cursor;
 
 use grm_rs::{
     BackendIdType, CliSession, RuntimeField, RuntimeNodeModel, RuntimeValueType,
-    SessionModelCatalog, SessionState,
+    RuntimeRelModel, SessionModelCatalog, SessionState,
 };
 
 #[test]
@@ -43,6 +43,39 @@ fn registering_valid_model_works() {
 }
 
 #[test]
+fn registering_valid_relationship_model_works() {
+    let mut state = SessionState::new();
+    state
+        .register_model(RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap())
+        .unwrap();
+    state
+        .register_model(RuntimeNodeModel::new("Post", "postId", BackendIdType::Int64, vec![]).unwrap())
+        .unwrap();
+
+    let model = RuntimeRelModel::new(
+        "Authored",
+        "User",
+        "Post",
+        "authoredId",
+        BackendIdType::Int64,
+        vec![RuntimeField {
+            name: "year".into(),
+            value_type: RuntimeValueType::Int,
+            required: true,
+        }],
+    )
+    .unwrap();
+
+    state.register_rel_model(model.clone()).unwrap();
+    let stored = state.rel_model("Authored").unwrap();
+    assert_eq!(stored.rel_type, "Authored");
+    assert_eq!(stored.from_model, "User");
+    assert_eq!(stored.to_model, "Post");
+    assert_eq!(stored.id_field_name, "authoredId");
+    assert_eq!(stored.fields, model.fields);
+}
+
+#[test]
 fn model_name_collisions_are_rejected() {
     let mut catalog = SessionModelCatalog::new();
     let model = RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap();
@@ -50,6 +83,27 @@ fn model_name_collisions_are_rejected() {
 
     let err = catalog.register(model).unwrap_err();
     assert!(err.to_string().contains("already exists"));
+}
+
+#[test]
+fn relationship_models_require_existing_endpoint_models() {
+    let mut state = SessionState::new();
+    state
+        .register_model(RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap())
+        .unwrap();
+
+    let model = RuntimeRelModel::new(
+        "Authored",
+        "User",
+        "Post",
+        "authoredId",
+        BackendIdType::Int64,
+        vec![],
+    )
+    .unwrap();
+
+    let err = state.register_rel_model(model).unwrap_err();
+    assert!(err.to_string().contains("to model 'Post'"));
 }
 
 #[test]
@@ -214,6 +268,125 @@ async fn successful_instance_creation_writes_expected_node() {
 }
 
 #[tokio::test]
+async fn successful_relationship_creation_writes_expected_rel() {
+    let mut state = SessionState::new();
+    state
+        .register_model(
+            RuntimeNodeModel::new(
+                "User",
+                "userId",
+                BackendIdType::Int64,
+                vec![RuntimeField {
+                    name: "name".into(),
+                    value_type: RuntimeValueType::String,
+                    required: true,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    state
+        .register_model(
+            RuntimeNodeModel::new(
+                "Post",
+                "postId",
+                BackendIdType::Int64,
+                vec![RuntimeField {
+                    name: "title".into(),
+                    value_type: RuntimeValueType::String,
+                    required: true,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    state
+        .register_rel_model(
+            RuntimeRelModel::new(
+                "Authored",
+                "User",
+                "Post",
+                "authoredId",
+                BackendIdType::Int64,
+                vec![RuntimeField {
+                    name: "year".into(),
+                    value_type: RuntimeValueType::Int,
+                    required: true,
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let mut user_input = BTreeMap::new();
+    user_input.insert("name".into(), "Alice".into());
+    let user = state.create_instance("User", &user_input).await.unwrap();
+
+    let mut post_input = BTreeMap::new();
+    post_input.insert("title".into(), "Hello".into());
+    let post = state.create_instance("Post", &post_input).await.unwrap();
+
+    let mut rel_input = BTreeMap::new();
+    rel_input.insert("year".into(), "2024".into());
+    let rel = state
+        .create_relationship_instance(
+            "Authored",
+            &user.id.to_string(),
+            &post.id.to_string(),
+            &rel_input,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(rel.rel_type, "Authored");
+    assert_eq!(rel.from, user.id);
+    assert_eq!(rel.to, post.id);
+    assert_eq!(rel.props.get("year").unwrap(), 2024);
+}
+
+#[tokio::test]
+async fn relationship_creation_rejects_wrong_endpoint_models() {
+    let mut state = SessionState::new();
+    state
+        .register_model(
+            RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap(),
+        )
+        .unwrap();
+    state
+        .register_model(
+            RuntimeNodeModel::new("Post", "postId", BackendIdType::Int64, vec![]).unwrap(),
+        )
+        .unwrap();
+    state
+        .register_rel_model(
+            RuntimeRelModel::new(
+                "Authored",
+                "User",
+                "Post",
+                "authoredId",
+                BackendIdType::Int64,
+                vec![],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+    let user = state.create_instance("User", &BTreeMap::new()).await.unwrap();
+    let wrong_to = state.create_instance("User", &BTreeMap::new()).await.unwrap();
+
+    let err = state
+        .create_relationship_instance(
+            "Authored",
+            &user.id.to_string(),
+            &wrong_to.id.to_string(),
+            &BTreeMap::new(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("does not match model 'Post'"));
+}
+
+#[tokio::test]
 async fn guided_model_creation_and_listing_work() {
     let input = Cursor::new(
         "model create\nUser\nuserId\nname\nstring\ny\nage\nint\nn\ndone\ny\nn\nmodel list\nmodel show User\nexit\n",
@@ -268,7 +441,7 @@ async fn choosing_first_instance_launches_creation_flow() {
 #[tokio::test]
 async fn script_mode_can_define_models() {
     let input = Cursor::new(
-        "# setup models\n\nmodel define User userId name:string:required age:int:optional\nmodel list\nmodel show User\n",
+        "# setup models\n\nmodel define User userId name:string:required age:int:optional\nmodel define Post postId title:string:required\nlink define Authored User Post authoredId year:int:required\nmodel list\nmodel show User\nlink list\nlink show Authored\n",
     );
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
@@ -281,8 +454,14 @@ async fn script_mode_can_define_models() {
     let model = state.model("User").unwrap();
     assert_eq!(model.id_field_name, "userId");
     assert_eq!(model.fields.len(), 2);
+    let rel_model = state.rel_model("Authored").unwrap();
+    assert_eq!(rel_model.from_model, "User");
+    assert_eq!(rel_model.to_model, "Post");
     assert!(output.contains("Model 'User' created from script."));
+    assert!(output.contains("Link 'Authored' created from script."));
     assert!(output.contains("Id: userId (int)"));
+    assert!(output.contains("Session links:"));
+    assert!(output.contains("Link: Authored"));
 }
 
 #[tokio::test]
@@ -293,4 +472,48 @@ async fn script_mode_rejects_bad_field_specs() {
 
     let err = session.run_script().await.unwrap_err();
     assert!(err.to_string().contains("invalid field requirement"));
+}
+
+#[tokio::test]
+async fn script_bootstrap_can_continue_interactively() {
+    let script_input = Cursor::new("model define User userId name:string:required\n");
+    let output = Vec::new();
+    let mut script_session = CliSession::new(script_input, output);
+
+    script_session.run_script().await.unwrap();
+
+    let (state, _, output) = script_session.into_parts();
+    let interactive_input = Cursor::new("model show User\nexit\n");
+    let mut interactive_session = CliSession::with_state(state, interactive_input, output);
+
+    interactive_session.continue_interactive().await.unwrap();
+
+    let (state, _, output) = interactive_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(state.model("User").is_some());
+    assert!(output.contains("Script loaded. Entering interactive session."));
+    assert!(output.contains("Model: User"));
+    assert!(output.contains("Id: userId (int)"));
+}
+
+#[tokio::test]
+async fn guided_relationship_model_creation_and_listing_work() {
+    let input = Cursor::new(
+        "model define User userId\nmodel define Post postId\nlink create\nAuthored\nUser\nPost\nauthoredId\nyear\nint\ny\ndone\ny\nn\nlink list\nlink show Authored\nexit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (state, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(state.rel_model("Authored").is_some());
+    assert!(output.contains("Link 'Authored' created."));
+    assert!(output.contains("Session links:"));
+    assert!(output.contains("Type: Authored"));
+    assert!(output.contains("From: User"));
+    assert!(output.contains("To: Post"));
 }

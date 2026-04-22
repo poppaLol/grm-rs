@@ -24,5 +24,6 @@ pub use repo::{NodeRepository, RelRepository, Repo};
 pub use client::{GraphClient, GraphPersistenceAccess};
 pub use decode::{DecodeFromRow, labels_match, node, rel, ResultShape};
 pub use runtime::{
-    CliSession, RuntimeField, RuntimeNodeModel, RuntimeValueType, SessionModelCatalog, SessionState,
+    CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
+    SessionModelCatalog, SessionState,
 };
