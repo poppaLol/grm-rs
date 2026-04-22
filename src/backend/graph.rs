@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use crate::{GraphQuery, GrmError, StoredNode, StoredRel, dsl::QueryResult, error::Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackendIdType {
     Int64,
     Uuid,
@@ -73,6 +74,18 @@ pub trait GraphTx {
         _props: BTreeMap<String, Value>,
     ) -> Result<StoredRel> {
         Err(GrmError::NotSupported("create_relationship"))
+    }
+
+    async fn update_relationship(
+        &mut self,
+        _id: i64,
+        _props: BTreeMap<String, Value>,
+    ) -> Result<Option<StoredRel>> {
+        Err(GrmError::NotSupported("update_relationship"))
+    }
+
+    async fn delete_relationship(&mut self, _id: i64) -> Result<()> {
+        Err(GrmError::NotSupported("delete_relationship"))
     }
 
     async fn outgoing(

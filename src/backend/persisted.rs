@@ -36,7 +36,7 @@ struct BinaryStoredRel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BinaryPersistedGraphStore {
+pub(crate) struct BinaryPersistedGraphStore {
     next_node_id: KernelNodeId,
     next_rel_id: KernelRelId,
     nodes: BTreeMap<KernelNodeId, BinaryStoredNode>,
@@ -70,7 +70,7 @@ fn decode_props(
 }
 
 impl GraphStore {
-    fn to_persisted(&self) -> PersistedGraphStore {
+    pub fn to_persisted(&self) -> PersistedGraphStore {
         PersistedGraphStore {
             next_node_id: self.next_node_id,
             next_rel_id: self.next_rel_id,
@@ -79,7 +79,7 @@ impl GraphStore {
         }
     }
 
-    fn from_persisted(persisted: PersistedGraphStore) -> Self {
+    pub fn from_persisted(persisted: PersistedGraphStore) -> Self {
         Self {
             next_node_id: persisted.next_node_id,
             next_rel_id: persisted.next_rel_id,
@@ -88,7 +88,7 @@ impl GraphStore {
         }
     }
 
-    fn to_binary_persisted(&self) -> Result<BinaryPersistedGraphStore> {
+    pub(crate) fn to_binary_persisted(&self) -> Result<BinaryPersistedGraphStore> {
         let nodes = self
             .nodes
             .iter()
@@ -129,7 +129,7 @@ impl GraphStore {
         })
     }
 
-    fn from_binary_persisted(persisted: BinaryPersistedGraphStore) -> Result<Self> {
+    pub(crate) fn from_binary_persisted(persisted: BinaryPersistedGraphStore) -> Result<Self> {
         let nodes = persisted
             .nodes
             .into_iter()

@@ -94,6 +94,25 @@ impl GraphTx for InMemoryTx {
         Ok(rel)
     }
 
+    async fn update_relationship(
+        &mut self,
+        id: i64,
+        props: BTreeMap<String, Value>,
+    ) -> Result<Option<StoredRel>> {
+        if let Some(rel) = self.working_copy.rels.get_mut(&id) {
+            for (k, v) in props {
+                rel.props.insert(k, v);
+            }
+            return Ok(Some(rel.clone()));
+        }
+        Ok(None)
+    }
+
+    async fn delete_relationship(&mut self, id: i64) -> Result<()> {
+        self.working_copy.rels.remove(&id);
+        Ok(())
+    }
+
     async fn outgoing(
         &mut self,
         from: i64,

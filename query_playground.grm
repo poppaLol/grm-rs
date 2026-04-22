@@ -1,0 +1,12 @@
+model.define User userId name:string:required age:int:optional
+model.define Post postId title:string:required published:bool:optional
+link.define Authored User Post authoredId year:int:required
+
+node.create User name=Alice age=42
+node.create User name=Bob age=35
+
+node.create Post title=Hello published=true
+node.create Post title=Draft published=false
+
+edge.create Authored from=1 to=3 year=2024
+edge.create Authored from=2 to=4 year=2025
