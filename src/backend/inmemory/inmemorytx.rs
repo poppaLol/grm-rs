@@ -207,6 +207,18 @@ impl InMemoryBackend {
             store: Arc::new(Mutex::new(store)),
         })
     }
+
+    pub fn save_to_binary_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let store = self.store.lock().unwrap().clone_store();
+        store.save_to_binary_file(path)
+    }
+
+    pub fn load_from_binary_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let store = GraphStore::load_from_binary_file(path)?;
+        Ok(Self {
+            store: Arc::new(Mutex::new(store)),
+        })
+    }
 }
 
 impl GraphPersistence for InMemoryBackend {
@@ -216,6 +228,14 @@ impl GraphPersistence for InMemoryBackend {
 
     fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::load_from_file(path)
+    }
+
+    fn save_to_binary_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        self.save_to_binary_file(path)
+    }
+
+    fn load_from_binary_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::load_from_binary_file(path)
     }
 }
 
