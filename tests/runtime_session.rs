@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::io::Cursor;
 
 use grm_rs::{
@@ -389,7 +390,7 @@ async fn relationship_creation_rejects_wrong_endpoint_models() {
 #[tokio::test]
 async fn guided_model_creation_and_listing_work() {
     let input = Cursor::new(
-        "model create\nUser\nuserId\nname\nstring\ny\nage\nint\nn\ndone\ny\nn\nmodel list\nmodel show User\nexit\n",
+        "model.define\nUser\nuserId\nname\nstring\ny\nage\nint\nn\ndone\ny\nn\nmodel.list\nmodel.show User\nsession.exit\n",
     );
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
@@ -409,7 +410,7 @@ async fn guided_model_creation_and_listing_work() {
 
 #[tokio::test]
 async fn canceling_confirmation_does_not_register_model() {
-    let input = Cursor::new("model create\nUser\nuserId\nname\nstring\ny\ndone\nn\nexit\n");
+    let input = Cursor::new("model.define\nUser\nuserId\nname\nstring\ny\ndone\nn\nsession.exit\n");
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
 
@@ -424,7 +425,7 @@ async fn canceling_confirmation_does_not_register_model() {
 
 #[tokio::test]
 async fn choosing_first_instance_launches_creation_flow() {
-    let input = Cursor::new("model create\nUser\nuserId\nname\nstring\ny\ndone\ny\ny\nAlice\nexit\n");
+    let input = Cursor::new("model.define\nUser\nuserId\nname\nstring\ny\ndone\ny\ny\nAlice\nsession.exit\n");
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
 
@@ -441,7 +442,7 @@ async fn choosing_first_instance_launches_creation_flow() {
 #[tokio::test]
 async fn script_mode_can_define_models() {
     let input = Cursor::new(
-        "# setup models\n\nmodel define User userId name:string:required age:int:optional\nmodel define Post postId title:string:required\nlink define Authored User Post authoredId year:int:required\nmodel list\nmodel show User\nlink list\nlink show Authored\n",
+        "# setup models\n\nmodel.define User userId name:string:required age:int:optional\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nmodel.list\nmodel.show User\nlink.list\nlink.show Authored\n",
     );
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
@@ -466,7 +467,7 @@ async fn script_mode_can_define_models() {
 
 #[tokio::test]
 async fn script_mode_rejects_bad_field_specs() {
-    let input = Cursor::new("model define User userId name:string:maybe\n");
+    let input = Cursor::new("model.define User userId name:string:maybe\n");
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
 
@@ -476,14 +477,14 @@ async fn script_mode_rejects_bad_field_specs() {
 
 #[tokio::test]
 async fn script_bootstrap_can_continue_interactively() {
-    let script_input = Cursor::new("model define User userId name:string:required\n");
+    let script_input = Cursor::new("model.define User userId name:string:required\n");
     let output = Vec::new();
     let mut script_session = CliSession::new(script_input, output);
 
     script_session.run_script().await.unwrap();
 
     let (state, _, output) = script_session.into_parts();
-    let interactive_input = Cursor::new("model show User\nexit\n");
+    let interactive_input = Cursor::new("model.show User\nsession.exit\n");
     let mut interactive_session = CliSession::with_state(state, interactive_input, output);
 
     interactive_session.continue_interactive().await.unwrap();
@@ -500,7 +501,7 @@ async fn script_bootstrap_can_continue_interactively() {
 #[tokio::test]
 async fn guided_relationship_model_creation_and_listing_work() {
     let input = Cursor::new(
-        "model define User userId\nmodel define Post postId\nlink create\nAuthored\nUser\nPost\nauthoredId\nyear\nint\ny\ndone\ny\nn\nlink list\nlink show Authored\nexit\n",
+        "model.define User userId\nmodel.define Post postId\nlink.define\nAuthored\nUser\nPost\nauthoredId\nyear\nint\ny\ndone\ny\nn\nlink.list\nlink.show Authored\nsession.exit\n",
     );
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
@@ -516,4 +517,152 @@ async fn guided_relationship_model_creation_and_listing_work() {
     assert!(output.contains("Type: Authored"));
     assert!(output.contains("From: User"));
     assert!(output.contains("To: Post"));
+}
+
+#[tokio::test]
+async fn node_find_uses_dotted_query_syntax() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:optional\nnode.create User name=Alice age=42\nnode.create User name=Bob\nnode.find User name=Alice\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Node User userId=1 {age=42 name=Alice}"));
+    assert!(!output.contains("userId=2 {name=Bob}"));
+}
+
+#[tokio::test]
+async fn edge_find_uses_dotted_query_syntax() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nedge.find Authored from=1\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Edge Authored authoredId=1 from=1 to=2 {year=2024}"));
+}
+
+#[tokio::test]
+async fn node_update_and_delete_work() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:optional\nnode.create User name=Alice age=42\nnode.update User 1 age=43\nnode.find User age=43\nnode.delete User 1\nnode.find User id=1\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Updated node User userId=1 {age=43 name=Alice}"));
+    assert!(output.contains("Node User userId=1 {age=43 name=Alice}"));
+    assert!(output.contains("Deleted node User 1."));
+    assert!(output.contains("No nodes matched model 'User'."));
+}
+
+#[tokio::test]
+async fn edge_update_and_delete_work() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nedge.update Authored 1 year=2025\nedge.find Authored year=2025\nedge.delete Authored 1\nedge.find Authored id=1\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Updated edge Authored authoredId=1 from=1 to=2 {year=2025}"));
+    assert!(output.contains("Edge Authored authoredId=1 from=1 to=2 {year=2025}"));
+    assert!(output.contains("Deleted edge Authored 1."));
+    assert!(output.contains("No edges matched link 'Authored'."));
+}
+
+#[tokio::test]
+async fn deleting_node_removes_attached_edges_via_session_commands() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nnode.delete User 1\nedge.find Authored\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Deleted node User 1."));
+    assert!(output.contains("No edges matched link 'Authored'."));
+}
+
+#[tokio::test]
+async fn session_save_supports_json_and_bin_flags() {
+    let json_path = "/tmp/grm-session-save-test.json";
+    let bin_path = "/tmp/grm-session-save-test.bin";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(bin_path);
+
+    let input = Cursor::new(format!(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nsession.save --json {json_path}\nsession.save --bin {bin_path}\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(fs::metadata(json_path).is_ok());
+    assert!(fs::metadata(bin_path).is_ok());
+    assert!(output.contains("Saved session to JSON file"));
+    assert!(output.contains("Saved session to binary file"));
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(bin_path);
+}
+
+#[tokio::test]
+async fn session_load_restores_graph_and_runtime_schema() {
+    let json_path = "/tmp/grm-session-load-test.json";
+    let _ = fs::remove_file(json_path);
+
+    let input = Cursor::new(format!(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.save --json {json_path}\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+    session.run().await.unwrap();
+
+    let load_input = Cursor::new(format!(
+        "session.load --json {json_path}\nmodel.show User\nlink.show Authored\nnode.find User name=Alice\nedge.find Authored from=1\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut loaded_session = CliSession::new(load_input, output);
+    loaded_session.run().await.unwrap();
+
+    let (state, _, output) = loaded_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(state.model("User").is_some());
+    assert!(state.rel_model("Authored").is_some());
+    assert!(output.contains("Loaded session from JSON file"));
+    assert!(output.contains("Model: User"));
+    assert!(output.contains("Link: Authored"));
+    assert!(output.contains("Node User userId=1 {name=Alice}"));
+    assert!(output.contains("Edge Authored authoredId=1 from=1 to=2 {year=2024}"));
+
+    let _ = fs::remove_file(json_path);
 }
