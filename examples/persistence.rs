@@ -29,7 +29,13 @@ struct Authored {
     #[grm(id)]
     #[serde(skip)]
     pub(crate) id: AuthoredId,
-    pub year: u64
+    pub year: u64,
+    
+    #[grm(skip)]
+    pub(crate) from: UserId,
+
+    #[grm(skip)]
+    pub(crate) to: PostId,
 }
 
 #[tokio::main]
@@ -64,11 +70,15 @@ async fn main() -> Result<()> {
     let mut authored1 = Authored {
         id: AuthoredId::from(1),
         year: 2024,
+        from: UserId::default(),
+        to: PostId::default()
     };
 
     let mut authored2 = Authored {
         id: AuthoredId::from(2),
         year: 2024,
+        from: UserId::default(),
+        to: PostId::default()
     };
 
     // Persist to JSON
@@ -117,13 +127,15 @@ async fn main() -> Result<()> {
         }
         drop(tx);
 
-        // println!("\nRelationships:");
-        // let mut tx = client.transaction().await?;
-        // let rels = tx.query_rel::<User>(Query::matching(NodePattern::new()).return_rel()).await?;
-        // for rel in rels {
-        //     println!("    - User {} -> Post {}", rel.from.id.0, rel.to.id.0);
-        // }
-        // drop(tx);
+        println!("\nRelationships:");
+        let mut tx = client.transaction().await?;
+        let rels = tx.query_rel::<User, Authored>(Query::matching(
+            NodePattern::<User>::new().out::<Authored>().to::<Post>()).return_rel())
+            .await?;
+        for rel in rels {
+            println!("{:?} Links - User {}: to Post {}", rel.id, rel.from.0, rel.to.0);
+        }
+        drop(tx);
     }
 
     println!("\n✓ Graph loaded and verified!");

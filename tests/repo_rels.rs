@@ -27,6 +27,8 @@ async fn rel_repository_create_and_outgoing() {
     let mut authored = Authored {
         id: AuthoredId(0),
         year: 2024,
+        from: UserId::default(),
+        to: PostId::default(),
     };
     rel_repo
         .create_between(&user.id, &post.id, &mut authored)
@@ -36,9 +38,9 @@ async fn rel_repository_create_and_outgoing() {
 
     let edges = rel_repo.outgoing_from(&user.id).await.unwrap();
 
-    let (rel, target_post) = &edges[0];
+    let (rel, target_id) = &edges[0];
     assert_eq!(rel.year, 2024);
-    assert_eq!(target_post.title, "Hello Graph");
+    assert_eq!(target_id.unwrap(), i64::from(post.id));
 }
 
 #[tokio::test]
@@ -65,6 +67,8 @@ async fn deleting_node_removes_outgoing_relationships() {
     let mut authored = Authored {
         id: AuthoredId(0),
         year: 2024,
+        from: UserId::default(),
+        to: PostId::default(),
     };
     rel_repo
         .create_between(&user.id, &post.id, &mut authored)

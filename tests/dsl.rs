@@ -608,6 +608,8 @@ mod tests {
         let mut auth = Authored {
             id: AuthoredId::default(),
             year: 2024,
+            from: UserId::default(),
+            to: PostId::default(),
         };
 
         u_repo.create(&mut u1).await?;

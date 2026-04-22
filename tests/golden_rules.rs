@@ -24,7 +24,12 @@ async fn execute_graph_rows_contain_bound_vars_and_correct_return_kind() -> Resu
         repo.nodes::<User>().create(&mut user).await?;
         repo.nodes::<Post>().create(&mut post).await?;
 
-        let mut rel = Authored { id: AuthoredId::default(), year: 2020 };
+        let mut rel = Authored {
+            id: AuthoredId::default(),
+            year: 2020,
+            from: UserId::default(),
+            to: PostId::default(),
+        };
         repo.rels::<Authored>().create_between(user.id(), post.id(), &mut rel).await?;
     }
 

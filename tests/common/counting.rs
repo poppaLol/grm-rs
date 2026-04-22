@@ -1,7 +1,7 @@
-use std::sync::{
+use std::{collections::BTreeMap, sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
-};
+}};
 use grm_rs::{GraphBackend, GraphQuery, GraphTx, InMemoryBackend, QueryResult, Result, StoredNode, StoredRel};
 use serde_json::Value;
 
@@ -40,20 +40,20 @@ impl GraphBackend for CountingBackend {
 impl<T: GraphTx + Send> GraphTx for CountingTx<T> {
     // Delegate everything you use in this test:
 
-    async fn commit(self) -> grm_rs::error::Result<()> {
+    async fn commit(self) -> Result<()> {
         self.commits.fetch_add(1, Ordering::SeqCst);
         self.inner.commit().await
     }
 
-    async fn rollback(self) -> grm_rs::error::Result<()> {
+    async fn rollback(self) -> Result<()> {
         self.inner.rollback().await
     }
 
     async fn create_node(
         &mut self,
         labels: Vec<String>,
-        props: std::collections::BTreeMap<String, serde_json::Value>,
-    ) -> grm_rs::error::Result<StoredNode> {
+        props: BTreeMap<String, serde_json::Value>,
+    ) -> Result<StoredNode> {
         self.inner.create_node(labels, props).await
     }
 
@@ -62,8 +62,8 @@ impl<T: GraphTx + Send> GraphTx for CountingTx<T> {
         from: i64,
         to: i64,
         rel_type: &str,
-        props: std::collections::BTreeMap<String, serde_json::Value>,
-    ) -> grm_rs::error::Result<StoredRel> {
+        props: BTreeMap<String, serde_json::Value>,
+    ) -> Result<StoredRel> {
         self.inner.create_relationship(from, to, rel_type, props).await
     }
 

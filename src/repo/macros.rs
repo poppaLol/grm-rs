@@ -24,3 +24,12 @@ macro_rules! autocommit {
         }
     }};
 }
+#[macro_export]
+macro_rules! autoread {
+    ($backend:expr, |$tx:ident| $body:expr) => {{
+        let inner = $backend.begin_tx().await?;
+        let mut $tx = Transaction::from_inner(inner);
+        let result = { $body };
+        result
+    }};
+}
