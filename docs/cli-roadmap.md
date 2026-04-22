@@ -45,9 +45,10 @@ The current CLI is useful, but there are several major limitations:
 
 ### Next
 
-1. Persistence durability improvements
-2. Smarter autocommit strategy
-3. Session UX polish
+1. Python integration surface
+2. Persistence durability improvements
+3. Smarter autocommit strategy
+4. Session UX polish
 
 ### Later
 
@@ -103,6 +104,18 @@ Target areas:
 - improve interrupted-write safety
 - define recovery behavior for damaged session files
 - keep `session.save`, `session.load`, and `session.autocommit` simple from the user perspective
+
+### Python Integration Surface
+
+Make the current CLI/session work available to Python consumers without forcing the CLI to be the only integration path.
+
+Target areas:
+
+- define a short-term machine-readable CLI flow for experimentation and automation
+- design a proper Python binding layer over stable library/session abstractions
+- avoid exposing Rust-specific generic and macro-heavy surfaces directly as the first Python API
+- prefer Python-friendly dict/list-style inputs and outputs for the initial binding surface
+- keep the binding plan aligned with future session-core refactoring instead of baking more behavior into the CLI shell
 
 ### Runtime Schema Architecture
 
