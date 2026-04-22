@@ -37,6 +37,10 @@ pub struct Contains {
     #[grm(id)]
     #[serde(skip)]
     pub id: ContainsId,
+    #[grm(skip)]
+    from: ParagraphId,
+    #[grm(skip)]
+    to: MetricId,
 }
 
 pub fn nodevalue_labels_match<M: NodeModel>(n: &NodeValue) -> bool {
@@ -82,9 +86,13 @@ async fn test_document_schema_construction() -> Result<()> {
 
         let mut cont = Contains {
             id: ContainsId::default(),
+            from: ParagraphId::default(),
+            to: MetricId::default(),
         };
         let mut cont2 = Contains {
             id: ContainsId::default(),
+            from: ParagraphId::default(),
+            to: MetricId::default(),
         };
 
         repo.rels::<Contains>()

@@ -169,6 +169,8 @@ mod node_matches_filters_tests {
             let mut authored = Authored {
                 id: AuthoredId::default(),
                 year: 2020,
+                from: UserId::default(),
+                to: PostId::default(),
             };
             repo.rels::<Authored>()
                 .create_between(&user_id, &post_id, &mut authored)
