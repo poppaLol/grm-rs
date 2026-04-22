@@ -21,6 +21,81 @@ Over time, the project aims to support additional backends and a CLI for both hu
 
 ---
 
+## 🖥️ Interactive Session
+
+`grm-rs` now includes a small interactive CLI for working with runtime-defined models on a fresh in-memory graph.
+
+The entrypoint is:
+
+```bash
+cargo run --bin grm -- session
+```
+
+This starts an empty session and drops you into a prompt like:
+
+```text
+grm(session)>
+```
+
+From there you can:
+
+* define node models interactively with `model create`
+* define node models from a one-line command with `model define`
+* define links interactively with `link create`
+* define links from a one-line command with `link define`
+* inspect models and links with `model list`, `model show <name>`, `link list`, and `link show <name>`
+* create the first node or relationship immediately after a model wizard completes
+
+### Bootstrapping From A Script
+
+You can preload models from a script and then continue working in the same session:
+
+```bash
+cargo run --bin grm -- session --script examples/session_setup.grm
+```
+
+The script is executed first, and then the CLI drops into the interactive prompt with the same in-memory state still available. This makes the typical flow:
+
+1. bootstrap models from a script
+2. enter the interactive session
+3. create nodes and relationships against those runtime models
+
+Example script commands:
+
+```text
+model define User userId name:string:required age:int:optional
+model define Post postId title:string:required
+link define Authored User Post authoredId year:int:required
+```
+
+### Interactive Commands
+
+Node model commands:
+
+```text
+model create
+model define <Name> <id_field> [field:type:required|optional ...]
+model list
+model show <name>
+```
+
+Link commands:
+
+```text
+link create
+link define <Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]
+link list
+link show <name>
+```
+
+### Notes
+
+* runtime models are session-local in the current implementation
+* model and relationship IDs are backend-assigned; the CLI asks for the user-facing ID field name and uses the backend-reported ID type
+* the current in-memory backend reports `int` IDs
+
+---
+
 ## ✨ Features
 
 ### 🧬 Typed Entities

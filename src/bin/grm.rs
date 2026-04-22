@@ -25,6 +25,15 @@ async fn main() {
                         eprintln!("{err}");
                         std::process::exit(1);
                     }
+
+                    let (state, _, writer) = session.into_parts();
+                    let stdin = io::stdin();
+                    let reader = BufReader::new(stdin.lock());
+                    let mut session = CliSession::with_state(state, reader, writer);
+                    if let Err(err) = session.continue_interactive().await {
+                        eprintln!("{err}");
+                        std::process::exit(1);
+                    }
                 }
                 (None, None) => {
                     let stdin = io::stdin();
