@@ -45,6 +45,9 @@ From there you can:
 * query runtime data with `node.find` and `edge.find`
 * inspect definitions with `model.list`, `model.show <name>`, `link.list`, and `link.show <name>`
 * save the current graph with `session.save --json <path>` or `session.save --bin <path>`
+* keep a working session durable with `session.autocommit --json <path>` or `session.autocommit --bin <path>`
+
+For current limitations and planned next steps, see [docs/cli-roadmap.md](docs/cli-roadmap.md).
 
 ### Bootstrapping From A Script
 
@@ -102,14 +105,21 @@ Session commands:
 session.help
 session.save --json <path>
 session.save --bin <path>
+session.load --json <path>
+session.load --bin <path>
+session.autocommit --json <path>
+session.autocommit --bin <path>
+session.autocommit status
+session.autocommit off
 session.exit
 ```
 
 ### Notes
 
-* runtime models are session-local in the current implementation
+* runtime models and links are persisted with session save/load files
 * model and relationship IDs are backend-assigned; the CLI asks for the user-facing ID field name and uses the backend-reported ID type
 * the current in-memory backend reports `int` IDs
+* `session.autocommit` writes the whole session after each successful change, including model/link definitions, data mutations, and `session.load`
 
 ---
 
