@@ -41,6 +41,7 @@ struct Authored {
 #[tokio::main]
 async fn main() -> Result<()> {
     let json_file = "graph.json";
+    let bin_file = "graph.bin";
 
     let backend = InMemoryBackend::new();
 
@@ -102,6 +103,11 @@ async fn main() -> Result<()> {
 
     println!("✓ Graph persisted to JSON\n");
 
+    println!("Persisting graph to binary...");
+    println!("  -> Writing to {}...", bin_file);
+    client.persistence().expect("Backend does not support persistence").save_to_binary_file(bin_file)?;
+    println!("✓ Graph persisted to binary\n");
+
     // Load from JSON
     println!("Loading graph from JSON...");
     {
@@ -134,6 +140,23 @@ async fn main() -> Result<()> {
             .await?;
         for rel in rels {
             println!("{:?} Links - User {}: to Post {}", rel.id, rel.from.0, rel.to.0);
+        }
+        drop(tx);
+    }
+
+    println!("\nLoading graph from binary...");
+    {
+        let client = GraphClient::new(
+            InMemoryBackend::load_from_binary_file(bin_file)?
+        );
+
+        println!("  -> Loaded successfully");
+        let mut tx = client.transaction().await?;
+        let rels = tx.query_rel::<User, Authored>(Query::matching(
+            NodePattern::<User>::new().out::<Authored>().to::<Post>()).return_rel())
+            .await?;
+        for rel in rels {
+            println!("Binary {:?} Links - User {}: to Post {}", rel.id, rel.from.0, rel.to.0);
         }
         drop(tx);
     }
