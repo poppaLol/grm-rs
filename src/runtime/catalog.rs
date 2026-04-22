@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{BackendIdType, GrmError, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeValueType {
     String,
     Int,
@@ -47,6 +48,7 @@ impl RuntimeValueType {
                 .map_err(|_| GrmError::Constraint("expected float value".into())),
             Self::Bool => input
                 .trim()
+                .to_ascii_lowercase()
                 .parse::<bool>()
                 .map(Value::from)
                 .map_err(|_| GrmError::Constraint("expected bool value (true/false)".into())),
@@ -54,14 +56,14 @@ impl RuntimeValueType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeField {
     pub name: String,
     pub value_type: RuntimeValueType,
     pub required: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeNodeModel {
     pub name: String,
     pub label: String,
@@ -70,7 +72,7 @@ pub struct RuntimeNodeModel {
     pub fields: Vec<RuntimeField>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRelModel {
     pub name: String,
     pub rel_type: String,
@@ -234,7 +236,7 @@ impl RuntimeRelModel {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionModelCatalog {
     node_models: BTreeMap<String, RuntimeNodeModel>,
     rel_models: BTreeMap<String, RuntimeRelModel>,

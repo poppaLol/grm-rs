@@ -11,5 +11,6 @@ pub use storednode::StoredNode;
 pub use storedrel::StoredRel;
 pub use graphstore::GraphStore;
 pub use persisted::PersistedGraphStore;
+pub(crate) use persisted::BinaryPersistedGraphStore;
 pub use graphpersistence::GraphPersistence;
 pub use graph::*;

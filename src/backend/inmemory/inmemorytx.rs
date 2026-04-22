@@ -196,6 +196,35 @@ impl InMemoryBackend {
         }
     }
 
+    pub fn snapshot_nodes(&self) -> Vec<StoredNode> {
+        self.store
+            .lock()
+            .unwrap()
+            .nodes
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn snapshot_relationships(&self) -> Vec<StoredRel> {
+        self.store
+            .lock()
+            .unwrap()
+            .rels
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn snapshot_store(&self) -> GraphStore {
+        self.store.lock().unwrap().clone_store()
+    }
+
+    pub fn replace_store(&self, store: GraphStore) {
+        let mut current = self.store.lock().unwrap();
+        *current = store;
+    }
+
     pub fn save_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
         let store = self.store.lock().unwrap().clone_store();
         store.save_to_file(path)
