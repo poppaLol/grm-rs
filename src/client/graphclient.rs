@@ -40,6 +40,14 @@ impl<'a, B: GraphBackend + GraphPersistence> GraphPersistenceAccess<'a, B> {
     pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<B> {
         B::load_from_file(path)
     }
+
+    pub fn save_to_binary_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        self.backend.save_to_binary_file(path)
+    }
+
+    pub fn load_from_binary_file(path: impl AsRef<std::path::Path>) -> Result<B> {
+        B::load_from_binary_file(path)
+    }
 }
 
 // Cheap-to-clone entrypoint (pool/connector).
