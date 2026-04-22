@@ -6,6 +6,8 @@ description = "Procedural macros for grm-rs typed node and relationship models."
 repository = "https://github.com/poppaLol/grm-rs"
 homepage = "https://github.com/poppaLol/grm-rs"
 documentation = "https://docs.rs/grm-rs-macros"
+license-file = "../LICENSE"
+publish = false
 
 [lib]
 proc-macro = true
