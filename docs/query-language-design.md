@@ -38,6 +38,7 @@ Node query terms:
              | via=<traversal-step>
              | end.<predicate>
              | edge.<predicate>
+             | rel.<predicate>
              | return=root|end|edge
              | limit=<int>
              | offset=<int>
@@ -88,7 +89,20 @@ Traversal:
 ```text
 <traversal-step> := <direction>:<link-name|*>:<end-model>
 <direction>      := out | in | both
+<link-name|*>    := <LinkName> | *
 ```
+
+Traversal semantics:
+
+- one or more `via=` terms may be chained to describe a multi-hop traversal
+- root predicates still apply to the starting model named by `node.find`
+- `end.<predicate>` applies to the final node reached by the traversal chain
+- `edge.<predicate>` and `rel.<predicate>` apply to the final traversed relationship
+- `return=end` returns the final node and is the default for traversal queries
+- `return=root` returns the starting node after traversal filtering has been applied
+- `return=edge` returns the final traversed relationship
+- `return=...`, `end.*`, and `edge.*`/`rel.*` are only valid when at least one `via=` term is present
+- `*` means "match any link type", but only when the runtime can resolve that hop unambiguously
 
 Ordering:
 
@@ -160,6 +174,22 @@ edge.find Authored from=1 year>=2024 order=year:desc,to:asc limit=10
 node.find User name="Alice Jones" via=out:Authored:Post
 node.find User name="Alice Jones" via=out:Accessed:Post end.title="Draft Notes"
 node.find User name="Alice Jones" via=out:Accessed:Post edge.accessedOn=2026-04-20 return=edge
+node.find User name="Alice Jones" via=out:*:Post
+node.find User name="Alice Jones" via=out:Authored:Post via=in:CommentedOn:Comment
+node.find User name="Alice Jones" via=out:Accessed:Post end.title~"Draft" return=root
+```
+
+### Traversal result intent
+
+```text
+node.find User name="Alice Jones" via=out:Authored:Post
+# returns matching Post end nodes
+
+node.find User name="Alice Jones" via=out:Authored:Post return=root
+# returns matching User root nodes
+
+node.find User name="Alice Jones" via=out:Authored:Post return=edge
+# returns matching Authored relationships from the final hop
 ```
 
 ### Output format selection
@@ -252,10 +282,13 @@ These should remain reserved inside `find` commands:
 - `offset`
 - `order`
 - `format`
+- `via`
+- `return`
 - `from`
 - `to`
 
 `from` and `to` are special only for edge queries.
+`end.` / `edge.` / `rel.` are special prefixes only for traversal-capable node queries.
 
 ## Parser Expectations
 

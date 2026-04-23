@@ -1,7 +1,11 @@
 use std::fs::File;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, IsTerminal};
 
 use grm_rs::CliSession;
+
+fn should_enable_color() -> bool {
+    io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
 
 #[tokio::main]
 async fn main() {
@@ -20,7 +24,7 @@ async fn main() {
                         }
                     };
                     let reader = BufReader::new(file);
-                    let mut session = CliSession::new(reader, writer);
+                    let mut session = CliSession::new_with_color(reader, writer, should_enable_color());
                     if let Err(err) = session.run_script().await {
                         eprintln!("{err}");
                         std::process::exit(1);
@@ -29,7 +33,8 @@ async fn main() {
                     let (state, _, writer) = session.into_parts();
                     let stdin = io::stdin();
                     let reader = BufReader::new(stdin.lock());
-                    let mut session = CliSession::with_state(state, reader, writer);
+                    let mut session =
+                        CliSession::with_state_and_color(state, reader, writer, should_enable_color());
                     if let Err(err) = session.continue_interactive().await {
                         eprintln!("{err}");
                         std::process::exit(1);
@@ -38,7 +43,7 @@ async fn main() {
                 (None, None) => {
                     let stdin = io::stdin();
                     let reader = BufReader::new(stdin.lock());
-                    let mut session = CliSession::new(reader, writer);
+                    let mut session = CliSession::new_with_color(reader, writer, should_enable_color());
                     if let Err(err) = session.run().await {
                         eprintln!("{err}");
                         std::process::exit(1);

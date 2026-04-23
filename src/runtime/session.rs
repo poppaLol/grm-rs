@@ -128,6 +128,20 @@ enum SessionQueryResult {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionOutputMode {
+    Interactive,
+    Script,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ScriptSummary {
+    created_node_types: Vec<String>,
+    created_link_types: Vec<String>,
+    inserted_nodes: BTreeMap<String, usize>,
+    inserted_edges: BTreeMap<String, usize>,
+}
+
 impl Default for SessionState {
     fn default() -> Self {
         Self::new()
@@ -954,26 +968,43 @@ pub struct CliSession<R: BufRead, W: Write> {
     writer: W,
     prompt_name: &'static str,
     autocommit: Option<AutocommitTarget>,
+    colors: SessionColors,
+    output_mode: SessionOutputMode,
+    script_summary: ScriptSummary,
 }
 
 impl<R: BufRead, W: Write> CliSession<R, W> {
     pub fn new(reader: R, writer: W) -> Self {
-        Self {
-            state: SessionState::new(),
+        Self::with_colors(SessionState::new(), reader, writer, SessionColors::plain())
+    }
+
+    pub fn new_with_color(reader: R, writer: W, enabled: bool) -> Self {
+        Self::with_colors(
+            SessionState::new(),
             reader,
             writer,
-            prompt_name: "session",
-            autocommit: None,
-        }
+            SessionColors::for_terminal(enabled),
+        )
     }
 
     pub fn with_state(state: SessionState, reader: R, writer: W) -> Self {
+        Self::with_colors(state, reader, writer, SessionColors::plain())
+    }
+
+    pub fn with_state_and_color(state: SessionState, reader: R, writer: W, enabled: bool) -> Self {
+        Self::with_colors(state, reader, writer, SessionColors::for_terminal(enabled))
+    }
+
+    fn with_colors(state: SessionState, reader: R, writer: W, colors: SessionColors) -> Self {
         Self {
             state,
             reader,
             writer,
             prompt_name: "session",
             autocommit: None,
+            colors,
+            output_mode: SessionOutputMode::Interactive,
+            script_summary: ScriptSummary::default(),
         }
     }
 
@@ -987,20 +1018,26 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
     pub async fn run(&mut self) -> Result<()> {
         self.run_interactive_loop(
-            "Fresh in-memory graph session started. Type 'session.help' for commands.",
+            "Welcome to GRM-RS CLI.\nFresh in-memory graph session started. Type 'session.help' for commands.",
         )
         .await
     }
 
     pub async fn continue_interactive(&mut self) -> Result<()> {
         self.run_interactive_loop(
-            "Script loaded. Entering interactive session. Type 'session.help' for commands.",
+            "Welcome to GRM-RS CLI.\nScript loaded. Entering interactive session. Type 'session.help' for commands.",
         )
         .await
     }
 
     pub async fn run_script(&mut self) -> Result<()> {
         self.prompt_name = "script";
+        self.output_mode = SessionOutputMode::Script;
+        self.script_summary = ScriptSummary::default();
+
+        writeln!(self.writer, "Welcome to GRM-RS CLI.")?;
+        writeln!(self.writer, "Running setup script...")?;
+
         loop {
             let Some(line) = self.read_command_line()? else {
                 break;
@@ -1011,14 +1048,16 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 continue;
             }
 
-            writeln!(self.writer, "grm(script)> {trimmed}")?;
             let should_exit = self.handle_command(trimmed).await?;
             if should_exit {
                 break;
             }
         }
 
+        self.write_script_summary()?;
+
         self.prompt_name = "session";
+        self.output_mode = SessionOutputMode::Interactive;
 
         Ok(())
     }
@@ -1222,6 +1261,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     fn write_model_list(&mut self) -> Result<()> {
+        if self.output_mode == SessionOutputMode::Script {
+            return Ok(());
+        }
         let models = self.state.model_list();
         if models.is_empty() {
             writeln!(self.writer, "No models defined in this session.")?;
@@ -1242,6 +1284,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     fn write_rel_model_list(&mut self) -> Result<()> {
+        if self.output_mode == SessionOutputMode::Script {
+            return Ok(());
+        }
         let models = self.state.rel_model_list();
         if models.is_empty() {
             writeln!(self.writer, "No links defined in this session.")?;
@@ -1264,6 +1309,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     fn write_model_show(&mut self, name: &str) -> Result<()> {
+        if self.output_mode == SessionOutputMode::Script {
+            return Ok(());
+        }
         let Some(model) = self.state.model(name) else {
             writeln!(self.writer, "Model '{name}' not found.")?;
             return Ok(());
@@ -1302,6 +1350,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     fn write_rel_model_show(&mut self, name: &str) -> Result<()> {
+        if self.output_mode == SessionOutputMode::Script {
+            return Ok(());
+        }
         let Some(model) = self.state.rel_model(name) else {
             writeln!(self.writer, "Link '{name}' not found.")?;
             return Ok(());
@@ -1388,8 +1439,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
         let model = RuntimeNodeModel::new(name, id_field_name, self.state.node_id_type(), fields)?;
         self.state.register_model(model.clone())?;
+        self.script_summary.created_node_types.push(model.name.clone());
         self.persist_autocommit()?;
-        writeln!(self.writer, "Model '{}' created from script.", model.name)?;
+        if self.output_mode != SessionOutputMode::Script {
+            writeln!(self.writer, "Model '{}' created from script.", model.name)?;
+        }
         Ok(())
     }
 
@@ -1419,8 +1473,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             fields,
         )?;
         self.state.register_rel_model(model.clone())?;
+        self.script_summary.created_link_types.push(model.name.clone());
         self.persist_autocommit()?;
-        writeln!(self.writer, "Link '{}' created from script.", model.name)?;
+        if self.output_mode != SessionOutputMode::Script {
+            writeln!(self.writer, "Link '{}' created from script.", model.name)?;
+        }
         Ok(())
     }
 
@@ -1494,12 +1551,19 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .model(model_name)
             .ok_or(crate::GrmError::NotFound)?;
+        *self
+            .script_summary
+            .inserted_nodes
+            .entry(model.name.clone())
+            .or_insert(0) += 1;
         self.persist_autocommit()?;
-        writeln!(
-            self.writer,
-            "Created node {} with backend id {}. {}={}.",
-            model.name, created.id, model.id_field_name, created.id
-        )?;
+        if self.output_mode != SessionOutputMode::Script {
+            writeln!(
+                self.writer,
+                "Created node {} with backend id {}. {}={}.",
+                model.name, created.id, model.id_field_name, created.id
+            )?;
+        }
         Ok(())
     }
 
@@ -1524,7 +1588,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             model.name,
             model.id_field_name,
             updated.id,
-            format_props(&updated.props)
+            format_props(&updated.props, &self.colors)
         )?;
         Ok(())
     }
@@ -1566,12 +1630,19 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .rel_model(model_name)
             .ok_or(crate::GrmError::NotFound)?;
+        *self
+            .script_summary
+            .inserted_edges
+            .entry(model.name.clone())
+            .or_insert(0) += 1;
         self.persist_autocommit()?;
-        writeln!(
-            self.writer,
-            "Created edge {} of type '{}'. {}={}.",
-            created.id, model.rel_type, model.id_field_name, created.id
-        )?;
+        if self.output_mode != SessionOutputMode::Script {
+            writeln!(
+                self.writer,
+                "Created edge {} of type '{}'. {}={}.",
+                created.id, model.rel_type, model.id_field_name, created.id
+            )?;
+        }
         Ok(())
     }
 
@@ -1598,7 +1669,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             updated.id,
             updated.from,
             updated.to,
-            format_props(&updated.props)
+            format_props(&updated.props, &self.colors)
         )?;
         Ok(())
     }
@@ -1736,6 +1807,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         result: SessionQueryResult,
         format: OutputFormat,
     ) -> Result<()> {
+        if self.output_mode == SessionOutputMode::Script {
+            return Ok(());
+        }
         match format {
             OutputFormat::Default => self.render_default_query_result(result),
             OutputFormat::Jsonl => self.render_jsonl_query_result(result),
@@ -1764,10 +1838,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                     writeln!(
                         self.writer,
                         "Node {} {}={} {}",
-                        model.name,
-                        model.id_field_name,
+                        self.colors.type_name(&model.name),
+                        self.colors.property_name(&model.id_field_name),
                         node.id,
-                        format_props(&node.props)
+                        format_props(&node.props, &self.colors)
                     )?;
                 }
             }
@@ -1787,12 +1861,12 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                     writeln!(
                         self.writer,
                         "Edge {} {}={} from={} to={} {}",
-                        model.name,
-                        model.id_field_name,
+                        self.colors.type_name(&model.name),
+                        self.colors.property_name(&model.id_field_name),
                         rel.id,
                         rel.from,
                         rel.to,
-                        format_props(&rel.props)
+                        format_props(&rel.props, &self.colors)
                     )?;
                 }
             }
@@ -1845,17 +1919,20 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionQueryResult::Nodes { model, rows } => {
                 let mut headers = vec![model.id_field_name.clone()];
                 headers.extend(model.fields.iter().map(|field| field.name.clone()));
+                let header_kinds = std::iter::once(TableHeaderKind::Property)
+                    .chain(model.fields.iter().map(|_| TableHeaderKind::Property))
+                    .collect::<Vec<_>>();
 
                 let mut matrix = Vec::new();
                 for node in rows {
                     let mut row = vec![node.id.to_string()];
                     for field in &model.fields {
-                        row.push(format_table_value(node.props.get(&field.name)));
+                        row.push(format_table_value(node.props.get(&field.name), &self.colors));
                     }
                     matrix.push(row);
                 }
 
-                write_table(&mut self.writer, &headers, &matrix)?;
+                write_table(&mut self.writer, &headers, &header_kinds, &matrix, &self.colors)?;
             }
             SessionQueryResult::Edges { model, rows } => {
                 let mut headers = vec![
@@ -1865,6 +1942,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                     "type".into(),
                 ];
                 headers.extend(model.fields.iter().map(|field| field.name.clone()));
+                let header_kinds = vec![
+                    TableHeaderKind::Property,
+                    TableHeaderKind::Plain,
+                    TableHeaderKind::Plain,
+                    TableHeaderKind::Type,
+                ]
+                .into_iter()
+                .chain(model.fields.iter().map(|_| TableHeaderKind::Property))
+                .collect::<Vec<_>>();
 
                 let mut matrix = Vec::new();
                 for rel in rows {
@@ -1872,15 +1958,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                         rel.id.to_string(),
                         rel.from.to_string(),
                         rel.to.to_string(),
-                        rel.rel_type.clone(),
+                        self.colors.type_name(&rel.rel_type),
                     ];
                     for field in &model.fields {
-                        row.push(format_table_value(rel.props.get(&field.name)));
+                        row.push(format_table_value(rel.props.get(&field.name), &self.colors));
                     }
                     matrix.push(row);
                 }
 
-                write_table(&mut self.writer, &headers, &matrix)?;
+                write_table(&mut self.writer, &headers, &header_kinds, &matrix, &self.colors)?;
             }
         }
 
@@ -1895,6 +1981,76 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 Err(err) => writeln!(self.writer, "{err}")?,
             }
         }
+    }
+
+    fn write_script_summary(&mut self) -> Result<()> {
+        writeln!(self.writer)?;
+        writeln!(self.writer, "Script Summary")?;
+
+        writeln!(self.writer, "Types created:")?;
+        if self.script_summary.created_node_types.is_empty()
+            && self.script_summary.created_link_types.is_empty()
+        {
+            writeln!(self.writer, "  none")?;
+        } else {
+            if !self.script_summary.created_node_types.is_empty() {
+                let nodes = self
+                    .script_summary
+                    .created_node_types
+                    .iter()
+                    .map(|name| self.colors.type_name(name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(self.writer, "  nodes: {nodes}")?;
+            }
+            if !self.script_summary.created_link_types.is_empty() {
+                let links = self
+                    .script_summary
+                    .created_link_types
+                    .iter()
+                    .map(|name| self.colors.type_name(name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(self.writer, "  links: {links}")?;
+            }
+        }
+
+        writeln!(self.writer, "Inserted rows:")?;
+        let headers = vec!["kind".into(), "type".into(), "inserted".into()];
+        let header_kinds = vec![
+            TableHeaderKind::Plain,
+            TableHeaderKind::Type,
+            TableHeaderKind::Property,
+        ];
+        let mut rows = Vec::new();
+        for (name, count) in &self.script_summary.inserted_nodes {
+            rows.push(vec![
+                "node".into(),
+                self.colors.type_name(name),
+                count.to_string(),
+            ]);
+        }
+        for (name, count) in &self.script_summary.inserted_edges {
+            rows.push(vec![
+                "edge".into(),
+                self.colors.type_name(name),
+                count.to_string(),
+            ]);
+        }
+
+        if rows.is_empty() {
+            writeln!(self.writer, "  none")?;
+        } else {
+            write_table(
+                &mut self.writer,
+                &headers,
+                &header_kinds,
+                &rows,
+                &self.colors,
+            )?;
+        }
+
+        Ok(())
     }
 
     fn prompt_id_field_name(&mut self) -> Result<String> {
@@ -2306,49 +2462,63 @@ fn matches_predicates(
     })
 }
 
-fn format_props(props: &BTreeMap<String, Value>) -> String {
+fn format_props(props: &BTreeMap<String, Value>, colors: &SessionColors) -> String {
     if props.is_empty() {
         return "{}".into();
     }
 
     let mut parts = Vec::new();
     for (key, value) in props {
-        parts.push(format!("{key}={}", format_value(value)));
+        parts.push(format!(
+            "{}={}",
+            colors.property_name(key),
+            format_value(value, colors)
+        ));
     }
     format!("{{{}}}", parts.join(" "))
 }
 
-fn format_value(value: &Value) -> String {
+fn format_value(value: &Value, colors: &SessionColors) -> String {
     match value {
         Value::String(s) => {
             if s.contains(char::is_whitespace) {
-                format!("\"{s}\"")
+                colors.string_value(&format!("\"{s}\""))
             } else {
-                s.clone()
+                colors.string_value(s)
             }
         }
         _ => value.to_string(),
     }
 }
 
-fn format_table_value(value: Option<&Value>) -> String {
+fn format_table_value(value: Option<&Value>, colors: &SessionColors) -> String {
     match value {
-        Some(value) => format_value(value),
+        Some(value) => format_value(value, colors),
         None => String::new(),
     }
 }
 
-fn write_table<W: Write>(writer: &mut W, headers: &[String], rows: &[Vec<String>]) -> Result<()> {
+fn write_table<W: Write>(
+    writer: &mut W,
+    headers: &[String],
+    header_kinds: &[TableHeaderKind],
+    rows: &[Vec<String>],
+    colors: &SessionColors,
+) -> Result<()> {
     let mut widths: Vec<usize> = headers.iter().map(|header| header.len()).collect();
     for row in rows {
         for (index, cell) in row.iter().enumerate() {
-            widths[index] = widths[index].max(cell.len());
+            widths[index] = widths[index].max(visible_width(cell));
         }
     }
 
     let border = format_table_border(&widths);
     writeln!(writer, "{border}")?;
-    writeln!(writer, "{}", format_table_row(headers, &widths))?;
+    writeln!(
+        writer,
+        "{}",
+        format_table_header_row(headers, header_kinds, &widths, colors)
+    )?;
     writeln!(writer, "{border}")?;
     for row in rows {
         writeln!(writer, "{}", format_table_row(row, &widths))?;
@@ -2370,9 +2540,106 @@ fn format_table_row(cells: &[String], widths: &[usize]) -> String {
     let mut line = String::new();
     line.push('|');
     for (cell, width) in cells.iter().zip(widths.iter()) {
-        let _ = write!(line, " {:width$} |", cell, width = *width);
+        let padding = width.saturating_sub(visible_width(cell));
+        let _ = write!(line, " {}{} |", cell, " ".repeat(padding));
     }
     line
+}
+
+fn format_table_header_row(
+    headers: &[String],
+    header_kinds: &[TableHeaderKind],
+    widths: &[usize],
+    colors: &SessionColors,
+) -> String {
+    let styled = headers
+        .iter()
+        .zip(header_kinds.iter())
+        .map(|(header, kind)| match kind {
+            TableHeaderKind::Plain => header.clone(),
+            TableHeaderKind::Property => colors.property_name(header),
+            TableHeaderKind::Type => colors.type_name(header),
+        })
+        .collect::<Vec<_>>();
+    format_table_row(&styled, widths)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TableHeaderKind {
+    Plain,
+    Property,
+    Type,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SessionColors {
+    enabled: bool,
+}
+
+impl SessionColors {
+    const GREEN: &'static str = "\x1b[32m";
+    const BLUE: &'static str = "\x1b[34m";
+    const ORANGE: &'static str = "\x1b[38;5;208m";
+    const RESET: &'static str = "\x1b[0m";
+
+    fn plain() -> Self {
+        Self { enabled: false }
+    }
+
+    fn for_terminal(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    fn type_name(&self, text: &str) -> String {
+        self.wrap(text, Self::GREEN)
+    }
+
+    fn property_name(&self, text: &str) -> String {
+        self.wrap(text, Self::BLUE)
+    }
+
+    fn string_value(&self, text: &str) -> String {
+        self.wrap(text, Self::ORANGE)
+    }
+
+    fn wrap(&self, text: &str, color: &str) -> String {
+        if self.enabled {
+            format!("{color}{text}{}", Self::RESET)
+        } else {
+            text.to_string()
+        }
+    }
+}
+
+fn visible_width(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut width = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == 0x1b {
+            index += 1;
+            if index < bytes.len() && bytes[index] == b'[' {
+                index += 1;
+                while index < bytes.len() && bytes[index] != b'm' {
+                    index += 1;
+                }
+                if index < bytes.len() {
+                    index += 1;
+                }
+                continue;
+            }
+        }
+
+        if let Some(ch) = text[index..].chars().next() {
+            width += 1;
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    width
 }
 
 fn parse_node_find_query(
@@ -2878,7 +3145,7 @@ fn compare_orderable_values(left: &Value, right: &Value) -> std::cmp::Ordering {
     if let (Some(lhs), Some(rhs)) = (left.as_bool(), right.as_bool()) {
         return lhs.cmp(&rhs);
     }
-    format_value(left).cmp(&format_value(right))
+    format_value(left, &SessionColors::plain()).cmp(&format_value(right, &SessionColors::plain()))
 }
 
 fn apply_offset_limit<T>(items: Vec<T>, offset: Option<usize>, limit: Option<usize>) -> Vec<T> {
