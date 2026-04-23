@@ -717,6 +717,54 @@ async fn node_find_reports_invalid_query_term_shapes() {
 }
 
 #[tokio::test]
+async fn node_find_reports_invalid_limit_values() {
+    let input = Cursor::new(
+        "model.define User userId age:int:required\nnode.create User age=42\nnode.find User limit=ten\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("limit must be a non-negative integer"));
+}
+
+#[tokio::test]
+async fn node_find_reports_unknown_order_fields() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nnode.find User order=nickname:asc\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("unknown order field 'nickname' for model 'User'"));
+}
+
+#[tokio::test]
+async fn edge_find_reports_reserved_endpoint_operator_misuse() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nedge.find Authored from>1\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("special filter 'from' only supports '='"));
+}
+
+#[tokio::test]
 async fn node_update_and_delete_work() {
     let input = Cursor::new(
         "model.define User userId name:string:required age:int:optional\nnode.create User name=Alice age=42\nnode.update User 1 age=43\nnode.find User age=43\nnode.delete User 1\nnode.find User id=1\nsession.exit\n",
