@@ -35,7 +35,7 @@ Node query terms:
 <node-term> := <predicate>
              | limit=<int>
              | offset=<int>
-             | order=<field>:asc|desc
+             | order=<order-clause>
 ```
 
 Edge query terms:
@@ -46,7 +46,7 @@ Edge query terms:
              | to=<id>
              | limit=<int>
              | offset=<int>
-             | order=<field>:asc|desc
+             | order=<order-clause>
 ```
 
 Predicates:
@@ -73,6 +73,13 @@ Values:
 <value> := bare-value
          | "double quoted value"
          | 'single quoted value'
+```
+
+Ordering:
+
+```text
+<order-clause> := <order-item>[,<order-item> ...]
+<order-item>   := <field>:asc|desc
 ```
 
 ## CLI Mockups
@@ -107,6 +114,8 @@ node.find Post title~"hello world"
 node.find User age>=21 order=age:desc limit=10
 node.find User active=true order=name:asc offset=20 limit=10
 edge.find Authored year>=2020 order=year:desc limit=5
+node.find User active=true order=age:desc,name:asc limit=10
+edge.find Authored from=1 order=year:desc,to:asc
 ```
 
 ### Edge endpoint filtering
@@ -120,7 +129,8 @@ edge.find Authored to=2 year>=2024
 
 ```text
 node.find User name!="Alice Jones" active=true order=name:asc
-edge.find Authored from=1 year>=2024 order=year:desc limit=10
+node.find User name!="Alice Jones" active=true order=age:desc,name:asc
+edge.find Authored from=1 year>=2024 order=year:desc,to:asc limit=10
 ```
 
 ## Output Mockups
@@ -169,6 +179,7 @@ The parser should:
 - support escaped quotes inside quoted strings
 - distinguish parser errors from query validation errors
 - reject malformed order clauses clearly
+- reject malformed multi-order clauses clearly
 - reject unknown fields clearly
 
 Examples of invalid input:
@@ -177,6 +188,7 @@ Examples of invalid input:
 node.find User user name="Alice"
 node.find User age>>
 node.find User order=age
+node.find User order=age:desc,name
 node.find User name="Alice
 ```
 
@@ -189,6 +201,7 @@ Implementation work should include acceptance-style tests in `tests/runtime_sess
 - `contains` matching via `~`
 - quoted values with spaces
 - ordering
+- multi-field ordering
 - limit and offset
 - edge `from` / `to` with additional predicates
 - invalid syntax and invalid field errors

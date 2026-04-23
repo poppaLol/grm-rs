@@ -18,11 +18,14 @@ fn query_language_mockups_capture_ordering_and_paging_examples() {
         "node.find User age>=21 order=age:desc limit=10",
         "node.find User active=true order=name:asc offset=20 limit=10",
         "edge.find Authored year>=2020 order=year:desc limit=5",
+        "node.find User active=true order=age:desc,name:asc limit=10",
+        "edge.find Authored from=1 order=year:desc,to:asc",
     ];
 
     assert!(examples.iter().any(|line| line.contains("order=")));
     assert!(examples.iter().any(|line| line.contains("limit=")));
     assert!(examples.iter().any(|line| line.contains("offset=")));
+    assert!(examples.iter().any(|line| line.contains("order=age:desc,name:asc")));
 }
 
 #[test]

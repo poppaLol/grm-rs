@@ -10,6 +10,7 @@ use crate::{
     BackendIdentity, GraphClient, GraphTx, InMemoryBackend, Result, RuntimeField, RuntimeNodeModel,
     RuntimeRelModel, RuntimeValueType, SessionModelCatalog, StoredNode, StoredRel,
 };
+use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
 use crate::backend::{BinaryPersistedGraphStore, GraphStore, PersistedGraphStore};
 use crate::dsl::CompareOp;
@@ -65,7 +66,7 @@ enum SortDirection {
 #[derive(Debug, Clone, Default)]
 struct NodeFindQuery {
     predicates: Vec<SessionPredicate>,
-    order: Option<SessionOrder>,
+    order: Vec<SessionOrder>,
     limit: Option<usize>,
     offset: Option<usize>,
     id_filter: Option<i64>,
@@ -74,7 +75,7 @@ struct NodeFindQuery {
 #[derive(Debug, Clone, Default)]
 struct EdgeFindQuery {
     predicates: Vec<SessionPredicate>,
-    order: Option<SessionOrder>,
+    order: Vec<SessionOrder>,
     limit: Option<usize>,
     offset: Option<usize>,
     id_filter: Option<i64>,
@@ -398,8 +399,8 @@ impl SessionState {
         }
 
         nodes.retain(|node| matches_predicates(&node.props, &prop_filters));
-        if let Some(order) = &query.order {
-            self.sort_nodes(&mut nodes, model, order)?;
+        if !query.order.is_empty() {
+            self.sort_nodes(&mut nodes, model, &query.order)?;
         }
         nodes = apply_offset_limit(nodes, query.offset, query.limit);
         Ok(nodes)
@@ -439,8 +440,8 @@ impl SessionState {
         }
 
         rels.retain(|rel| matches_predicates(&rel.props, &prop_filters));
-        if let Some(order) = &query.order {
-            self.sort_relationships(&mut rels, model, order)?;
+        if !query.order.is_empty() {
+            self.sort_relationships(&mut rels, model, &query.order)?;
         }
         rels = apply_offset_limit(rels, query.offset, query.limit);
         Ok(rels)
@@ -582,10 +583,10 @@ impl SessionState {
         &self,
         nodes: &mut [StoredNode],
         model: &RuntimeNodeModel,
-        order: &SessionOrder,
+        orders: &[SessionOrder],
     ) -> Result<()> {
-        validate_node_order_field(model, order)?;
-        nodes.sort_by(|left, right| compare_node_order_values(left, right, model, order));
+        validate_node_order_fields(model, orders)?;
+        nodes.sort_by(|left, right| compare_node_order_values(left, right, model, orders));
         Ok(())
     }
 
@@ -593,10 +594,10 @@ impl SessionState {
         &self,
         rels: &mut [StoredRel],
         model: &RuntimeRelModel,
-        order: &SessionOrder,
+        orders: &[SessionOrder],
     ) -> Result<()> {
-        validate_rel_order_field(model, order)?;
-        rels.sort_by(|left, right| compare_rel_order_values(left, right, model, order));
+        validate_rel_order_fields(model, orders)?;
+        rels.sort_by(|left, right| compare_rel_order_values(left, right, model, orders));
         Ok(())
     }
 }
@@ -703,45 +704,70 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             return Ok(false);
         }
 
-        let parts = tokenize_command_line(trimmed)?;
-        let command = parts[0].as_str();
-        let args: Vec<&str> = parts[1..].iter().map(String::as_str).collect();
-        let args = args.as_slice();
-
-        match command {
-            "?" | "help" => self.write_help()?,
-            "session.help" => self.write_help()?,
-            "exit" | "session.exit" => return Ok(true),
-            "model.define" => {
+        match parse_command_line(trimmed)? {
+            SessionCommand::Help => self.write_help()?,
+            SessionCommand::Exit => return Ok(true),
+            SessionCommand::ModelDefine { args } => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 if args.is_empty() {
                     self.run_model_define_wizard().await?;
                 } else {
-                    self.handle_model_define_args(args)?;
+                    self.handle_model_define_args(args.as_slice())?;
                 }
             }
-            "model.list" => self.write_model_list()?,
-            "model.show" => self.write_model_show(expect_single_arg(command, args)?)?,
-            "link.define" => {
+            SessionCommand::ModelList => self.write_model_list()?,
+            SessionCommand::ModelShow { name } => self.write_model_show(&name)?,
+            SessionCommand::LinkDefine { args } => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 if args.is_empty() {
                     self.run_link_define_wizard().await?;
                 } else {
-                    self.handle_link_define_args(args)?;
+                    self.handle_link_define_args(args.as_slice())?;
                 }
             }
-            "link.list" => self.write_rel_model_list()?,
-            "link.show" => self.write_rel_model_show(expect_single_arg(command, args)?)?,
-            "node.create" => self.handle_node_create(args).await?,
-            "node.find" => self.handle_node_find(args)?,
-            "node.update" | "node.edit" => self.handle_node_update(args).await?,
-            "node.delete" => self.handle_node_delete(args).await?,
-            "edge.create" => self.handle_edge_create(args).await?,
-            "edge.find" => self.handle_edge_find(args)?,
-            "edge.update" | "edge.edit" => self.handle_edge_update(args).await?,
-            "edge.delete" => self.handle_edge_delete(args).await?,
-            "session.save" => self.handle_session_save(args)?,
-            "session.load" => self.handle_session_load(args)?,
-            "session.autocommit" => self.handle_session_autocommit(args)?,
-            _ => writeln!(self.writer, "Unknown command: {trimmed}")?,
+            SessionCommand::LinkList => self.write_rel_model_list()?,
+            SessionCommand::LinkShow { name } => self.write_rel_model_show(&name)?,
+            SessionCommand::NodeCreate { model_name, assignments } => {
+                self.handle_node_create_parsed(&model_name, &assignments).await?
+            }
+            SessionCommand::NodeFind { model_name, terms } => {
+                self.handle_node_find_parsed(&model_name, &terms)?
+            }
+            SessionCommand::NodeUpdate {
+                model_name,
+                id,
+                assignments,
+            } => self.handle_node_update_parsed(&model_name, &id, &assignments).await?,
+            SessionCommand::NodeDelete { model_name, id } => {
+                self.handle_node_delete_parsed(&model_name, &id).await?
+            }
+            SessionCommand::EdgeCreate { model_name, assignments } => {
+                self.handle_edge_create_parsed(&model_name, &assignments).await?
+            }
+            SessionCommand::EdgeFind { model_name, terms } => {
+                self.handle_edge_find_parsed(&model_name, &terms)?
+            }
+            SessionCommand::EdgeUpdate {
+                model_name,
+                id,
+                assignments,
+            } => self.handle_edge_update_parsed(&model_name, &id, &assignments).await?,
+            SessionCommand::EdgeDelete { model_name, id } => {
+                self.handle_edge_delete_parsed(&model_name, &id).await?
+            }
+            SessionCommand::SessionSave { args } => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.handle_session_save(args.as_slice())?
+            }
+            SessionCommand::SessionLoad { args } => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.handle_session_load(args.as_slice())?
+            }
+            SessionCommand::SessionAutocommit { args } => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.handle_session_autocommit(args.as_slice())?
+            }
+            SessionCommand::Unknown { .. } => writeln!(self.writer, "Unknown command: {trimmed}")?,
         }
 
         Ok(false)
@@ -1037,37 +1063,34 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
-    async fn handle_node_create(&mut self, args: &[&str]) -> Result<()> {
-        if args.is_empty() {
-            return Err(crate::GrmError::Constraint(
-                "usage: node.create <ModelName> [field=value ...]".into(),
-            ));
-        }
-
-        let model_name = args[0];
-        let values = parse_key_value_args(&args[1..])?;
+    async fn handle_node_create_parsed(
+        &mut self,
+        model_name: &str,
+        assignments: &[KeyValueArg],
+    ) -> Result<()> {
+        let values = collect_assignments(assignments);
         let created = self.state.create_instance(model_name, &values).await?;
         let model = self.state.model(model_name).ok_or(crate::GrmError::NotFound)?;
         self.persist_autocommit()?;
         writeln!(
             self.writer,
-            "Created node {} with label '{}'. {}={}.",
-            created.id, model.label, model.id_field_name, created.id
+            "Created node {} with backend id {}. {}={}.",
+            model.name, created.id, model.id_field_name, created.id
         )?;
         Ok(())
     }
 
-    async fn handle_node_update(&mut self, args: &[&str]) -> Result<()> {
-        if args.len() < 2 {
-            return Err(crate::GrmError::Constraint(
-                "usage: node.update <ModelName> <id> [field=value ...]".into(),
-            ));
-        }
+    async fn handle_node_update_parsed(
+        &mut self,
+        model_name: &str,
+        id: &str,
+        assignments: &[KeyValueArg],
+    ) -> Result<()> {
         let updated = self
             .state
-            .update_node_instance(args[0], args[1], &parse_key_value_args(&args[2..])?)
+            .update_node_instance(model_name, id, &collect_assignments(assignments))
             .await?;
-        let model = self.state.model(args[0]).ok_or(crate::GrmError::NotFound)?;
+        let model = self.state.model(model_name).ok_or(crate::GrmError::NotFound)?;
         self.persist_autocommit()?;
         writeln!(
             self.writer,
@@ -1080,27 +1103,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
-    async fn handle_node_delete(&mut self, args: &[&str]) -> Result<()> {
-        if args.len() != 2 {
-            return Err(crate::GrmError::Constraint(
-                "usage: node.delete <ModelName> <id>".into(),
-            ));
-        }
-        self.state.delete_node_instance(args[0], args[1]).await?;
+    async fn handle_node_delete_parsed(&mut self, model_name: &str, id: &str) -> Result<()> {
+        self.state.delete_node_instance(model_name, id).await?;
         self.persist_autocommit()?;
-        writeln!(self.writer, "Deleted node {} {}.", args[0], args[1])?;
+        writeln!(self.writer, "Deleted node {} {}.", model_name, id)?;
         Ok(())
     }
 
-    fn handle_node_find(&mut self, args: &[&str]) -> Result<()> {
-        if args.is_empty() {
-            return Err(crate::GrmError::Constraint(
-                "usage: node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc] [limit=<n>] [offset=<n>]".into(),
-            ));
-        }
-
-        let model_name = args[0];
-        let filters = parse_find_args(&args[1..])?;
+    fn handle_node_find_parsed(&mut self, model_name: &str, terms: &[QueryTerm]) -> Result<()> {
+        let filters = collect_query_terms(terms);
         let model = self
             .state
             .model(model_name)
@@ -1114,7 +1125,6 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         writeln!(self.writer, "{} nodes matched model '{}'.", nodes.len(), model_name)?;
-
         for node in nodes {
             writeln!(
                 self.writer,
@@ -1128,15 +1138,12 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
-    async fn handle_edge_create(&mut self, args: &[&str]) -> Result<()> {
-        if args.is_empty() {
-            return Err(crate::GrmError::Constraint(
-                "usage: edge.create <LinkName> from=<id> to=<id> [field=value ...]".into(),
-            ));
-        }
-
-        let model_name = args[0];
-        let mut values = parse_key_value_args(&args[1..])?;
+    async fn handle_edge_create_parsed(
+        &mut self,
+        model_name: &str,
+        assignments: &[KeyValueArg],
+    ) -> Result<()> {
+        let mut values = collect_assignments(assignments);
         let from_id = values
             .remove("from")
             .ok_or_else(|| crate::GrmError::Constraint("edge.create requires from=<id>".into()))?;
@@ -1160,17 +1167,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
-    async fn handle_edge_update(&mut self, args: &[&str]) -> Result<()> {
-        if args.len() < 2 {
-            return Err(crate::GrmError::Constraint(
-                "usage: edge.update <LinkName> <id> [field=value ...]".into(),
-            ));
-        }
+    async fn handle_edge_update_parsed(
+        &mut self,
+        model_name: &str,
+        id: &str,
+        assignments: &[KeyValueArg],
+    ) -> Result<()> {
         let updated = self
             .state
-            .update_relationship_instance(args[0], args[1], &parse_key_value_args(&args[2..])?)
+            .update_relationship_instance(model_name, id, &collect_assignments(assignments))
             .await?;
-        let model = self.state.rel_model(args[0]).ok_or(crate::GrmError::NotFound)?;
+        let model = self.state.rel_model(model_name).ok_or(crate::GrmError::NotFound)?;
         self.persist_autocommit()?;
         writeln!(
             self.writer,
@@ -1185,27 +1192,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
-    async fn handle_edge_delete(&mut self, args: &[&str]) -> Result<()> {
-        if args.len() != 2 {
-            return Err(crate::GrmError::Constraint(
-                "usage: edge.delete <LinkName> <id>".into(),
-            ));
-        }
-        self.state.delete_relationship_instance(args[0], args[1]).await?;
+    async fn handle_edge_delete_parsed(&mut self, model_name: &str, id: &str) -> Result<()> {
+        self.state.delete_relationship_instance(model_name, id).await?;
         self.persist_autocommit()?;
-        writeln!(self.writer, "Deleted edge {} {}.", args[0], args[1])?;
+        writeln!(self.writer, "Deleted edge {} {}.", model_name, id)?;
         Ok(())
     }
 
-    fn handle_edge_find(&mut self, args: &[&str]) -> Result<()> {
-        if args.is_empty() {
-            return Err(crate::GrmError::Constraint(
-                "usage: edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc] [limit=<n>] [offset=<n>]".into(),
-            ));
-        }
-
-        let model_name = args[0];
-        let filters = parse_find_args(&args[1..])?;
+    fn handle_edge_find_parsed(&mut self, model_name: &str, terms: &[QueryTerm]) -> Result<()> {
+        let filters = collect_query_terms(terms);
         let model = self
             .state
             .rel_model(model_name)
@@ -1219,7 +1214,6 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         writeln!(self.writer, "{} edges matched link '{}'.", rels.len(), model_name)?;
-
         for rel in rels {
             writeln!(
                 self.writer,
@@ -1709,38 +1703,6 @@ impl From<io::Error> for crate::GrmError {
     }
 }
 
-fn expect_single_arg<'a>(command: &str, args: &'a [&str]) -> Result<&'a str> {
-    if args.len() != 1 {
-        return Err(crate::GrmError::Constraint(format!(
-            "usage: {command} <name>"
-        )));
-    }
-    Ok(args[0])
-}
-
-fn parse_key_value_args(args: &[&str]) -> Result<BTreeMap<String, String>> {
-    let mut values = BTreeMap::new();
-    for arg in args {
-        let Some((key, value)) = arg.split_once('=') else {
-            return Err(crate::GrmError::Constraint(format!(
-                "expected key=value argument, got '{}'",
-                arg
-            )));
-        };
-        values.insert(key.to_string(), value.to_string());
-    }
-    Ok(values)
-}
-
-fn parse_find_args(args: &[&str]) -> Result<BTreeMap<String, String>> {
-    let mut values = BTreeMap::new();
-    for arg in args {
-        let (key, value) = split_find_arg(arg)?;
-        values.insert(key.to_string(), value.to_string());
-    }
-    Ok(values)
-}
-
 fn matches_predicates(props: &BTreeMap<String, Value>, filters: &[(String, CompareOp, Value)]) -> bool {
     filters.iter().all(|(key, op, value)| {
         props.get(key)
@@ -1774,87 +1736,6 @@ fn format_value(value: &Value) -> String {
     }
 }
 
-fn tokenize_command_line(input: &str) -> Result<Vec<String>> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut chars = input.chars().peekable();
-    let mut quote: Option<char> = None;
-
-    while let Some(ch) = chars.next() {
-        match quote {
-            Some(q) => match ch {
-                '\\' => {
-                    let Some(next) = chars.next() else {
-                        return Err(crate::GrmError::Constraint(
-                            "unterminated escape sequence in quoted string".into(),
-                        ));
-                    };
-                    current.push(match next {
-                        'n' => '\n',
-                        't' => '\t',
-                        '\\' => '\\',
-                        '\'' => '\'',
-                        '"' => '"',
-                        other => other,
-                    });
-                }
-                _ if ch == q => quote = None,
-                _ => current.push(ch),
-            },
-            None => match ch {
-                '"' | '\'' => quote = Some(ch),
-                c if c.is_whitespace() => {
-                    if !current.is_empty() {
-                        tokens.push(std::mem::take(&mut current));
-                    }
-                }
-                _ => current.push(ch),
-            },
-        }
-    }
-
-    if quote.is_some() {
-        return Err(crate::GrmError::Constraint(
-            "unterminated quoted string".into(),
-        ));
-    }
-
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-
-    Ok(tokens)
-}
-
-fn split_find_arg(arg: &str) -> Result<(&str, &str)> {
-    for operator in ["!=", ">=", "<=", ">", "<", "~", "="] {
-        if let Some((key, value)) = arg.split_once(operator) {
-            if key.is_empty() || value.is_empty() {
-                return Err(crate::GrmError::Constraint(format!(
-                    "invalid query term '{}'",
-                    arg
-                )));
-            }
-            let encoded_key = match operator {
-                "=" => key,
-                "!=" => return Ok((&arg[..key.len() + 1], value)),
-                ">=" => return Ok((&arg[..key.len() + 2], value)),
-                "<=" => return Ok((&arg[..key.len() + 2], value)),
-                ">" => return Ok((&arg[..key.len() + 1], value)),
-                "<" => return Ok((&arg[..key.len() + 1], value)),
-                "~" => return Ok((&arg[..key.len() + 1], value)),
-                _ => key,
-            };
-            return Ok((encoded_key, value));
-        }
-    }
-
-    Err(crate::GrmError::Constraint(format!(
-        "invalid query term '{}'",
-        arg
-    )))
-}
-
 fn parse_node_find_query(
     filters: &BTreeMap<String, String>,
     model: &RuntimeNodeModel,
@@ -1865,7 +1746,7 @@ fn parse_node_find_query(
         match raw_key.as_str() {
             "limit" => query.limit = Some(parse_usize_term(raw_value, "limit")?),
             "offset" => query.offset = Some(parse_usize_term(raw_value, "offset")?),
-            "order" => query.order = Some(parse_order_term(raw_value)?),
+            "order" => query.order = parse_order_term(raw_value)?,
             key if key == "id" || key == model.id_field_name => {
                 query.id_filter = Some(parse_backend_id(raw_value, id_type, key)?);
             }
@@ -1899,7 +1780,7 @@ fn parse_edge_find_query(
         match raw_key.as_str() {
             "limit" => query.limit = Some(parse_usize_term(raw_value, "limit")?),
             "offset" => query.offset = Some(parse_usize_term(raw_value, "offset")?),
-            "order" => query.order = Some(parse_order_term(raw_value)?),
+            "order" => query.order = parse_order_term(raw_value)?,
             "from" => query.from_filter = Some(parse_backend_id(raw_value, node_id_type, "from")?),
             "to" => query.to_filter = Some(parse_backend_id(raw_value, node_id_type, "to")?),
             key if key == "id" || key == model.id_field_name => {
@@ -1952,27 +1833,41 @@ fn split_predicate_key(raw_key: &str) -> Result<(&str, CompareOp)> {
     Ok((raw_key, CompareOp::Eq))
 }
 
-fn parse_order_term(raw: &str) -> Result<SessionOrder> {
-    let Some((field, direction)) = raw.split_once(':') else {
-        return Err(crate::GrmError::Constraint(
-            "order must use order=<field>:asc|desc".into(),
-        ));
-    };
+fn parse_order_term(raw: &str) -> Result<Vec<SessionOrder>> {
+    let mut orders = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
 
-    let direction = match direction {
-        "asc" => SortDirection::Asc,
-        "desc" => SortDirection::Desc,
-        _ => {
+    for segment in raw.split(',') {
+        let Some((field, direction)) = segment.split_once(':') else {
             return Err(crate::GrmError::Constraint(
-                "order direction must be asc or desc".into(),
-            ))
-        }
-    };
+                "order must use order=<field>:asc|desc[,<field>:asc|desc ...]".into(),
+            ));
+        };
 
-    Ok(SessionOrder {
-        field: field.to_string(),
-        direction,
-    })
+        let direction = match direction {
+            "asc" => SortDirection::Asc,
+            "desc" => SortDirection::Desc,
+            _ => {
+                return Err(crate::GrmError::Constraint(
+                    "order direction must be asc or desc".into(),
+                ))
+            }
+        };
+
+        if !seen.insert(field.to_string()) {
+            return Err(crate::GrmError::Constraint(format!(
+                "duplicate order field '{}'",
+                field
+            )));
+        }
+
+        orders.push(SessionOrder {
+            field: field.to_string(),
+            direction,
+        });
+    }
+
+    Ok(orders)
 }
 
 fn parse_usize_term(raw: &str, subject: &str) -> Result<usize> {
@@ -2017,28 +1912,36 @@ where
     }
 }
 
-fn validate_node_order_field(model: &RuntimeNodeModel, order: &SessionOrder) -> Result<()> {
-    if order.field == "id" || order.field == model.id_field_name {
-        return Ok(());
-    }
-    if model.field(&order.field).is_none() {
-        return Err(crate::GrmError::Constraint(format!(
-            "unknown order field '{}' for model '{}'",
-            order.field, model.name
-        )));
+fn validate_node_order_fields(model: &RuntimeNodeModel, orders: &[SessionOrder]) -> Result<()> {
+    for order in orders {
+        if order.field == "id" || order.field == model.id_field_name {
+            continue;
+        }
+        if model.field(&order.field).is_none() {
+            return Err(crate::GrmError::Constraint(format!(
+                "unknown order field '{}' for model '{}'",
+                order.field, model.name
+            )));
+        }
     }
     Ok(())
 }
 
-fn validate_rel_order_field(model: &RuntimeRelModel, order: &SessionOrder) -> Result<()> {
-    if order.field == "id" || order.field == model.id_field_name || order.field == "from" || order.field == "to" {
-        return Ok(());
-    }
-    if model.field(&order.field).is_none() {
-        return Err(crate::GrmError::Constraint(format!(
-            "unknown order field '{}' for link '{}'",
-            order.field, model.name
-        )));
+fn validate_rel_order_fields(model: &RuntimeRelModel, orders: &[SessionOrder]) -> Result<()> {
+    for order in orders {
+        if order.field == "id"
+            || order.field == model.id_field_name
+            || order.field == "from"
+            || order.field == "to"
+        {
+            continue;
+        }
+        if model.field(&order.field).is_none() {
+            return Err(crate::GrmError::Constraint(format!(
+                "unknown order field '{}' for link '{}'",
+                order.field, model.name
+            )));
+        }
     }
     Ok(())
 }
@@ -2047,38 +1950,54 @@ fn compare_node_order_values(
     left: &StoredNode,
     right: &StoredNode,
     model: &RuntimeNodeModel,
-    order: &SessionOrder,
+    orders: &[SessionOrder],
 ) -> std::cmp::Ordering {
-    let ordering = if order.field == "id" || order.field == model.id_field_name {
-        left.id.cmp(&right.id)
-    } else {
-        compare_optional_values(left.props.get(&order.field), right.props.get(&order.field))
-    };
+    for order in orders {
+        let ordering = if order.field == "id" || order.field == model.id_field_name {
+            left.id.cmp(&right.id)
+        } else {
+            compare_optional_values(left.props.get(&order.field), right.props.get(&order.field))
+        };
 
-    match order.direction {
-        SortDirection::Asc => ordering,
-        SortDirection::Desc => ordering.reverse(),
+        let ordering = match order.direction {
+            SortDirection::Asc => ordering,
+            SortDirection::Desc => ordering.reverse(),
+        };
+
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
     }
+
+    std::cmp::Ordering::Equal
 }
 
 fn compare_rel_order_values(
     left: &StoredRel,
     right: &StoredRel,
     model: &RuntimeRelModel,
-    order: &SessionOrder,
+    orders: &[SessionOrder],
 ) -> std::cmp::Ordering {
-    let ordering = match order.field.as_str() {
-        "id" => left.id.cmp(&right.id),
-        "from" => left.from.cmp(&right.from),
-        "to" => left.to.cmp(&right.to),
-        field if field == model.id_field_name => left.id.cmp(&right.id),
-        _ => compare_optional_values(left.props.get(&order.field), right.props.get(&order.field)),
-    };
+    for order in orders {
+        let ordering = match order.field.as_str() {
+            "id" => left.id.cmp(&right.id),
+            "from" => left.from.cmp(&right.from),
+            "to" => left.to.cmp(&right.to),
+            field if field == model.id_field_name => left.id.cmp(&right.id),
+            _ => compare_optional_values(left.props.get(&order.field), right.props.get(&order.field)),
+        };
 
-    match order.direction {
-        SortDirection::Asc => ordering,
-        SortDirection::Desc => ordering.reverse(),
+        let ordering = match order.direction {
+            SortDirection::Asc => ordering,
+            SortDirection::Desc => ordering.reverse(),
+        };
+
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
     }
+
+    std::cmp::Ordering::Equal
 }
 
 fn compare_optional_values(left: Option<&Value>, right: Option<&Value>) -> std::cmp::Ordering {
@@ -2116,6 +2035,19 @@ fn apply_offset_limit<T>(items: Vec<T>, offset: Option<usize>, limit: Option<usi
     };
 
     items.into_iter().skip(start).take(end - start).collect()
+}
+
+fn collect_assignments(assignments: &[KeyValueArg]) -> BTreeMap<String, String> {
+    assignments
+        .iter()
+        .map(|arg| (arg.key.clone(), arg.value.clone()))
+        .collect()
+}
+
+fn collect_query_terms(terms: &[QueryTerm]) -> BTreeMap<String, String> {
+    terms.iter()
+        .map(|term| (term.key.clone(), term.value.clone()))
+        .collect()
 }
 
 impl SessionFileFormat {
