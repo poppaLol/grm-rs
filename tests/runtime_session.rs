@@ -608,6 +608,27 @@ async fn node_find_supports_order_limit_and_offset() {
 }
 
 #[tokio::test]
+async fn node_find_supports_multi_field_ordering() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:required\nnode.create User name=Bob age=42\nnode.create User name=Alice age=42\nnode.create User name=Carol age=35\nnode.find User age>=35 order=age:desc,name:asc\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    let alice_pos = output.find("Node User userId=2 {age=42 name=Alice}").unwrap();
+    let bob_pos = output.find("Node User userId=1 {age=42 name=Bob}").unwrap();
+    let carol_pos = output.find("Node User userId=3 {age=35 name=Carol}").unwrap();
+
+    assert!(alice_pos < bob_pos);
+    assert!(bob_pos < carol_pos);
+}
+
+#[tokio::test]
 async fn edge_find_supports_endpoint_filters_and_comparison_operators() {
     let input = Cursor::new(
         "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nnode.create Post title=World\nedge.create Authored from=1 to=2 year=2024\nedge.create Authored from=1 to=3 year=2025\nedge.find Authored from=1 year>=2025\nsession.exit\n",
@@ -623,6 +644,76 @@ async fn edge_find_supports_endpoint_filters_and_comparison_operators() {
     assert!(output.contains("1 edges matched link 'Authored'."));
     assert!(output.contains("Edge Authored authoredId=2 from=1 to=3 {year=2025}"));
     assert!(!output.contains("authoredId=1 from=1 to=2 {year=2024}"));
+}
+
+#[tokio::test]
+async fn edge_find_supports_multi_field_ordering() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Alpha\nnode.create Post title=Beta\nnode.create Post title=Gamma\nedge.create Authored from=1 to=2 year=2024\nedge.create Authored from=1 to=3 year=2024\nedge.create Authored from=1 to=4 year=2025\nedge.find Authored from=1 order=year:desc,to:asc\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    let rel_2025 = output.find("Edge Authored authoredId=3 from=1 to=4 {year=2025}").unwrap();
+    let rel_to_2 = output.find("Edge Authored authoredId=1 from=1 to=2 {year=2024}").unwrap();
+    let rel_to_3 = output.find("Edge Authored authoredId=2 from=1 to=3 {year=2024}").unwrap();
+
+    assert!(rel_2025 < rel_to_2);
+    assert!(rel_to_2 < rel_to_3);
+}
+
+#[tokio::test]
+async fn node_find_rejects_duplicate_order_fields() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.find User order=age:desc,age:asc\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("duplicate order field 'age'"));
+}
+
+#[tokio::test]
+async fn node_find_reports_malformed_order_errors() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.find User order=age\nnode.find User order=age:up\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("order must use order=<field>:asc|desc[,<field>:asc|desc ...]"));
+    assert!(output.contains("order direction must be asc or desc"));
+}
+
+#[tokio::test]
+async fn node_find_reports_invalid_query_term_shapes() {
+    let input = Cursor::new(
+        "model.define User userId age:int:required\nnode.create User age=42\nnode.find User age>>40\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("invalid query term 'age>>40'"));
 }
 
 #[tokio::test]
