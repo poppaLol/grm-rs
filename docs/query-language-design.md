@@ -19,6 +19,8 @@ The goal is to increase query power while preserving the current dotted command 
 - values may allow whitespace when quoted
 - parser work should land before rich query syntax is treated as stable
 - query controls such as ordering and paging should remain explicit and readable
+- query results should render through an explicit output format layer
+- the current human-readable output should remain the default for now
 
 ## Proposed Grammar
 
@@ -36,6 +38,7 @@ Node query terms:
              | limit=<int>
              | offset=<int>
              | order=<order-clause>
+             | format=<output-format>
 ```
 
 Edge query terms:
@@ -47,6 +50,7 @@ Edge query terms:
              | limit=<int>
              | offset=<int>
              | order=<order-clause>
+             | format=<output-format>
 ```
 
 Predicates:
@@ -80,6 +84,12 @@ Ordering:
 ```text
 <order-clause> := <order-item>[,<order-item> ...]
 <order-item>   := <field>:asc|desc
+```
+
+Output format:
+
+```text
+<output-format> := default | jsonl | table | graph
 ```
 
 ## CLI Mockups
@@ -133,11 +143,36 @@ node.find User name!="Alice Jones" active=true order=age:desc,name:asc
 edge.find Authored from=1 year>=2024 order=year:desc,to:asc limit=10
 ```
 
+### Output format selection
+
+```text
+node.find User age>=21
+node.find User age>=21 format=default
+node.find User age>=21 format=jsonl
+node.find User age>=21 order=age:desc format=table
+edge.find Authored from=1 format=jsonl
+```
+
+## Output Design
+
+Default behavior:
+
+- the current human-readable node/edge output remains the default for `find` queries
+- `format=default` is explicit but optional
+- `format=jsonl` and `format=table` are available now
+- `format=` remains available so the CLI can grow toward later `graph` output without changing query syntax
+- `graph` should remain reserved for graph-shaped or traversal-shaped results
+- coloured output should be layered onto the default and table renderers without changing query semantics
+
+Renderer model:
+
+- query execution should return a structured result value first
+- rendering should happen as a separate step based on `format=...`
+- that split should let default, `jsonl`, `table`, and later `graph` share the same execution path
+
 ## Output Mockups
 
-As query power increases, result formatting should carry a little more structure.
-
-Example node output:
+### Default node output
 
 ```text
 2 nodes matched model 'User'.
@@ -145,19 +180,50 @@ Node User userId=2 {name="Bob", age=43, active=true}
 Node User userId=5 {name="Carol", age=41, active=false}
 ```
 
-Example edge output:
+### Default edge output
 
 ```text
 1 edge matched link 'Authored'.
 Edge Authored authoredId=3 from=1 to=2 {year=2024}
 ```
 
-Example no-results output:
+### `jsonl` node output
 
 ```text
-No nodes matched model 'User'.
-No edges matched link 'Authored'.
+{"kind":"node","model":"User","id":2,"labels":["User"],"props":{"name":"Bob","age":43,"active":true}}
+{"kind":"node","model":"User","id":5,"labels":["User"],"props":{"name":"Carol","age":41,"active":false}}
 ```
+
+### `jsonl` edge output
+
+```text
+{"kind":"edge","model":"Authored","id":3,"from":1,"to":2,"type":"Authored","props":{"year":2024}}
+```
+
+### `table` node output
+
+```text
++--------+-------------+-----+--------+
+| userId | name        | age | active |
++--------+-------------+-----+--------+
+| 2      | Bob         | 43  | true   |
+| 5      | Carol       | 41  | false  |
++--------+-------------+-----+--------+
+```
+
+### Future `graph` output
+
+```text
+(User#1 {name="Alice"})
+  |
+  +--[Authored#3 {year=2024}]--> (Post#2 {title="Hello"})
+```
+
+### Next presentation work
+
+- graph output for graph-shaped and traversal-shaped results
+- coloured output for interactive terminals
+- clear non-colour behavior when output is piped or redirected
 
 ## Reserved Query Terms
 
@@ -166,6 +232,7 @@ These should remain reserved inside `find` commands:
 - `limit`
 - `offset`
 - `order`
+- `format`
 - `from`
 - `to`
 
@@ -180,6 +247,7 @@ The parser should:
 - distinguish parser errors from query validation errors
 - reject malformed order clauses clearly
 - reject malformed multi-order clauses clearly
+- reject unknown output formats clearly
 - reject unknown fields clearly
 
 Examples of invalid input:
@@ -189,6 +257,7 @@ node.find User user name="Alice"
 node.find User age>>
 node.find User order=age
 node.find User order=age:desc,name
+node.find User format=xml
 node.find User name="Alice
 ```
 
@@ -203,6 +272,7 @@ Implementation work should include acceptance-style tests in `tests/runtime_sess
 - ordering
 - multi-field ordering
 - limit and offset
+- output format selection with the current human-readable output as the default
 - edge `from` / `to` with additional predicates
 - invalid syntax and invalid field errors
 

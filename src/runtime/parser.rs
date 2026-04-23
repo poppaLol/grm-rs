@@ -230,6 +230,9 @@ fn split_query_term(arg: &str) -> Result<(&str, &str)> {
             if result.0 == "order" {
                 validate_order_term_shape(result.1)?;
             }
+            if result.0 == "format" {
+                validate_format_term_shape(result.1)?;
+            }
             return Ok(result);
         }
     }
@@ -238,6 +241,15 @@ fn split_query_term(arg: &str) -> Result<(&str, &str)> {
         "invalid query term '{}'",
         arg
     )))
+}
+
+fn validate_format_term_shape(raw: &str) -> Result<()> {
+    match raw {
+        "default" | "jsonl" | "table" | "graph" => Ok(()),
+        _ => Err(GrmError::Constraint(
+            "format must be one of: default, jsonl, table, graph".into(),
+        )),
+    }
 }
 
 fn validate_order_term_shape(raw: &str) -> Result<()> {
