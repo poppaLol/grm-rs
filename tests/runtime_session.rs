@@ -553,6 +553,79 @@ async fn edge_find_uses_dotted_query_syntax() {
 }
 
 #[tokio::test]
+async fn node_find_supports_quoted_values_with_spaces() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nnode.create User name=\"Alice Jones\"\nnode.create User name=Bob\nnode.find User name=\"Alice Jones\"\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("1 nodes matched model 'User'."));
+    assert!(output.contains("Node User userId=1 {name=\"Alice Jones\"}"));
+    assert!(!output.contains("userId=2 {name=Bob}"));
+}
+
+#[tokio::test]
+async fn node_find_supports_comparison_and_contains_operators() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:optional\nnode.create User name=\"Alice Jones\" age=42\nnode.create User name=Bob age=35\nnode.find User age>40\nnode.find User name!=\"Alice Jones\"\nnode.find User name~Jones\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Node User userId=1 {age=42 name=\"Alice Jones\"}"));
+    assert!(output.contains("Node User userId=2 {age=35 name=Bob}"));
+    assert_eq!(output.matches("1 nodes matched model 'User'.").count(), 3);
+}
+
+#[tokio::test]
+async fn node_find_supports_order_limit_and_offset() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.create User name=Bob age=35\nnode.create User name=Carol age=50\nnode.find User age>=35 order=age:desc limit=2 offset=1\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("2 nodes matched model 'User'."));
+    assert!(output.contains("Node User userId=1 {age=42 name=Alice}"));
+    assert!(output.contains("Node User userId=2 {age=35 name=Bob}"));
+    assert!(!output.contains("userId=3 {age=50 name=Carol}"));
+}
+
+#[tokio::test]
+async fn edge_find_supports_endpoint_filters_and_comparison_operators() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nnode.create Post title=World\nedge.create Authored from=1 to=2 year=2024\nedge.create Authored from=1 to=3 year=2025\nedge.find Authored from=1 year>=2025\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("1 edges matched link 'Authored'."));
+    assert!(output.contains("Edge Authored authoredId=2 from=1 to=3 {year=2025}"));
+    assert!(!output.contains("authoredId=1 from=1 to=2 {year=2024}"));
+}
+
+#[tokio::test]
 async fn node_update_and_delete_work() {
     let input = Cursor::new(
         "model.define User userId name:string:required age:int:optional\nnode.create User name=Alice age=42\nnode.update User 1 age=43\nnode.find User age=43\nnode.delete User 1\nnode.find User id=1\nsession.exit\n",
