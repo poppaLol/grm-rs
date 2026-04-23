@@ -474,11 +474,38 @@ async fn script_mode_can_define_models() {
     let rel_model = state.rel_model("Authored").unwrap();
     assert_eq!(rel_model.from_model, "User");
     assert_eq!(rel_model.to_model, "Post");
-    assert!(output.contains("Model 'User' created from script."));
-    assert!(output.contains("Link 'Authored' created from script."));
-    assert!(output.contains("Id: userId (int)"));
-    assert!(output.contains("Session links:"));
-    assert!(output.contains("Link: Authored"));
+    assert!(output.contains("Welcome to GRM-RS CLI."));
+    assert!(output.contains("Script Summary"));
+    assert!(output.contains("Types created:"));
+    assert!(output.contains("nodes: User, Post"));
+    assert!(output.contains("links: Authored"));
+    assert!(output.contains("Inserted rows:"));
+    assert!(output.contains("  none"));
+}
+
+#[tokio::test]
+async fn script_mode_outputs_colored_summary() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId authoredOn:string:required\nnode.create User name=\"Alice Jones\"\nnode.create Post title=\"Graph Notes\"\nedge.create Authored from=1 to=2 authoredOn=2026-04-12\nnode.find User name=\"Alice Jones\"\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new_with_color(input, output, true);
+
+    session.run_script().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Welcome to GRM-RS CLI."));
+    assert!(output.contains("nodes: \u{1b}[32mUser\u{1b}[0m, \u{1b}[32mPost\u{1b}[0m"));
+    assert!(output.contains("links: \u{1b}[32mAuthored\u{1b}[0m"));
+    assert!(output.contains("| node |"));
+    assert!(output.contains("| edge |"));
+    assert!(output.contains("\u{1b}[32mUser\u{1b}[0m"));
+    assert!(output.contains("\u{1b}[32mPost\u{1b}[0m"));
+    assert!(output.contains("\u{1b}[32mAuthored\u{1b}[0m"));
+    assert!(output.contains("\u{1b}[34minserted\u{1b}[0m"));
+    assert!(!output.contains("Node \u{1b}[32mUser\u{1b}[0m"));
 }
 
 #[tokio::test]
@@ -509,6 +536,7 @@ async fn script_bootstrap_can_continue_interactively() {
     let output = String::from_utf8(output).unwrap();
 
     assert!(state.model("User").is_some());
+    assert!(output.contains("Welcome to GRM-RS CLI."));
     assert!(output.contains("Script loaded. Entering interactive session."));
     assert!(output.contains("Model: User"));
     assert!(output.contains("Id: userId (int)"));
@@ -663,6 +691,24 @@ async fn node_find_supports_jsonl_format() {
 }
 
 #[tokio::test]
+async fn node_find_supports_colored_default_output() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.find User age>=21\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new_with_color(input, output, true);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("1 nodes matched model 'User'."));
+    assert!(output.contains("Node \u{1b}[32mUser\u{1b}[0m \u{1b}[34muserId\u{1b}[0m=1"));
+    assert!(output.contains("{\u{1b}[34mage\u{1b}[0m=42 \u{1b}[34mname\u{1b}[0m=\u{1b}[38;5;208mAlice\u{1b}[0m}"));
+}
+
+#[tokio::test]
 async fn edge_find_supports_jsonl_format() {
     let input = Cursor::new(
         "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nedge.find Authored from=1 format=jsonl\nsession.exit\n",
@@ -683,6 +729,26 @@ async fn edge_find_supports_jsonl_format() {
     assert!(output.contains(r#""type":"Authored""#));
     assert!(output.contains(r#""year":2024"#));
     assert!(!output.contains("edges matched link"));
+}
+
+#[tokio::test]
+async fn edge_find_supports_colored_table_format() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId authoredOn:string:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 authoredOn=2026-04-12\nedge.find Authored from=1 format=table\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new_with_color(input, output, true);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("\u{1b}[34mauthoredId\u{1b}[0m"));
+    assert!(output.contains("\u{1b}[32mtype\u{1b}[0m"));
+    assert!(output.contains("\u{1b}[34mauthoredOn\u{1b}[0m"));
+    assert!(output.contains("\u{1b}[32mAuthored\u{1b}[0m"));
+    assert!(output.contains("\u{1b}[38;5;208m2026-04-12\u{1b}[0m"));
 }
 
 #[tokio::test]
