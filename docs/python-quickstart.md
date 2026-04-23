@@ -76,7 +76,10 @@ print(session.edge_find("Authored"))
 
 - Field definitions are Python dicts with `name`, `type`, and `required`
 - Supported field types are `string`, `int`, `float`, and `bool`
-- The Python method names mirror the CLI commands with `_` instead of `.`, such as `model_create`, `node_find`, and `session_save_json`
+- The Python method names mostly mirror the CLI commands with `_` instead of `.`, such as `model_create`, `node_find`, and `edge_update`
+- Session persistence helpers use the shorter Python-style names `save_json`, `save_binary`, `load_json`, and `load_binary`
+- Autocommit is off by default; enable it at construction time with `Session(autocommit=True, autocommit_path="session.json")`
+- When autocommit is enabled, `session.autocommit` is `True` and every successful mutating operation persists the session file
 - `node_create`, `node_find`, `edge_create`, and `edge_find` return plain Python dictionaries/lists
 - Rust-side failures are raised as `grm_rs.GrmError`
 
