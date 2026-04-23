@@ -35,6 +35,36 @@ jobs:
       - name: Run CLI script example
         run: cargo run --example cli_script
 
+  python-bindings:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install maturin
+        run: python -m pip install maturin
+
+      - name: Build Python wheel
+        run: maturin build --manifest-path grm-python/Cargo.toml --out dist
+
+      - name: Install Python wheel
+        run: python -m pip install dist/*.whl
+
+      - name: Run Python bindings smoke test
+        run: python tests/python_bindings_smoke.py
+
   package-check:
     runs-on: ubuntu-latest
 
