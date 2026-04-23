@@ -2,9 +2,10 @@ use grm_rs::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line
 
 #[test]
 fn parser_preserves_quoted_values_in_node_find_terms() {
-    let command =
-        parse_command_line(r#"node.find User name!="Alice Jones" order=age:desc,name:asc limit=10"#)
-            .unwrap();
+    let command = parse_command_line(
+        r#"node.find User name!="Alice Jones" order=age:desc,name:asc limit=10"#,
+    )
+    .unwrap();
 
     assert_eq!(
         command,
@@ -122,6 +123,39 @@ fn parser_preserves_output_format_term() {
 }
 
 #[test]
+fn parser_preserves_traversal_terms_in_node_find() {
+    let command = parse_command_line(
+        r#"node.find User name="Alice Jones" via=out:Authored:Post end.title~"Hello" return=edge"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        command,
+        SessionCommand::NodeFind {
+            model_name: "User".into(),
+            terms: vec![
+                QueryTerm {
+                    key: "name".into(),
+                    value: "Alice Jones".into(),
+                },
+                QueryTerm {
+                    key: "via".into(),
+                    value: "out:Authored:Post".into(),
+                },
+                QueryTerm {
+                    key: "end.title~".into(),
+                    value: "Hello".into(),
+                },
+                QueryTerm {
+                    key: "return".into(),
+                    value: "edge".into(),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
 fn parser_reports_unterminated_quotes() {
     let err = parse_command_line(r#"node.find User name="Alice Jones"#).unwrap_err();
     assert!(err.to_string().contains("unterminated quoted string"));
@@ -132,9 +166,10 @@ fn parser_reports_unterminated_quotes() {
 #[test]
 fn parser_reports_invalid_escape_sequences() {
     let err = parse_command_line("node.find User name=\"Alice\\qJones\"").unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("invalid escape sequence '\\q' in quoted string"));
+    assert!(
+        err.to_string()
+            .contains("invalid escape sequence '\\q' in quoted string")
+    );
     assert!(err.to_string().contains("line 1, column"));
     assert!(err.to_string().contains("^"));
 }
@@ -142,22 +177,27 @@ fn parser_reports_invalid_escape_sequences() {
 #[test]
 fn parser_reports_malformed_order_terms() {
     let err = parse_command_line("node.find User order=age").unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("order must use order=<field>:asc|desc[,<field>:asc|desc ...]"));
+    assert!(
+        err.to_string()
+            .contains("order must use order=<field>:asc|desc[,<field>:asc|desc ...]")
+    );
     assert!(err.to_string().contains("^"));
 
     let err = parse_command_line("node.find User order=age:up").unwrap_err();
-    assert!(err.to_string().contains("order direction must be asc or desc"));
+    assert!(
+        err.to_string()
+            .contains("order direction must be asc or desc")
+    );
     assert!(err.to_string().contains("^"));
 }
 
 #[test]
 fn parser_reports_unknown_output_formats() {
     let err = parse_command_line("node.find User format=xml").unwrap_err();
-    assert!(err
-        .to_string()
-        .contains("format must be one of: default, jsonl, table, graph"));
+    assert!(
+        err.to_string()
+            .contains("format must be one of: default, jsonl, table, graph")
+    );
     assert!(err.to_string().contains("^"));
 }
 
@@ -171,7 +211,10 @@ fn parser_reports_invalid_query_term_shapes() {
 #[test]
 fn parser_reports_multiline_error_locations() {
     let err = parse_command_line("node.find User \norder=age:up").unwrap_err();
-    assert!(err.to_string().contains("order direction must be asc or desc"));
+    assert!(
+        err.to_string()
+            .contains("order direction must be asc or desc")
+    );
     assert!(err.to_string().contains("line 2, column 1"));
     assert!(err.to_string().contains("order=age:up"));
     assert!(err.to_string().contains("^"));

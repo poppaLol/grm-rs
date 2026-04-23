@@ -25,7 +25,11 @@ fn query_language_mockups_capture_ordering_and_paging_examples() {
     assert!(examples.iter().any(|line| line.contains("order=")));
     assert!(examples.iter().any(|line| line.contains("limit=")));
     assert!(examples.iter().any(|line| line.contains("offset=")));
-    assert!(examples.iter().any(|line| line.contains("order=age:desc,name:asc")));
+    assert!(
+        examples
+            .iter()
+            .any(|line| line.contains("order=age:desc,name:asc"))
+    );
 }
 
 #[test]
@@ -47,6 +51,23 @@ fn query_language_mockups_capture_output_format_examples() {
 }
 
 #[test]
+fn query_language_mockups_capture_traversal_examples() {
+    let examples = [
+        r#"node.find User name="Alice Jones" via=out:Authored:Post"#,
+        r#"node.find User name="Alice Jones" via=out:Accessed:Post end.title="Draft Notes""#,
+        r#"node.find User name="Alice Jones" via=out:Accessed:Post edge.accessedOn=2026-04-20 return=edge"#,
+    ];
+
+    assert!(
+        examples
+            .iter()
+            .all(|line| line.starts_with("node.find User "))
+    );
+    assert!(examples.iter().all(|line| line.contains("via=")));
+    assert!(examples.iter().any(|line| line.contains("return=edge")));
+}
+
+#[test]
 fn query_language_mockups_capture_edge_endpoint_examples() {
     let examples = [
         "edge.find Authored from=1",
@@ -54,7 +75,11 @@ fn query_language_mockups_capture_edge_endpoint_examples() {
         "edge.find Authored from=1 year>=2024 order=year:desc limit=10",
     ];
 
-    assert!(examples.iter().all(|line| line.starts_with("edge.find Authored ")));
+    assert!(
+        examples
+            .iter()
+            .all(|line| line.starts_with("edge.find Authored "))
+    );
 }
 
 #[test]
@@ -86,8 +111,16 @@ fn query_language_mockups_capture_expected_output_shapes() {
 
     assert!(node_output[0].contains("matched model"));
     assert!(edge_output[0].contains("matched link"));
-    assert!(jsonl_node_output.iter().all(|line| line.starts_with("{\"kind\":\"node\"")));
-    assert!(jsonl_edge_output.iter().all(|line| line.starts_with("{\"kind\":\"edge\"")));
+    assert!(
+        jsonl_node_output
+            .iter()
+            .all(|line| line.starts_with("{\"kind\":\"node\""))
+    );
+    assert!(
+        jsonl_edge_output
+            .iter()
+            .all(|line| line.starts_with("{\"kind\":\"edge\""))
+    );
     assert!(table_output.iter().any(|line| line.contains("| userId |")));
     assert!(graph_output.iter().any(|line| line.contains("[Authored#3")));
 }

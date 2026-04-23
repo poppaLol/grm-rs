@@ -3,8 +3,8 @@ use std::fs;
 use std::io::Cursor;
 
 use grm_rs::{
-    BackendIdType, CliSession, RuntimeField, RuntimeNodeModel, RuntimeValueType,
-    RuntimeRelModel, SessionModelCatalog, SessionState,
+    BackendIdType, CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
+    SessionModelCatalog, SessionState,
 };
 
 #[test]
@@ -47,10 +47,14 @@ fn registering_valid_model_works() {
 fn registering_valid_relationship_model_works() {
     let mut state = SessionState::new();
     state
-        .register_model(RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap())
+        .register_model(
+            RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap(),
+        )
         .unwrap();
     state
-        .register_model(RuntimeNodeModel::new("Post", "postId", BackendIdType::Int64, vec![]).unwrap())
+        .register_model(
+            RuntimeNodeModel::new("Post", "postId", BackendIdType::Int64, vec![]).unwrap(),
+        )
         .unwrap();
 
     let model = RuntimeRelModel::new(
@@ -90,7 +94,9 @@ fn model_name_collisions_are_rejected() {
 fn relationship_models_require_existing_endpoint_models() {
     let mut state = SessionState::new();
     state
-        .register_model(RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap())
+        .register_model(
+            RuntimeNodeModel::new("User", "userId", BackendIdType::Int64, vec![]).unwrap(),
+        )
         .unwrap();
 
     let model = RuntimeRelModel::new(
@@ -109,8 +115,7 @@ fn relationship_models_require_existing_endpoint_models() {
 
 #[test]
 fn invalid_model_names_are_rejected() {
-    let err =
-        RuntimeNodeModel::new("user", "userId", BackendIdType::Int64, vec![]).unwrap_err();
+    let err = RuntimeNodeModel::new("user", "userId", BackendIdType::Int64, vec![]).unwrap_err();
     assert!(err.to_string().contains("PascalCase"));
 }
 
@@ -222,7 +227,10 @@ async fn instance_validation_rejects_missing_type_mismatch_and_unknown_fields() 
     let mut wrong_type = BTreeMap::new();
     wrong_type.insert("name".into(), "Alice".into());
     wrong_type.insert("age".into(), "not-a-number".into());
-    let err = state.create_instance("User", &wrong_type).await.unwrap_err();
+    let err = state
+        .create_instance("User", &wrong_type)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("expected int"));
 
     let mut unknown = BTreeMap::new();
@@ -372,8 +380,14 @@ async fn relationship_creation_rejects_wrong_endpoint_models() {
         )
         .unwrap();
 
-    let user = state.create_instance("User", &BTreeMap::new()).await.unwrap();
-    let wrong_to = state.create_instance("User", &BTreeMap::new()).await.unwrap();
+    let user = state
+        .create_instance("User", &BTreeMap::new())
+        .await
+        .unwrap();
+    let wrong_to = state
+        .create_instance("User", &BTreeMap::new())
+        .await
+        .unwrap();
 
     let err = state
         .create_relationship_instance(
@@ -425,7 +439,9 @@ async fn canceling_confirmation_does_not_register_model() {
 
 #[tokio::test]
 async fn choosing_first_instance_launches_creation_flow() {
-    let input = Cursor::new("model.define\nUser\nuserId\nname\nstring\ny\ndone\ny\ny\nAlice\nsession.exit\n");
+    let input = Cursor::new(
+        "model.define\nUser\nuserId\nname\nstring\ny\ndone\ny\ny\nAlice\nsession.exit\n",
+    );
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
 
@@ -588,6 +604,43 @@ async fn node_find_supports_line_continuation() {
 }
 
 #[tokio::test]
+async fn node_find_traverses_to_related_end_nodes() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required text:string:optional\nlink.define Authored User Post authoredId authoredOn:string:required\nnode.create User name=\"Alice Jones\"\nnode.create User name=\"Bob Smith\"\nnode.create Post title=\"Hello World\" text=\"A short welcome post.\"\nnode.create Post title=\"Draft Notes\" text=\"A quick draft.\"\nedge.create Authored from=1 to=3 authoredOn=2026-04-10\nedge.create Authored from=2 to=4 authoredOn=2026-04-12\nnode.find User name=\"Alice Jones\" via=out:Authored:Post\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("1 nodes matched model 'Post'."));
+    assert!(output.contains("Node Post postId=3"));
+    assert!(output.contains("title=\"Hello World\""));
+    assert!(!output.contains("Node Post postId=4"));
+}
+
+#[tokio::test]
+async fn node_find_traversal_supports_edge_filters_and_return_edge() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Accessed User Post accessedId accessedOn:string:required\nnode.create User name=\"Alice Jones\"\nnode.create Post title=\"Draft Notes\"\nnode.create Post title=\"Traversal Tips\"\nedge.create Accessed from=1 to=2 accessedOn=2026-04-20\nedge.create Accessed from=1 to=3 accessedOn=2026-04-22\nnode.find User name=\"Alice Jones\" via=out:Accessed:Post edge.accessedOn=2026-04-20 end.title=\"Draft Notes\" return=edge\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("1 edges matched link 'Accessed'."));
+    assert!(output.contains("Edge Accessed accessedId=1 from=1 to=2 {accessedOn=2026-04-20}"));
+    assert!(!output.contains("accessedId=2 from=1 to=3"));
+}
+
+#[tokio::test]
 async fn node_find_supports_jsonl_format() {
     let input = Cursor::new(
         "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.find User age>=21 format=jsonl\nsession.exit\n",
@@ -733,9 +786,13 @@ async fn node_find_supports_multi_field_ordering() {
     let (_, _, output) = session.into_parts();
     let output = String::from_utf8(output).unwrap();
 
-    let alice_pos = output.find("Node User userId=2 {age=42 name=Alice}").unwrap();
+    let alice_pos = output
+        .find("Node User userId=2 {age=42 name=Alice}")
+        .unwrap();
     let bob_pos = output.find("Node User userId=1 {age=42 name=Bob}").unwrap();
-    let carol_pos = output.find("Node User userId=3 {age=35 name=Carol}").unwrap();
+    let carol_pos = output
+        .find("Node User userId=3 {age=35 name=Carol}")
+        .unwrap();
 
     assert!(alice_pos < bob_pos);
     assert!(bob_pos < carol_pos);
@@ -772,9 +829,15 @@ async fn edge_find_supports_multi_field_ordering() {
     let (_, _, output) = session.into_parts();
     let output = String::from_utf8(output).unwrap();
 
-    let rel_2025 = output.find("Edge Authored authoredId=3 from=1 to=4 {year=2025}").unwrap();
-    let rel_to_2 = output.find("Edge Authored authoredId=1 from=1 to=2 {year=2024}").unwrap();
-    let rel_to_3 = output.find("Edge Authored authoredId=2 from=1 to=3 {year=2024}").unwrap();
+    let rel_2025 = output
+        .find("Edge Authored authoredId=3 from=1 to=4 {year=2025}")
+        .unwrap();
+    let rel_to_2 = output
+        .find("Edge Authored authoredId=1 from=1 to=2 {year=2024}")
+        .unwrap();
+    let rel_to_3 = output
+        .find("Edge Authored authoredId=2 from=1 to=3 {year=2024}")
+        .unwrap();
 
     assert!(rel_2025 < rel_to_2);
     assert!(rel_to_2 < rel_to_3);
@@ -966,7 +1029,9 @@ async fn edge_update_supports_string_date_properties() {
     let (_, _, output) = session.into_parts();
     let output = String::from_utf8(output).unwrap();
 
-    assert!(output.contains("Updated edge Authored authoredId=1 from=1 to=2 {authoredOn=2026-04-12}"));
+    assert!(
+        output.contains("Updated edge Authored authoredId=1 from=1 to=2 {authoredOn=2026-04-12}")
+    );
     assert!(output.contains("Edge Authored authoredId=1 from=1 to=2 {authoredOn=2026-04-12}"));
 }
 
