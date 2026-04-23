@@ -35,6 +35,10 @@ Node query terms:
 
 ```text
 <node-term> := <predicate>
+             | via=<traversal-step>
+             | end.<predicate>
+             | edge.<predicate>
+             | return=root|end|edge
              | limit=<int>
              | offset=<int>
              | order=<order-clause>
@@ -77,6 +81,13 @@ Values:
 <value> := bare-value
          | "double quoted value"
          | 'single quoted value'
+```
+
+Traversal:
+
+```text
+<traversal-step> := <direction>:<link-name|*>:<end-model>
+<direction>      := out | in | both
 ```
 
 Ordering:
@@ -141,6 +152,14 @@ edge.find Authored to=2 year>=2024
 node.find User name!="Alice Jones" active=true order=name:asc
 node.find User name!="Alice Jones" active=true order=age:desc,name:asc
 edge.find Authored from=1 year>=2024 order=year:desc,to:asc limit=10
+```
+
+### Traversal queries
+
+```text
+node.find User name="Alice Jones" via=out:Authored:Post
+node.find User name="Alice Jones" via=out:Accessed:Post end.title="Draft Notes"
+node.find User name="Alice Jones" via=out:Accessed:Post edge.accessedOn=2026-04-20 return=edge
 ```
 
 ### Output format selection
