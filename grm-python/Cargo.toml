@@ -1,0 +1,19 @@
+[package]
+name = "grm-rs-python"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Python bindings for grm-rs runtime sessions."
+
+[features]
+gil-refs = []
+
+[lib]
+name = "_grm_rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+grm-rs = { path = ".." }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+serde_json = "1"
