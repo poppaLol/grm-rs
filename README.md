@@ -105,6 +105,9 @@ node.create User name=Alice age=42
 node.create Post title=Hello
 edge.create Authored from=1 to=2 year=2024
 node.find User name=Alice
+node.find User age>=21 order=age:desc limit=10
+node.find User name!="Alice Jones"
+edge.find Authored from=1 year>=2024 order=year:desc,to:asc
 ```
 
 ### Interactive Commands
@@ -125,10 +128,19 @@ Data commands:
 
 ```text
 node.create <ModelName> [field=value ...]
-node.find <ModelName> [field=value ...]
+node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
 
 edge.create <LinkName> from=<id> to=<id> [field=value ...]
-edge.find <LinkName> [from=<id>] [to=<id>] [field=value ...]
+edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
+```
+
+Query examples:
+
+```text
+node.find User name="Alice Jones"
+node.find User age>=21 order=age:desc,name:asc limit=10
+node.find User bio~"graph databases"
+edge.find Authored from=1 year>=2024 order=year:desc,to:asc
 ```
 
 Session commands:
