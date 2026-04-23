@@ -676,7 +676,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     pub async fn run_script(&mut self) -> Result<()> {
         self.prompt_name = "script";
         loop {
-            let Some(line) = self.read_line()? else {
+            let Some(line) = self.read_command_line()? else {
                 break;
             };
 
@@ -702,7 +702,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
         loop {
             self.write_prompt()?;
-            let Some(line) = self.read_line()? else {
+            let Some(line) = self.read_command_line()? else {
                 writeln!(self.writer)?;
                 break;
             };
@@ -820,11 +820,13 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  edge.update <LinkName> <id> [field=value ...]")?;
         writeln!(self.writer, "  edge.delete <LinkName> <id>")?;
         writeln!(self.writer, "Examples:")?;
+        writeln!(self.writer, "  node.update User 1 name=\"Alice Johnson\" age=43")?;
         writeln!(self.writer, "  node.find User name=\"Alice Jones\"")?;
         writeln!(self.writer, "  node.find User age>=21 order=age:desc,name:asc limit=10")?;
         writeln!(self.writer, "  node.find User age>=21 format=jsonl")?;
         writeln!(self.writer, "  node.find User age>=21 format=table")?;
-        writeln!(self.writer, "  edge.find Authored from=1 year>=2024 order=year:desc,to:asc")?;
+        writeln!(self.writer, "  edge.update Authored 1 authoredOn=2026-04-12")?;
+        writeln!(self.writer, "  edge.find Authored from=1 authoredOn>=2026-04-10 order=authoredOn:desc,to:asc")?;
         writeln!(self.writer, "  session.save --json <path>")?;
         writeln!(self.writer, "  session.save --bin <path>")?;
         writeln!(self.writer, "  session.load --json <path>")?;
@@ -1835,6 +1837,32 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             ));
         };
         Ok(line.trim().to_string())
+    }
+
+    fn read_command_line(&mut self) -> Result<Option<String>> {
+        let Some(first_line) = self.read_line()? else {
+            return Ok(None);
+        };
+
+        let mut combined = String::new();
+        let mut current = first_line;
+
+        loop {
+            let physical = current.trim_end_matches(&['\r', '\n'][..]);
+            let trimmed_end = physical.trim_end();
+
+            if let Some(content) = trimmed_end.strip_suffix('\\') {
+                combined.push_str(content);
+                combined.push('\n');
+                current = self.read_line()?.ok_or_else(|| {
+                    crate::GrmError::Constraint("line continuation ended unexpectedly".into())
+                })?;
+                continue;
+            }
+
+            combined.push_str(physical);
+            return Ok(Some(combined));
+        }
     }
 
     fn read_line(&mut self) -> Result<Option<String>> {
