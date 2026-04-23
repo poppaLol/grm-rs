@@ -67,6 +67,9 @@ The current CLI is useful, but there are several major limitations:
 
 Improve session query capability beyond exact-match filters.
 
+Design note:
+see [docs/query-language-design.md](query-language-design.md) for the current grammar sketch, CLI mockups, and planned acceptance tests.
+
 Target additions:
 
 - comparison operators like `!=`, `>`, `<`, `>=`, `<=`
