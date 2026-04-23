@@ -199,7 +199,15 @@ node.find User age>=21
 node.find User age>=21 format=default
 node.find User age>=21 format=jsonl
 node.find User age>=21 order=age:desc format=table
+node.find User name="Alice Jones" via=out:Authored:Post format=graph
 edge.find Authored from=1 format=jsonl
+```
+
+### Graph output playground examples
+
+```text
+node.find User name="Alice Jones" via=out:Authored:Post format=graph
+node.find User name=Alice via=out:Knows:User via=out:Knows:User format=graph
 ```
 
 ## Output Design
@@ -260,17 +268,74 @@ Edge Authored authoredId=3 from=1 to=2 {year=2024}
 +--------+-------------+-----+--------+
 ```
 
-### Future `graph` output
+### `graph` output direction
+
+The first `graph` renderer should prefer a compact git-log-like display for rooted traversal results.
+
+Rendering rules for the first pass:
+
+- use `*` to mark each visible step in the rendered traversal
+- render nodes as `(Type#id)`
+- render relationships as `[Type#id]`
+- show a compact inline property summary after each node or relationship
+- prefer one or two identifying properties inline rather than dumping every property
+- use `|`, `|\`, and indentation to show continuation and branching
+- when a previously expanded node is reached again, render it once with a `[seen]` marker instead of recursing forever
+- if the graph-shaped result has nodes but no visible relationships, fall back to a graph-flavored node listing rather than inventing connectors
+
+### `graph` output mockups
+
+Simple chain:
 
 ```text
-(User#1 {name="Alice"})
-  |
-  +--[Authored#3 {year=2024}]--> (Post#2 {title="Hello"})
+* (User#1) name="Alice Jones"
+|
+* [Authored#7] -> (Post#3) title="Hello World"
+|
+* [Tagged#11] -> (Tag#8) name="rust"
 ```
+
+Simple branching:
+
+```text
+* (User#1) name="Alice Jones"
+|\
+| * [Authored#7] -> (Post#3) title="Hello World"
+| * [Accessed#9] -> (Post#4) title="Draft Notes"
+```
+
+Traversal completed but only node entries are shown:
+
+```text
+graph: 3 nodes, 0 links
+
+* (User#1) name="Alice Jones"
+  (Post#3) title="Hello World"
+  (Post#4) title="Draft Notes"
+```
+
+Repeated or cyclic structure:
+
+```text
+* (User#1) name="Alice"
+|
+* [Authored#7] -> (Post#3) title="Hello World"
+|\
+| * [Tagged#11] -> (Tag#8) name="rust"
+|   * [Related#15] -> (Tag#9) name="cli"
+|     * [Related#16] -> (Tag#8) [seen]
+```
+
+### `graph` renderer fallback rules
+
+- prefer the git-log-like renderer when the result has a clear root and limited branching
+- allow repeated nodes to appear as references, but stop expanding once they have already been visited
+- if the result is too dense or loses a clear traversal shape, the renderer may fall back to a normalized `Nodes` + `Links` listing later
+- the first implementation does not need to solve every dense graph perfectly; it only needs to make common traversal results readable
 
 ### Next presentation work
 
-- graph output for graph-shaped and traversal-shaped results
+- graph output for graph-shaped and traversal-shaped results, starting with the git-log-like traversal view above
 - coloured output for interactive terminals
 - clear non-colour behavior when output is piped or redirected
 

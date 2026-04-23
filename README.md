@@ -158,6 +158,13 @@ node.find User name="Alice Jones" via=out:Accessed:Post end.title="Draft Notes"
 node.find User name="Alice Jones" via=out:Accessed:Post edge.accessedOn=2026-04-20 return=edge
 ```
 
+Graph output examples:
+
+```text
+node.find User name="Alice Jones" via=out:Authored:Post format=graph
+node.find User name=Alice via=out:Knows:User via=out:Knows:User format=graph
+```
+
 Update examples:
 
 ```text

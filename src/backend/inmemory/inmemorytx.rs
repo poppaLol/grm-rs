@@ -326,14 +326,22 @@ impl InMemoryTx {
             return Ok(bindings);
         }
 
-        let mut results = Vec::with_capacity(bindings.len());
+        let mut current = bindings;
+        for hop in &ctx.hops {
+            let mut next_bindings = Vec::new();
+            for binding in current {
+                let next = Self::traverse_single_hop(self, binding, hop).await?;
+                next_bindings.extend(next);
+            }
 
-        for b in bindings {
-            let next = Self::traverse_single_hop(self, b, ctx).await?;
-            results.extend(next);
+            if next_bindings.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            current = next_bindings;
         }
 
-        Ok(results)
+        Ok(current)
     }
 
     /// Pure function for single-hop traversal logic - no state mutation
@@ -369,25 +377,17 @@ impl InMemoryTx {
     async fn traverse_single_hop(
         &mut self,
         binding: Binding,
-        ctx: &ExecCtx,
+        hop: &HopMatch,
     ) -> Result<Vec<Binding>> {
-        let mut results = Vec::new();
+        let rel_type = hop.rel_type.map(|t| t as &str);
 
-        for hop in &ctx.hops {
-            let rel_type = hop.rel_type.map(|t| t as &str);
+        let pairs = match hop.dir {
+            Direction::Out => self.outgoing(binding.cur, rel_type).await?,
+            Direction::In => self.incoming(binding.cur, rel_type).await?,
+            Direction::Both => self.both(binding.cur, rel_type).await?,
+        };
 
-            // Perform the actual async traversal to get pairs
-            let pairs = match hop.dir {
-                Direction::Out => self.outgoing(binding.cur, rel_type).await?,
-                Direction::In => self.incoming(binding.cur, rel_type).await?,
-                Direction::Both => self.both(binding.cur, rel_type).await?,
-            };
-
-            // Apply pure traversal logic to the fetched data
-            results.extend(Self::traverse_single_hop_pure(hop, &binding, pairs));
-        }
-
-        Ok(results)
+        Ok(Self::traverse_single_hop_pure(hop, &binding, pairs))
     }
 
     /// Builder pattern for new bindings - combines existing values with new ones
