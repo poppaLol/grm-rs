@@ -19,6 +19,38 @@ The goal is to give Rust developers a **type-safe, ergonomic OGM-style interface
 
 Over time, the project aims to support additional backends and a CLI for both humans and agentic systems, enabling graph-structured analysis either in-memory or persisted.
 
+## Python bindings
+
+A first-pass Python extension crate now lives in [`grm-python`](grm-python).
+
+It currently targets the runtime session surface rather than the generic Rust repository APIs, which keeps the initial Python API dict/list-oriented and easier to evolve.
+
+For the full setup and usage flow, including how to run the compiled Rust CLI as a Python-focused developer, see [docs/python-quickstart.md](docs/python-quickstart.md).
+
+```bash
+cd grm-python
+maturin develop
+```
+
+```python
+from grm_rs import Session
+
+session = Session()
+session.model_create(
+    "User",
+    "userId",
+    [{"name": "name", "type": "string", "required": True}],
+)
+session.node_create("User", {"name": "Alice"})
+```
+
+The CLI remains the Rust binary:
+
+```bash
+cargo build --bin grm
+./target/debug/grm session
+```
+
 ---
 
 ## 🖥️ Interactive Session
