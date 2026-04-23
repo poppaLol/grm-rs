@@ -803,6 +803,45 @@ async fn find_graph_format_is_rejected_for_flat_results() {
 }
 
 #[tokio::test]
+async fn node_find_traversal_supports_graph_format() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId authoredOn:string:required\nnode.create User name=\"Alice Jones\"\nnode.create Post title=\"Hello World\"\nnode.create Post title=\"Draft Notes\"\nedge.create Authored from=1 to=2 authoredOn=2026-04-10\nedge.create Authored from=1 to=3 authoredOn=2026-04-20\nnode.find User name=\"Alice Jones\" via=out:Authored:Post format=graph\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("graph: 3 nodes, 2 links"));
+    assert!(output.contains("* (User#1) name=\"Alice Jones\""));
+    assert!(output.contains("|\\"));
+    assert!(output.contains("| * [Authored#1] authoredOn=2026-04-10 -> (Post#2) title=\"Hello World\""));
+    assert!(output.contains("| * [Authored#2] authoredOn=2026-04-20 -> (Post#3) title=\"Draft Notes\""));
+}
+
+#[tokio::test]
+async fn node_find_traversal_graph_marks_revisited_nodes_as_seen() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nlink.define Knows User User knowsId since:string:required\nnode.create User name=Alice\nnode.create User name=Bob\nedge.create Knows from=1 to=2 since=2026-04-10\nedge.create Knows from=2 to=1 since=2026-04-11\nnode.find User name=Alice via=out:Knows:User via=out:Knows:User format=graph\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("graph: 2 nodes, 2 links"));
+    assert!(output.contains("* (User#1) name=Alice"));
+    assert!(output.contains("* [Knows#1] since=2026-04-10 -> (User#2) name=Bob"));
+    assert!(output.contains("* [Knows#2] since=2026-04-11 -> (User#1) [seen]"));
+}
+
+#[tokio::test]
 async fn node_find_supports_comparison_and_contains_operators() {
     let input = Cursor::new(
         "model.define User userId name:string:required age:int:optional\nnode.create User name=\"Alice Jones\" age=42\nnode.create User name=Bob age=35\nnode.find User age>40\nnode.find User name!=\"Alice Jones\"\nnode.find User name~Jones\nsession.exit\n",
