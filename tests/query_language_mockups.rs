@@ -29,6 +29,24 @@ fn query_language_mockups_capture_ordering_and_paging_examples() {
 }
 
 #[test]
+fn query_language_mockups_capture_output_format_examples() {
+    let examples = [
+        "node.find User age>=21",
+        "node.find User age>=21 format=default",
+        "node.find User age>=21 format=jsonl",
+        "node.find User age>=21 order=age:desc format=table",
+        "edge.find Authored from=1 format=jsonl",
+        "traverse.find User start=1 depth<=2 format=graph",
+    ];
+
+    assert!(examples.iter().any(|line| !line.contains("format=")));
+    assert!(examples.iter().any(|line| line.contains("format=default")));
+    assert!(examples.iter().any(|line| line.contains("format=jsonl")));
+    assert!(examples.iter().any(|line| line.contains("format=table")));
+    assert!(examples.iter().any(|line| line.contains("format=graph")));
+}
+
+#[test]
 fn query_language_mockups_capture_edge_endpoint_examples() {
     let examples = [
         "edge.find Authored from=1",
@@ -49,7 +67,27 @@ fn query_language_mockups_capture_expected_output_shapes() {
         "1 edge matched link 'Authored'.",
         "Edge Authored authoredId=3 from=1 to=2 {year=2024}",
     ];
+    let jsonl_node_output = [
+        r#"{"kind":"node","model":"User","id":2,"labels":["User"],"props":{"name":"Bob","age":43,"active":true}}"#,
+        r#"{"kind":"node","model":"User","id":5,"labels":["User"],"props":{"name":"Carol","age":41,"active":false}}"#,
+    ];
+    let jsonl_edge_output = [
+        r#"{"kind":"edge","model":"Authored","id":3,"from":1,"to":2,"type":"Authored","props":{"year":2024}}"#,
+    ];
+    let table_output = [
+        "+--------+-------------+-----+--------+",
+        "| userId | name        | age | active |",
+        "| 2      | Bob         | 43  | true   |",
+    ];
+    let graph_output = [
+        r#"(User#1 {name="Alice"})"#,
+        r#"  +--[Authored#3 {year=2024}]--> (Post#2 {title="Hello"})"#,
+    ];
 
     assert!(node_output[0].contains("matched model"));
     assert!(edge_output[0].contains("matched link"));
+    assert!(jsonl_node_output.iter().all(|line| line.starts_with("{\"kind\":\"node\"")));
+    assert!(jsonl_edge_output.iter().all(|line| line.starts_with("{\"kind\":\"edge\"")));
+    assert!(table_output.iter().any(|line| line.contains("| userId |")));
+    assert!(graph_output.iter().any(|line| line.contains("[Authored#3")));
 }

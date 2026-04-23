@@ -14,21 +14,31 @@ The `grm session` CLI already supports a useful local workflow:
   - `session.autocommit --json|--bin`
 - script bootstrap into an interactive session
 - session persistence that restores both graph data and runtime schema
+- expanded `node.find` / `edge.find` query syntax:
+  - comparison operators: `=`, `!=`, `>`, `<`, `>=`, `<=`
+  - string matching with `~`
+  - quoted values with whitespace
+  - ordering, multi-field ordering, limit, and offset
+- a structured command parser shared by REPL and script mode
+- explicit output formats for `find`:
+  - default human-readable output
+  - `format=jsonl`
+  - `format=table`
 
 This means a user can now:
 
 1. bootstrap models and links from a script
 2. create and query data interactively
-3. save or autocommit the session
+3. choose between human-readable and machine-readable find output
 4. reload later with schema and data ready to use
 
 ## Current Drawbacks
 
 The current CLI is useful, but there are several major limitations:
 
-- query is exact-match only
-- command parsing is still based on simple whitespace splitting
-- quoted strings and richer literals are not properly supported
+- traversal-oriented query is not implemented yet
+- graph-shaped output is not implemented yet
+- coloured terminal output is not implemented yet
 - autocommit rewrites the whole session file on each successful change
 - persistence is snapshot-based only
 - runtime schema is primarily a CLI-layer concept, not yet a deeper core abstraction
@@ -38,17 +48,23 @@ The current CLI is useful, but there are several major limitations:
 
 ## Prioritized Roadmap
 
-### Now
+### Completed
 
 1. Query language expansion
 2. Real command parser
 
+### Now
+
+1. Graph output for graph-shaped and traversal-shaped results
+2. Coloured terminal output
+3. Session UX polish
+4. Traversal-oriented session queries
+
 ### Next
 
-1. Python integration surface
-2. Persistence durability improvements
-3. Smarter autocommit strategy
-4. Session UX polish
+1. Persistence durability improvements
+2. Smarter autocommit strategy
+3. Python integration surface
 
 ### Later
 
@@ -65,27 +81,41 @@ The current CLI is useful, but there are several major limitations:
 
 ### Query Language
 
-Improve session query capability beyond exact-match filters.
+Status:
+completed for the non-traversal phase, with traversal still outstanding.
+
+The CLI now supports richer session queries beyond exact-match filters.
 
 Design note:
-see [docs/query-language-design.md](query-language-design.md) for the current grammar sketch, CLI mockups, and planned acceptance tests.
+see [docs/query-language-design.md](query-language-design.md) for the current grammar sketch, CLI mockups, output-format notes, and acceptance tests.
 
-Target additions:
+Completed:
 
 - comparison operators like `!=`, `>`, `<`, `>=`, `<=`
-- string-oriented matching such as `contains`
-- limits, ordering, and paging
+- string-oriented matching via `~`
+- limits, ordering, multi-field ordering, and paging
+- explicit `find` output formats:
+  - default human-readable output
+  - `format=jsonl`
+  - `format=table`
+
+Outstanding:
+
 - traversal-oriented session queries
-- clearer node/edge result formatting as query power increases
+- graph-shaped result rendering
+- richer graph-aware result display once traversal lands
 
 Guiding rule:
 extend the current dotted command style first instead of replacing it immediately.
 
 ### Command Parser
 
-Replace the current whitespace-split parser with a real grammar-aware parser.
+Status:
+completed for the current command surface.
 
-Target additions:
+The CLI now has a real grammar-aware parser for the current session commands.
+
+Completed:
 
 - quoted string values
 - escaped values
@@ -93,8 +123,31 @@ Target additions:
 - stronger parse errors
 - a grammar that works consistently in both REPL and script mode
 
+Follow-on work:
+
+- extend the parser cleanly as traversal syntax is designed
+- preserve clear error reporting as the command surface grows
+
+### Output And Presentation
+
+Status:
+active; this is the next user-facing focus area.
+
+Current state:
+
+- `find` supports the current human-readable default output
+- `format=jsonl` supports machine-readable piping and scripting
+- `format=table` supports text-only tabular output
+
+Next additions:
+
+- graph output for graph-shaped and traversal-shaped results
+- coloured terminal output for default and table renderers
+- decide how colour behaves when output is piped or redirected
+- keep non-colour output stable and script-friendly
+
 Guiding rule:
-parser work should happen before query syntax becomes much richer.
+rendering should stay separate from query execution so new formats do not require query rewrites.
 
 ### Persistence And Autocommit
 
@@ -192,6 +245,15 @@ The near-term work is in a good place when:
 - parser errors are precise and actionable
 - the command language stays readable
 
+These are now largely satisfied for the current non-traversal query surface.
+
+### Output And Presentation
+
+- users can choose between default, `jsonl`, and `table` output
+- `jsonl` remains reliable for scripting and piping
+- graph output clearly communicates traversal structure
+- coloured output improves readability without harming pipe-friendly behavior
+
 ### Persistence And Autocommit
 
 - autocommit no longer depends on rewriting the entire session file every change
@@ -209,6 +271,9 @@ The near-term work is in a good place when:
 These should stay explicit for future planning chats:
 
 - what exact syntax should richer session queries use?
+- what exact traversal syntax should the CLI adopt?
+- what should graph output look like for branching traversals?
+- what colour rules should apply for interactive terminals vs redirected output?
 - should scripts remain command files or become a formal DSL?
 - should runtime schema converge with compile-time typed model abstractions?
 - how should UUID or other non-integer IDs appear in commands and saved sessions?
@@ -222,7 +287,7 @@ The main risk now is letting CLI convenience outpace core abstractions for too l
 
 The roadmap should therefore favor:
 
-1. better query capability
-2. better parsing
-3. better durability
-4. cleaner architecture underneath the UX
+1. better output and traversal capability
+2. better durability
+3. cleaner architecture underneath the UX
+4. stronger backend neutrality over time

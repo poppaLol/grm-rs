@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{
     BackendIdentity, GraphClient, GraphTx, InMemoryBackend, Result, RuntimeField, RuntimeNodeModel,
@@ -57,6 +58,15 @@ struct SessionOrder {
     direction: SortDirection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum OutputFormat {
+    #[default]
+    Default,
+    Jsonl,
+    Table,
+    Graph,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SortDirection {
     Asc,
@@ -70,6 +80,7 @@ struct NodeFindQuery {
     limit: Option<usize>,
     offset: Option<usize>,
     id_filter: Option<i64>,
+    format: OutputFormat,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -81,6 +92,19 @@ struct EdgeFindQuery {
     id_filter: Option<i64>,
     from_filter: Option<i64>,
     to_filter: Option<i64>,
+    format: OutputFormat,
+}
+
+#[derive(Debug, Clone)]
+enum SessionQueryResult {
+    Nodes {
+        model: RuntimeNodeModel,
+        rows: Vec<StoredNode>,
+    },
+    Edges {
+        model: RuntimeRelModel,
+        rows: Vec<StoredRel>,
+    },
 }
 
 impl Default for SessionState {
@@ -788,16 +812,18 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  link.list")?;
         writeln!(self.writer, "  link.show <name>")?;
         writeln!(self.writer, "  node.create <ModelName> [field=value ...]")?;
-        writeln!(self.writer, "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]")?;
+        writeln!(self.writer, "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table|graph]")?;
         writeln!(self.writer, "  node.update <ModelName> <id> [field=value ...]")?;
         writeln!(self.writer, "  node.delete <ModelName> <id>")?;
         writeln!(self.writer, "  edge.create <LinkName> from=<id> to=<id> [field=value ...]")?;
-        writeln!(self.writer, "  edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]")?;
+        writeln!(self.writer, "  edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table|graph]")?;
         writeln!(self.writer, "  edge.update <LinkName> <id> [field=value ...]")?;
         writeln!(self.writer, "  edge.delete <LinkName> <id>")?;
         writeln!(self.writer, "Examples:")?;
         writeln!(self.writer, "  node.find User name=\"Alice Jones\"")?;
         writeln!(self.writer, "  node.find User age>=21 order=age:desc,name:asc limit=10")?;
+        writeln!(self.writer, "  node.find User age>=21 format=jsonl")?;
+        writeln!(self.writer, "  node.find User age>=21 format=table")?;
         writeln!(self.writer, "  edge.find Authored from=1 year>=2024 order=year:desc,to:asc")?;
         writeln!(self.writer, "  session.save --json <path>")?;
         writeln!(self.writer, "  session.save --bin <path>")?;
@@ -1116,30 +1142,20 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
     fn handle_node_find_parsed(&mut self, model_name: &str, terms: &[QueryTerm]) -> Result<()> {
         let filters = collect_query_terms(terms);
+        let query = self.state.parse_node_find_query(model_name, &filters)?;
+        let nodes = self.state.find_nodes_with_query(model_name, &query)?;
         let model = self
             .state
             .model(model_name)
             .ok_or(crate::GrmError::NotFound)?
             .clone();
-        let query = self.state.parse_node_find_query(model_name, &filters)?;
-        let nodes = self.state.find_nodes_with_query(model_name, &query)?;
-        if nodes.is_empty() {
-            writeln!(self.writer, "No nodes matched model '{}'.", model_name)?;
-            return Ok(());
-        }
-
-        writeln!(self.writer, "{} nodes matched model '{}'.", nodes.len(), model_name)?;
-        for node in nodes {
-            writeln!(
-                self.writer,
-                "Node {} {}={} {}",
-                model.name,
-                model.id_field_name,
-                node.id,
-                format_props(&node.props)
-            )?;
-        }
-        Ok(())
+        self.render_query_result(
+            SessionQueryResult::Nodes {
+                model,
+                rows: nodes,
+            },
+            query.format,
+        )
     }
 
     async fn handle_edge_create_parsed(
@@ -1205,32 +1221,20 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
     fn handle_edge_find_parsed(&mut self, model_name: &str, terms: &[QueryTerm]) -> Result<()> {
         let filters = collect_query_terms(terms);
+        let query = self.state.parse_edge_find_query(model_name, &filters)?;
+        let rels = self.state.find_relationships_with_query(model_name, &query)?;
         let model = self
             .state
             .rel_model(model_name)
             .ok_or(crate::GrmError::NotFound)?
             .clone();
-        let query = self.state.parse_edge_find_query(model_name, &filters)?;
-        let rels = self.state.find_relationships_with_query(model_name, &query)?;
-        if rels.is_empty() {
-            writeln!(self.writer, "No edges matched link '{}'.", model_name)?;
-            return Ok(());
-        }
-
-        writeln!(self.writer, "{} edges matched link '{}'.", rels.len(), model_name)?;
-        for rel in rels {
-            writeln!(
-                self.writer,
-                "Edge {} {}={} from={} to={} {}",
-                model.name,
-                model.id_field_name,
-                rel.id,
-                rel.from,
-                rel.to,
-                format_props(&rel.props)
-            )?;
-        }
-        Ok(())
+        self.render_query_result(
+            SessionQueryResult::Edges {
+                model,
+                rows: rels,
+            },
+            query.format,
+        )
     }
 
     fn handle_session_save(&mut self, args: &[&str]) -> Result<()> {
@@ -1325,6 +1329,148 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 return Err(crate::GrmError::Constraint(
                     "usage: session.autocommit --json <path> | session.autocommit --bin <path> | session.autocommit status | session.autocommit off".into(),
                 ))
+            }
+        }
+
+        Ok(())
+    }
+
+    fn render_query_result(&mut self, result: SessionQueryResult, format: OutputFormat) -> Result<()> {
+        match format {
+            OutputFormat::Default => self.render_default_query_result(result),
+            OutputFormat::Jsonl => self.render_jsonl_query_result(result),
+            OutputFormat::Table => self.render_table_query_result(result),
+            OutputFormat::Graph => Err(crate::GrmError::NotSupported(
+                "graph format is only supported for graph-shaped query results",
+            )),
+        }
+    }
+
+    fn render_default_query_result(&mut self, result: SessionQueryResult) -> Result<()> {
+        match result {
+            SessionQueryResult::Nodes { model, rows } => {
+                if rows.is_empty() {
+                    writeln!(self.writer, "No nodes matched model '{}'.", model.name)?;
+                    return Ok(());
+                }
+
+                writeln!(self.writer, "{} nodes matched model '{}'.", rows.len(), model.name)?;
+                for node in rows {
+                    writeln!(
+                        self.writer,
+                        "Node {} {}={} {}",
+                        model.name,
+                        model.id_field_name,
+                        node.id,
+                        format_props(&node.props)
+                    )?;
+                }
+            }
+            SessionQueryResult::Edges { model, rows } => {
+                if rows.is_empty() {
+                    writeln!(self.writer, "No edges matched link '{}'.", model.name)?;
+                    return Ok(());
+                }
+
+                writeln!(self.writer, "{} edges matched link '{}'.", rows.len(), model.name)?;
+                for rel in rows {
+                    writeln!(
+                        self.writer,
+                        "Edge {} {}={} from={} to={} {}",
+                        model.name,
+                        model.id_field_name,
+                        rel.id,
+                        rel.from,
+                        rel.to,
+                        format_props(&rel.props)
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn render_jsonl_query_result(&mut self, result: SessionQueryResult) -> Result<()> {
+        match result {
+            SessionQueryResult::Nodes { model, rows } => {
+                for node in rows {
+                    writeln!(
+                        self.writer,
+                        "{}",
+                        json!({
+                            "kind": "node",
+                            "model": model.name,
+                            "id": node.id,
+                            "labels": node.labels,
+                            "props": node.props,
+                        })
+                    )?;
+                }
+            }
+            SessionQueryResult::Edges { model, rows } => {
+                for rel in rows {
+                    writeln!(
+                        self.writer,
+                        "{}",
+                        json!({
+                            "kind": "edge",
+                            "model": model.name,
+                            "id": rel.id,
+                            "from": rel.from,
+                            "to": rel.to,
+                            "type": rel.rel_type,
+                            "props": rel.props,
+                        })
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn render_table_query_result(&mut self, result: SessionQueryResult) -> Result<()> {
+        match result {
+            SessionQueryResult::Nodes { model, rows } => {
+                let mut headers = vec![model.id_field_name.clone()];
+                headers.extend(model.fields.iter().map(|field| field.name.clone()));
+
+                let mut matrix = Vec::new();
+                for node in rows {
+                    let mut row = vec![node.id.to_string()];
+                    for field in &model.fields {
+                        row.push(format_table_value(node.props.get(&field.name)));
+                    }
+                    matrix.push(row);
+                }
+
+                write_table(&mut self.writer, &headers, &matrix)?;
+            }
+            SessionQueryResult::Edges { model, rows } => {
+                let mut headers = vec![
+                    model.id_field_name.clone(),
+                    "from".into(),
+                    "to".into(),
+                    "type".into(),
+                ];
+                headers.extend(model.fields.iter().map(|field| field.name.clone()));
+
+                let mut matrix = Vec::new();
+                for rel in rows {
+                    let mut row = vec![
+                        rel.id.to_string(),
+                        rel.from.to_string(),
+                        rel.to.to_string(),
+                        rel.rel_type.clone(),
+                    ];
+                    for field in &model.fields {
+                        row.push(format_table_value(rel.props.get(&field.name)));
+                    }
+                    matrix.push(row);
+                }
+
+                write_table(&mut self.writer, &headers, &matrix)?;
             }
         }
 
@@ -1740,6 +1886,50 @@ fn format_value(value: &Value) -> String {
     }
 }
 
+fn format_table_value(value: Option<&Value>) -> String {
+    match value {
+        Some(value) => format_value(value),
+        None => String::new(),
+    }
+}
+
+fn write_table<W: Write>(writer: &mut W, headers: &[String], rows: &[Vec<String>]) -> Result<()> {
+    let mut widths: Vec<usize> = headers.iter().map(|header| header.len()).collect();
+    for row in rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(cell.len());
+        }
+    }
+
+    let border = format_table_border(&widths);
+    writeln!(writer, "{border}")?;
+    writeln!(writer, "{}", format_table_row(headers, &widths))?;
+    writeln!(writer, "{border}")?;
+    for row in rows {
+        writeln!(writer, "{}", format_table_row(row, &widths))?;
+    }
+    writeln!(writer, "{border}")?;
+    Ok(())
+}
+
+fn format_table_border(widths: &[usize]) -> String {
+    let mut line = String::new();
+    line.push('+');
+    for width in widths {
+        let _ = write!(line, "{}+", "-".repeat(*width + 2));
+    }
+    line
+}
+
+fn format_table_row(cells: &[String], widths: &[usize]) -> String {
+    let mut line = String::new();
+    line.push('|');
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        let _ = write!(line, " {:width$} |", cell, width = *width);
+    }
+    line
+}
+
 fn parse_node_find_query(
     filters: &BTreeMap<String, String>,
     model: &RuntimeNodeModel,
@@ -1748,6 +1938,7 @@ fn parse_node_find_query(
     let mut query = NodeFindQuery::default();
     for (raw_key, raw_value) in filters {
         match raw_key.as_str() {
+            "format" => query.format = OutputFormat::parse(raw_value)?,
             "limit" => query.limit = Some(parse_usize_term(raw_value, "limit")?),
             "offset" => query.offset = Some(parse_usize_term(raw_value, "offset")?),
             "order" => query.order = parse_order_term(raw_value)?,
@@ -1782,6 +1973,7 @@ fn parse_edge_find_query(
     let mut query = EdgeFindQuery::default();
     for (raw_key, raw_value) in filters {
         match raw_key.as_str() {
+            "format" => query.format = OutputFormat::parse(raw_value)?,
             "limit" => query.limit = Some(parse_usize_term(raw_value, "limit")?),
             "offset" => query.offset = Some(parse_usize_term(raw_value, "offset")?),
             "order" => query.order = parse_order_term(raw_value)?,
@@ -1903,6 +2095,20 @@ fn compare_values(left: &Value, op: CompareOp, right: &Value) -> bool {
             (Some(lhs), Some(rhs)) => lhs.contains(rhs),
             _ => false,
         },
+    }
+}
+
+impl OutputFormat {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "default" => Ok(Self::Default),
+            "jsonl" => Ok(Self::Jsonl),
+            "table" => Ok(Self::Table),
+            "graph" => Ok(Self::Graph),
+            _ => Err(crate::GrmError::Constraint(
+                "format must be one of: default, jsonl, table, graph".into(),
+            )),
+        }
     }
 }
 
