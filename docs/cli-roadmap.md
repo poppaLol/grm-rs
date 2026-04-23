@@ -66,6 +66,7 @@ The current CLI is useful, but there are several major limitations:
 2. Smarter autocommit strategy
 3. Concurrency and session coordination
 4. Python integration surface
+5. Explicit bulk-update design for matched query results
 
 ### Later
 
@@ -106,9 +107,14 @@ Outstanding:
 - traversal-oriented session queries
 - graph-shaped result rendering
 - richer graph-aware result display once traversal lands
+- explicit bulk-update commands for multi-match query results
 
 Guiding rule:
 extend the current dotted command style first instead of replacing it immediately.
+
+Bulk update note:
+for now, keep mutations on the current safe model of `node.update <Model> <id> ...` and `edge.update <Link> <id> ...`.
+When bulk mutation is introduced, it should be a separate and explicit command family rather than an overloaded extension of `find`, so the CLI can add guardrails such as dry-run counts, confirmations, and clear matched-versus-updated reporting.
 
 ### Command Parser
 
