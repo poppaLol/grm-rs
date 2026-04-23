@@ -100,6 +100,28 @@ fn parser_preserves_multi_field_order_term_as_single_query_control() {
 }
 
 #[test]
+fn parser_preserves_output_format_term() {
+    let command = parse_command_line("node.find User age>=21 format=jsonl").unwrap();
+
+    assert_eq!(
+        command,
+        SessionCommand::NodeFind {
+            model_name: "User".into(),
+            terms: vec![
+                QueryTerm {
+                    key: "age>=".into(),
+                    value: "21".into(),
+                },
+                QueryTerm {
+                    key: "format".into(),
+                    value: "jsonl".into(),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
 fn parser_reports_unterminated_quotes() {
     let err = parse_command_line(r#"node.find User name="Alice Jones"#).unwrap_err();
     assert!(err.to_string().contains("unterminated quoted string"));
@@ -122,6 +144,14 @@ fn parser_reports_malformed_order_terms() {
 
     let err = parse_command_line("node.find User order=age:up").unwrap_err();
     assert!(err.to_string().contains("order direction must be asc or desc"));
+}
+
+#[test]
+fn parser_reports_unknown_output_formats() {
+    let err = parse_command_line("node.find User format=xml").unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("format must be one of: default, jsonl, table, graph"));
 }
 
 #[test]

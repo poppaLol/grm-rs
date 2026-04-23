@@ -571,6 +571,102 @@ async fn node_find_supports_quoted_values_with_spaces() {
 }
 
 #[tokio::test]
+async fn node_find_supports_jsonl_format() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.find User age>=21 format=jsonl\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains(r#""kind":"node""#));
+    assert!(output.contains(r#""model":"User""#));
+    assert!(output.contains(r#""id":1"#));
+    assert!(output.contains(r#""labels":["User"]"#));
+    assert!(output.contains(r#""name":"Alice""#));
+    assert!(output.contains(r#""age":42"#));
+    assert!(!output.contains("nodes matched model"));
+}
+
+#[tokio::test]
+async fn edge_find_supports_jsonl_format() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nedge.find Authored from=1 format=jsonl\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains(r#""kind":"edge""#));
+    assert!(output.contains(r#""model":"Authored""#));
+    assert!(output.contains(r#""id":1"#));
+    assert!(output.contains(r#""from":1"#));
+    assert!(output.contains(r#""to":2"#));
+    assert!(output.contains(r#""type":"Authored""#));
+    assert!(output.contains(r#""year":2024"#));
+    assert!(!output.contains("edges matched link"));
+}
+
+#[tokio::test]
+async fn node_find_supports_table_format() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.find User age>=21 format=table\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("| userId | name  | age |"));
+    assert!(output.contains("| 1      | Alice | 42  |"));
+    assert!(!output.contains("nodes matched model"));
+}
+
+#[tokio::test]
+async fn edge_find_supports_table_format() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nedge.find Authored from=1 format=table\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("| authoredId | from | to | type     | year |"));
+    assert!(output.contains("| 1          | 1    | 2  | Authored | 2024 |"));
+}
+
+#[tokio::test]
+async fn find_graph_format_is_rejected_for_flat_results() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nnode.find User format=graph\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("graph format is only supported for graph-shaped query results"));
+}
+
+#[tokio::test]
 async fn node_find_supports_comparison_and_contains_operators() {
     let input = Cursor::new(
         "model.define User userId name:string:required age:int:optional\nnode.create User name=\"Alice Jones\" age=42\nnode.create User name=Bob age=35\nnode.find User age>40\nnode.find User name!=\"Alice Jones\"\nnode.find User name~Jones\nsession.exit\n",
