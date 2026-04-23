@@ -133,7 +133,7 @@ Data commands:
 node.create <ModelName> [field=value ...]
 node.update <ModelName> <id> [field=value ...]
 node.delete <ModelName> <id>
-node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
+node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [via=<out|in|both>:<LinkName|*>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end|edge] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
 
 edge.create <LinkName> from=<id> to=<id> [field=value ...]
 edge.update <LinkName> <id> [field=value ...]
@@ -148,6 +148,14 @@ node.find User name="Alice Jones"
 node.find User age>=21 order=age:desc,name:asc limit=10
 node.find User bio~"graph databases"
 edge.find Authored from=1 authoredOn>=2026-04-10 order=authoredOn:desc,to:asc
+```
+
+Traversal examples:
+
+```text
+node.find User name="Alice Jones" via=out:Authored:Post
+node.find User name="Alice Jones" via=out:Accessed:Post end.title="Draft Notes"
+node.find User name="Alice Jones" via=out:Accessed:Post edge.accessedOn=2026-04-20 return=edge
 ```
 
 Update examples:
