@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -126,6 +126,26 @@ enum SessionQueryResult {
         model: RuntimeRelModel,
         rows: Vec<StoredRel>,
     },
+    Graph(SessionGraphResult),
+}
+
+#[derive(Debug, Clone)]
+struct SessionGraphResult {
+    plan: RuntimeTraversalPlan,
+    rows: Vec<crate::dsl::QueryRow>,
+    return_mode: SessionTraversalReturn,
+}
+
+#[derive(Debug, Clone)]
+struct GraphRenderPath {
+    root: StoredNode,
+    steps: Vec<GraphRenderStep>,
+}
+
+#[derive(Debug, Clone)]
+struct GraphRenderStep {
+    rel: StoredRel,
+    node: StoredNode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,6 +589,44 @@ impl SessionState {
                     .unwrap_or(false)
             })
             .collect::<Vec<_>>();
+
+        if query.format == OutputFormat::Graph {
+            let mut rows = filtered_rows;
+            match plan.graph_query.return_kind() {
+                ReturnKind::Node => {
+                    let model = if query.return_mode == SessionTraversalReturn::Root {
+                        &root_model
+                    } else {
+                        &plan.end_model
+                    };
+                    if !query.order.is_empty() {
+                        sort_query_rows_by_node_return(
+                            &mut rows,
+                            &plan.graph_query,
+                            model,
+                            &query.order,
+                        )?;
+                    }
+                }
+                ReturnKind::Rel => {
+                    if !query.order.is_empty() {
+                        sort_query_rows_by_rel_return(
+                            &mut rows,
+                            &plan.graph_query,
+                            &plan.return_rel_model,
+                            &query.order,
+                        )?;
+                    }
+                }
+            }
+            rows = apply_offset_limit(rows, query.offset, query.limit);
+
+            return Ok(SessionQueryResult::Graph(SessionGraphResult {
+                plan,
+                rows,
+                return_mode: query.return_mode,
+            }));
+        }
 
         match plan.graph_query.return_kind() {
             ReturnKind::Node => {
@@ -1814,9 +1872,12 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             OutputFormat::Default => self.render_default_query_result(result),
             OutputFormat::Jsonl => self.render_jsonl_query_result(result),
             OutputFormat::Table => self.render_table_query_result(result),
-            OutputFormat::Graph => Err(crate::GrmError::NotSupported(
-                "graph format is only supported for graph-shaped query results",
-            )),
+            OutputFormat::Graph => match result {
+                SessionQueryResult::Graph(graph) => self.render_graph_query_result(graph),
+                _ => Err(crate::GrmError::NotSupported(
+                    "graph format is only supported for graph-shaped query results",
+                )),
+            },
         }
     }
 
@@ -1870,6 +1931,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                     )?;
                 }
             }
+            SessionQueryResult::Graph(_) => {
+                return Err(crate::GrmError::NotSupported(
+                    "graph results must use format=graph",
+                ));
+            }
         }
 
         Ok(())
@@ -1908,6 +1974,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                         })
                     )?;
                 }
+            }
+            SessionQueryResult::Graph(_) => {
+                return Err(crate::GrmError::NotSupported(
+                    "graph results do not support jsonl output",
+                ));
             }
         }
 
@@ -1968,9 +2039,142 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
                 write_table(&mut self.writer, &headers, &header_kinds, &matrix, &self.colors)?;
             }
+            SessionQueryResult::Graph(_) => {
+                return Err(crate::GrmError::NotSupported(
+                    "graph results must use format=graph",
+                ));
+            }
         }
 
         Ok(())
+    }
+
+    fn render_graph_query_result(&mut self, graph: SessionGraphResult) -> Result<()> {
+        let paths = build_graph_render_paths(&graph)?;
+        let (node_count, rel_count) = count_graph_entries(&paths);
+        writeln!(self.writer, "graph: {node_count} nodes, {rel_count} links")?;
+
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let mut grouped = BTreeMap::<i64, Vec<GraphRenderPath>>::new();
+        let mut roots = BTreeMap::<i64, StoredNode>::new();
+        for path in paths {
+            roots.entry(path.root.id).or_insert_with(|| path.root.clone());
+            grouped.entry(path.root.id).or_default().push(path);
+        }
+
+        let mut first_group = true;
+        for (root_id, mut root_paths) in grouped {
+            if !first_group {
+                writeln!(self.writer)?;
+            }
+            first_group = false;
+
+            root_paths.sort_by(|left, right| compare_graph_paths(left, right));
+            let root = roots
+                .get(&root_id)
+                .expect("root path grouping must preserve root node");
+            writeln!(self.writer, "* {}", self.format_graph_node(root, false))?;
+
+            if root_paths.iter().all(|path| path.steps.is_empty()) {
+                continue;
+            }
+
+            let mut seen_nodes = BTreeSet::new();
+            seen_nodes.insert(root.id);
+
+            if root_paths.len() == 1 {
+                self.render_linear_graph_path(&root_paths[0], &mut seen_nodes)?;
+            } else {
+                writeln!(self.writer, "|\\")?;
+                for path in &root_paths {
+                    self.render_branch_graph_path(path, &mut seen_nodes)?;
+                }
+            }
+        }
+
+        match graph.return_mode {
+            SessionTraversalReturn::Root
+            | SessionTraversalReturn::End
+            | SessionTraversalReturn::Edge => Ok(()),
+        }
+    }
+
+    fn render_linear_graph_path(
+        &mut self,
+        path: &GraphRenderPath,
+        seen_nodes: &mut BTreeSet<i64>,
+    ) -> Result<()> {
+        for step in &path.steps {
+            writeln!(self.writer, "|")?;
+            let already_seen = !seen_nodes.insert(step.node.id);
+            writeln!(
+                self.writer,
+                "* {}",
+                self.format_graph_step(step, already_seen)
+            )?;
+            if already_seen {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn render_branch_graph_path(
+        &mut self,
+        path: &GraphRenderPath,
+        seen_nodes: &mut BTreeSet<i64>,
+    ) -> Result<()> {
+        for (index, step) in path.steps.iter().enumerate() {
+            let prefix = if index == 0 { "| * " } else { "|   * " };
+            let already_seen = !seen_nodes.insert(step.node.id);
+            writeln!(
+                self.writer,
+                "{prefix}{}",
+                self.format_graph_step(step, already_seen)
+            )?;
+            if already_seen {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn format_graph_step(&self, step: &GraphRenderStep, already_seen: bool) -> String {
+        let rel = self.format_graph_rel(&step.rel);
+        let node = self.format_graph_node(&step.node, already_seen);
+        format!("{rel} -> {node}")
+    }
+
+    fn format_graph_node(&self, node: &StoredNode, already_seen: bool) -> String {
+        let label = node
+            .labels
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Node".to_string());
+        let head = format!("({}#{})", self.colors.type_name(&label), node.id);
+        if already_seen {
+            return format!("{head} [seen]");
+        }
+
+        let summary = format_graph_props(&node.props, 2, &self.colors);
+        if summary.is_empty() {
+            head
+        } else {
+            format!("{head} {summary}")
+        }
+    }
+
+    fn format_graph_rel(&self, rel: &StoredRel) -> String {
+        let head = format!("[{}#{}]", self.colors.type_name(&rel.rel_type), rel.id);
+        let summary = format_graph_props(&rel.props, 2, &self.colors);
+        if summary.is_empty() {
+            head
+        } else {
+            format!("{head} {summary}")
+        }
     }
 
     fn prompt_model_name(&mut self) -> Result<String> {
@@ -2478,6 +2682,20 @@ fn format_props(props: &BTreeMap<String, Value>, colors: &SessionColors) -> Stri
     format!("{{{}}}", parts.join(" "))
 }
 
+fn format_graph_props(props: &BTreeMap<String, Value>, limit: usize, colors: &SessionColors) -> String {
+    props.iter()
+        .take(limit)
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                colors.property_name(key),
+                format_value(value, colors)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn format_value(value: &Value, colors: &SessionColors) -> String {
     match value {
         Value::String(s) => {
@@ -2640,6 +2858,147 @@ fn visible_width(text: &str) -> usize {
     }
 
     width
+}
+
+fn build_graph_render_paths(graph: &SessionGraphResult) -> Result<Vec<GraphRenderPath>> {
+    let mut paths = Vec::new();
+
+    for row in &graph.rows {
+        let root = row
+            .values
+            .get(&graph.plan.root_var)
+            .and_then(|value| value.as_node())
+            .map(stored_node_from_kernel)
+            .ok_or_else(|| crate::GrmError::Backend("graph result missing root node".into()))?;
+
+        let mut steps = Vec::new();
+        for clause in &graph.plan.graph_query.matches {
+            if let MatchClause::Hop(hop) = clause {
+                let rel = row
+                    .values
+                    .get(&hop.rel_var)
+                    .and_then(|value| match value {
+                        crate::dsl::KernelValue::Rel(rel) => Some(stored_rel_from_kernel(rel)),
+                        _ => None,
+                    })
+                    .ok_or_else(|| crate::GrmError::Backend("graph result missing relationship".into()))?;
+                let node = row
+                    .values
+                    .get(&hop.end)
+                    .and_then(|value| value.as_node())
+                    .map(stored_node_from_kernel)
+                    .ok_or_else(|| crate::GrmError::Backend("graph result missing end node".into()))?;
+                steps.push(GraphRenderStep { rel, node });
+            }
+        }
+
+        paths.push(GraphRenderPath { root, steps });
+    }
+
+    Ok(paths)
+}
+
+fn count_graph_entries(paths: &[GraphRenderPath]) -> (usize, usize) {
+    let mut nodes = BTreeSet::new();
+    let mut rels = BTreeSet::new();
+    for path in paths {
+        nodes.insert(path.root.id);
+        for step in &path.steps {
+            rels.insert(step.rel.id);
+            nodes.insert(step.node.id);
+        }
+    }
+    (nodes.len(), rels.len())
+}
+
+fn compare_graph_paths(left: &GraphRenderPath, right: &GraphRenderPath) -> std::cmp::Ordering {
+    for (left_step, right_step) in left.steps.iter().zip(right.steps.iter()) {
+        let rel_order = left_step.rel.id.cmp(&right_step.rel.id);
+        if rel_order != std::cmp::Ordering::Equal {
+            return rel_order;
+        }
+
+        let node_order = left_step.node.id.cmp(&right_step.node.id);
+        if node_order != std::cmp::Ordering::Equal {
+            return node_order;
+        }
+    }
+
+    left.steps.len().cmp(&right.steps.len())
+}
+
+fn sort_query_rows_by_node_return(
+    rows: &mut [crate::dsl::QueryRow],
+    graph_query: &GraphQuery,
+    model: &RuntimeNodeModel,
+    orders: &[SessionOrder],
+) -> Result<()> {
+    validate_node_order_fields(model, orders)?;
+    rows.sort_by(|left, right| {
+        let left_node = left
+            .get_returned(graph_query)
+            .and_then(|value| value.as_node())
+            .map(stored_node_from_kernel);
+        let right_node = right
+            .get_returned(graph_query)
+            .and_then(|value| value.as_node())
+            .map(stored_node_from_kernel);
+        compare_optional_nodes(left_node.as_ref(), right_node.as_ref(), model, orders)
+    });
+    Ok(())
+}
+
+fn sort_query_rows_by_rel_return(
+    rows: &mut [crate::dsl::QueryRow],
+    graph_query: &GraphQuery,
+    model: &RuntimeRelModel,
+    orders: &[SessionOrder],
+) -> Result<()> {
+    validate_rel_order_fields(model, orders)?;
+    rows.sort_by(|left, right| {
+        let left_rel = left
+            .get_returned(graph_query)
+            .and_then(|value| match value {
+                crate::dsl::KernelValue::Rel(rel) => Some(stored_rel_from_kernel(rel)),
+                _ => None,
+            });
+        let right_rel = right
+            .get_returned(graph_query)
+            .and_then(|value| match value {
+                crate::dsl::KernelValue::Rel(rel) => Some(stored_rel_from_kernel(rel)),
+                _ => None,
+            });
+        compare_optional_rels(left_rel.as_ref(), right_rel.as_ref(), model, orders)
+    });
+    Ok(())
+}
+
+fn compare_optional_nodes(
+    left: Option<&StoredNode>,
+    right: Option<&StoredNode>,
+    model: &RuntimeNodeModel,
+    orders: &[SessionOrder],
+) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => compare_node_order_values(left, right, model, orders),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn compare_optional_rels(
+    left: Option<&StoredRel>,
+    right: Option<&StoredRel>,
+    model: &RuntimeRelModel,
+    orders: &[SessionOrder],
+) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => compare_rel_order_values(left, right, model, orders),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
 }
 
 fn parse_node_find_query(
