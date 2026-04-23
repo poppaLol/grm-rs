@@ -1,12 +1,20 @@
 model.define User userId name:string:required age:int:optional
-model.define Post postId title:string:required published:bool:optional
-link.define Authored User Post authoredId year:int:required
+model.define Post postId title:string:required text:string:optional published:bool:optional
+link.define Authored User Post authoredId authoredOn:string:required
+link.define Accessed User Post accessedId accessedOn:string:required
 
-node.create User name=Alice age=42
-node.create User name=Bob age=35
+node.create User name="Alice Jones" age=42
+node.create User name="Bob Smith" age=35
+node.create User name="Eve Turner" age=29
 
-node.create Post title=Hello published=true
-node.create Post title=Draft published=false
+node.create Post title="Hello World" text="A short welcome post about graphs." published=true
+node.create Post title="Draft Notes" text="A quick draft about traversal ideas." published=false
+node.create Post title="Traversal Tips" text="Short notes on paths hops and filtering." published=true
 
-edge.create Authored from=1 to=3 year=2024
-edge.create Authored from=2 to=4 year=2025
+edge.create Authored from=1 to=4 authoredOn=2026-04-10
+edge.create Authored from=2 to=5 authoredOn=2026-04-12
+edge.create Authored from=1 to=6 authoredOn=2026-04-15
+
+edge.create Accessed from=1 to=5 accessedOn=2026-04-20
+edge.create Accessed from=2 to=4 accessedOn=2026-04-21
+edge.create Accessed from=3 to=6 accessedOn=2026-04-22
