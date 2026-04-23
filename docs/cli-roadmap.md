@@ -64,13 +64,15 @@ The current CLI is useful, but there are several major limitations:
 
 1. Persistence durability improvements
 2. Smarter autocommit strategy
-3. Python integration surface
+3. Concurrency and session coordination
+4. Python integration surface
 
 ### Later
 
 1. Runtime schema and session-core refactor
 2. Backend-neutral identity support
 3. Stronger script language
+4. Pubsub and live subscriptions
 
 ### Stretch
 
@@ -160,6 +162,62 @@ Target areas:
 - improve interrupted-write safety
 - define recovery behavior for damaged session files
 - keep `session.save`, `session.load`, and `session.autocommit` simple from the user perspective
+
+### Concurrency And Session Coordination
+
+Status:
+not started; this should stay explicit in the roadmap even if the near-term model remains conservative.
+
+Why this matters:
+
+- file-backed sessions can still encounter shared-access behavior
+- two CLI users on the same machine or SSH host may try to query or modify the same persisted session
+- persistence design choices now will strongly affect how safely that can work later
+
+Target areas:
+
+- decide whether persisted session files are single-writer only
+- define file-locking behavior for concurrent CLI processes
+- decide whether readers can safely coexist with an active writer
+- evaluate transaction-log or append-log approaches for safer recovery and coordination
+- define conflict behavior and user-facing errors for concurrent writes
+- clarify whether the session model stays local/single-user or grows toward lightweight shared usage
+
+Guiding rule:
+prefer explicit and safe coordination semantics over accidental multi-user behavior.
+
+### Pubsub And Live Subscriptions
+
+Status:
+not started; this is a later-stage capability that depends on clearer concurrency and session-coordination semantics.
+
+Why this matters:
+
+- live graph updates become much more useful once more than one process or user may observe the same session state
+- pubsub creates a path from a local CLI tool toward lightweight shared and reactive workflows
+- subscription semantics will influence how traversal, graph rendering, and future automation features feel in practice
+
+Target areas:
+
+- start with simple entity-level pubsub for node and edge changes
+- define create, update, and delete event shapes
+- decide how subscriptions are scoped:
+  - whole graph
+  - model/link scoped
+  - entity id scoped
+- later evaluate query-based subscriptions
+- define how query-based pubsub should behave when an entity starts matching or stops matching a query
+- decide whether pubsub is CLI-only, library-level, or both
+- define how pubsub interacts with file-backed persistence, locks, and future transaction logging
+
+Suggested evolution:
+
+1. entity pubsub for node and edge lifecycle events
+2. scoped subscriptions by model, link, or specific ids
+3. query-based pubsub for following changes to entities that match a query
+
+Guiding rule:
+start with explicit entity events before introducing higher-level query subscriptions.
 
 ### Python Integration Surface
 
@@ -260,6 +318,18 @@ These are now largely satisfied for the current non-traversal query surface.
 - interrupted writes have a defined recovery path
 - users can trust saved sessions more like a real workspace
 
+### Concurrency And Coordination
+
+- concurrent access behavior is documented and predictable
+- conflicting writers fail safely and clearly
+- any file-locking or transaction-log strategy is visible to users through understandable errors
+
+### Pubsub And Live Updates
+
+- entity-level subscriptions have stable event shapes
+- subscription scope is understandable and testable
+- query-based subscriptions have clear semantics for entering, leaving, and updating matches
+
 ### Architecture
 
 - session command routing is thinner
@@ -274,6 +344,12 @@ These should stay explicit for future planning chats:
 - what exact traversal syntax should the CLI adopt?
 - what should graph output look like for branching traversals?
 - what colour rules should apply for interactive terminals vs redirected output?
+- should file-backed sessions be treated as strictly single-writer?
+- what coordination model should exist for two CLI sessions pointed at the same file?
+- when, if ever, should transaction logging grow into multi-user coordination rather than just recovery?
+- what transport or mechanism should power pubsub for local and shared sessions?
+- should pubsub begin as entity events only, with query subscriptions later?
+- what exact semantics should query-based subscriptions use when a matching set changes over time?
 - should scripts remain command files or become a formal DSL?
 - should runtime schema converge with compile-time typed model abstractions?
 - how should UUID or other non-integer IDs appear in commands and saved sessions?
