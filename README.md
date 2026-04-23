@@ -74,6 +74,7 @@ From there you can:
 * define node models with `model.define`
 * define links with `link.define`
 * create runtime data with `node.create` and `edge.create`
+* update runtime data with `node.update` and `edge.update`
 * query runtime data with `node.find` and `edge.find`
 * inspect definitions with `model.list`, `model.show <name>`, `link.list`, and `link.show <name>`
 * save the current graph with `session.save --json <path>` or `session.save --bin <path>`
@@ -99,15 +100,17 @@ Example script commands:
 
 ```text
 model.define User userId name:string:required age:int:optional
-model.define Post postId title:string:required
-link.define Authored User Post authoredId year:int:required
-node.create User name=Alice age=42
-node.create Post title=Hello
-edge.create Authored from=1 to=2 year=2024
-node.find User name=Alice
+model.define Post postId title:string:required text:string:optional
+link.define Authored User Post authoredId authoredOn:string:required
+node.create User name="Alice Jones" age=42
+node.create Post title="Hello World" text="A short welcome post about graphs."
+edge.create Authored from=1 to=2 authoredOn=2026-04-10
+node.update User 1 name="Alice Johnson" age=43
+edge.update Authored 1 authoredOn=2026-04-12
+node.find User name="Alice Johnson"
 node.find User age>=21 order=age:desc limit=10
 node.find User name!="Alice Jones"
-edge.find Authored from=1 year>=2024 order=year:desc,to:asc
+edge.find Authored from=1 authoredOn>=2026-04-10 order=authoredOn:desc,to:asc
 ```
 
 ### Interactive Commands
@@ -128,9 +131,13 @@ Data commands:
 
 ```text
 node.create <ModelName> [field=value ...]
+node.update <ModelName> <id> [field=value ...]
+node.delete <ModelName> <id>
 node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
 
 edge.create <LinkName> from=<id> to=<id> [field=value ...]
+edge.update <LinkName> <id> [field=value ...]
+edge.delete <LinkName> <id>
 edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
 ```
 
@@ -140,7 +147,16 @@ Query examples:
 node.find User name="Alice Jones"
 node.find User age>=21 order=age:desc,name:asc limit=10
 node.find User bio~"graph databases"
-edge.find Authored from=1 year>=2024 order=year:desc,to:asc
+edge.find Authored from=1 authoredOn>=2026-04-10 order=authoredOn:desc,to:asc
+```
+
+Update examples:
+
+```text
+node.update User 1 name="Alice Johnson" age=43
+node.update Post 2 text="A revised short post for the playground."
+edge.update Authored 1 authoredOn=2026-04-12
+edge.update Accessed 3 accessedOn=2026-04-22
 ```
 
 Session commands:

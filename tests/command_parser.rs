@@ -125,6 +125,8 @@ fn parser_preserves_output_format_term() {
 fn parser_reports_unterminated_quotes() {
     let err = parse_command_line(r#"node.find User name="Alice Jones"#).unwrap_err();
     assert!(err.to_string().contains("unterminated quoted string"));
+    assert!(err.to_string().contains("line 1, column"));
+    assert!(err.to_string().contains("^"));
 }
 
 #[test]
@@ -133,6 +135,8 @@ fn parser_reports_invalid_escape_sequences() {
     assert!(err
         .to_string()
         .contains("invalid escape sequence '\\q' in quoted string"));
+    assert!(err.to_string().contains("line 1, column"));
+    assert!(err.to_string().contains("^"));
 }
 
 #[test]
@@ -141,9 +145,11 @@ fn parser_reports_malformed_order_terms() {
     assert!(err
         .to_string()
         .contains("order must use order=<field>:asc|desc[,<field>:asc|desc ...]"));
+    assert!(err.to_string().contains("^"));
 
     let err = parse_command_line("node.find User order=age:up").unwrap_err();
     assert!(err.to_string().contains("order direction must be asc or desc"));
+    assert!(err.to_string().contains("^"));
 }
 
 #[test]
@@ -152,10 +158,21 @@ fn parser_reports_unknown_output_formats() {
     assert!(err
         .to_string()
         .contains("format must be one of: default, jsonl, table, graph"));
+    assert!(err.to_string().contains("^"));
 }
 
 #[test]
 fn parser_reports_invalid_query_term_shapes() {
     let err = parse_command_line("node.find User age>>40").unwrap_err();
     assert!(err.to_string().contains("invalid query term 'age>>40'"));
+    assert!(err.to_string().contains("^"));
+}
+
+#[test]
+fn parser_reports_multiline_error_locations() {
+    let err = parse_command_line("node.find User \norder=age:up").unwrap_err();
+    assert!(err.to_string().contains("order direction must be asc or desc"));
+    assert!(err.to_string().contains("line 2, column 1"));
+    assert!(err.to_string().contains("order=age:up"));
+    assert!(err.to_string().contains("^"));
 }
