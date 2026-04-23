@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use grm_rs::{
     BackendIdType, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionState,
@@ -15,15 +16,52 @@ create_exception!(_grm_rs, GrmError, pyo3::exceptions::PyException);
 #[pyclass(name = "Session")]
 struct PySession {
     state: SessionState,
+    autocommit: Option<PyAutocommitTarget>,
+}
+
+#[derive(Clone)]
+struct PyAutocommitTarget {
+    format: PySessionFileFormat,
+    path: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+enum PySessionFileFormat {
+    Json,
+    Binary,
 }
 
 #[pymethods]
 impl PySession {
     #[new]
-    fn new() -> Self {
-        Self {
+    #[pyo3(signature = (*, autocommit=false, autocommit_path=None, autocommit_format="json"))]
+    fn new(
+        autocommit: bool,
+        autocommit_path: Option<String>,
+        autocommit_format: &str,
+    ) -> PyResult<Self> {
+        let autocommit = configure_autocommit(autocommit, autocommit_path, autocommit_format)?;
+        Ok(Self {
             state: SessionState::new(),
-        }
+            autocommit,
+        })
+    }
+
+    #[getter]
+    fn autocommit(&self) -> bool {
+        self.autocommit.is_some()
+    }
+
+    #[getter]
+    fn autocommit_path(&self) -> Option<String> {
+        self.autocommit
+            .as_ref()
+            .map(|target| target.path.display().to_string())
+    }
+
+    #[getter]
+    fn autocommit_format(&self) -> Option<&'static str> {
+        self.autocommit.as_ref().map(|target| target.format.keyword())
     }
 
     fn node_id_type(&self) -> &'static str {
@@ -47,7 +85,8 @@ impl PySession {
             parse_fields(fields)?,
         )
         .map_err(grm_err)?;
-        self.state.register_model(model).map_err(grm_err)
+        self.state.register_model(model).map_err(grm_err)?;
+        self.persist_autocommit().map_err(grm_err)
     }
 
     fn link_create(
@@ -67,7 +106,8 @@ impl PySession {
             parse_fields(fields)?,
         )
         .map_err(grm_err)?;
-        self.state.register_rel_model(model).map_err(grm_err)
+        self.state.register_rel_model(model).map_err(grm_err)?;
+        self.persist_autocommit().map_err(grm_err)
     }
 
     fn model_show(&self, py: Python<'_>, name: &str) -> PyResult<Option<PyObject>> {
@@ -109,6 +149,7 @@ impl PySession {
     ) -> PyResult<PyObject> {
         let raw_values = extract_string_map(values)?;
         let node = block_on(py, self.state.create_instance(model_name, &raw_values))?;
+        self.persist_autocommit().map_err(grm_err)?;
         stored_node_to_py(py, &node)
     }
 
@@ -123,6 +164,7 @@ impl PySession {
         let id = python_value_to_string(node_id)?;
         let raw_values = extract_string_map(values)?;
         let node = block_on(py, self.state.update_node_instance(model_name, &id, &raw_values))?;
+        self.persist_autocommit().map_err(grm_err)?;
         stored_node_to_py(py, &node)
     }
 
@@ -133,7 +175,8 @@ impl PySession {
         node_id: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let id = python_value_to_string(node_id)?;
-        block_on(py, self.state.delete_node_instance(model_name, &id))
+        block_on(py, self.state.delete_node_instance(model_name, &id))?;
+        self.persist_autocommit().map_err(grm_err)
     }
 
     #[pyo3(signature = (model_name, filters=None))]
@@ -169,6 +212,7 @@ impl PySession {
             self.state
                 .create_relationship_instance(model_name, &from_id, &to_id, &raw_values),
         )?;
+        self.persist_autocommit().map_err(grm_err)?;
         stored_rel_to_py(py, &rel)
     }
 
@@ -187,6 +231,7 @@ impl PySession {
             self.state
                 .update_relationship_instance(model_name, &id, &raw_values),
         )?;
+        self.persist_autocommit().map_err(grm_err)?;
         stored_rel_to_py(py, &rel)
     }
 
@@ -197,7 +242,8 @@ impl PySession {
         edge_id: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let id = python_value_to_string(edge_id)?;
-        block_on(py, self.state.delete_relationship_instance(model_name, &id))
+        block_on(py, self.state.delete_relationship_instance(model_name, &id))?;
+        self.persist_autocommit().map_err(grm_err)
     }
 
     #[pyo3(signature = (model_name, filters=None))]
@@ -219,20 +265,42 @@ impl PySession {
         Ok(items.into())
     }
 
-    fn session_save_json(&self, path: &str) -> PyResult<()> {
+    fn save_json(&self, path: &str) -> PyResult<()> {
         self.state.save_to_json(path).map_err(grm_err)
     }
 
-    fn session_save_binary(&self, path: &str) -> PyResult<()> {
+    fn save_binary(&self, path: &str) -> PyResult<()> {
         self.state.save_to_binary(path).map_err(grm_err)
     }
 
-    fn session_load_json(&mut self, path: &str) -> PyResult<()> {
-        self.state.load_from_json(path).map_err(grm_err)
+    fn load_json(&mut self, path: &str) -> PyResult<()> {
+        self.state.load_from_json(path).map_err(grm_err)?;
+        self.persist_autocommit().map_err(grm_err)
     }
 
-    fn session_load_binary(&mut self, path: &str) -> PyResult<()> {
-        self.state.load_from_binary(path).map_err(grm_err)
+    fn load_binary(&mut self, path: &str) -> PyResult<()> {
+        self.state.load_from_binary(path).map_err(grm_err)?;
+        self.persist_autocommit().map_err(grm_err)
+    }
+}
+
+impl PySession {
+    fn persist_autocommit(&self) -> grm_rs::Result<()> {
+        let Some(target) = &self.autocommit else {
+            return Ok(());
+        };
+
+        match target.format {
+            PySessionFileFormat::Json => self.state.save_to_json(&target.path),
+            PySessionFileFormat::Binary => self.state.save_to_binary(&target.path),
+        }
+        .map_err(|err| {
+            grm_rs::GrmError::Backend(format!(
+                "autocommit failed for '{}': {}",
+                target.path.display(),
+                err
+            ))
+        })
     }
 }
 
@@ -271,6 +339,45 @@ fn parse_fields(fields: &Bound<'_, PyAny>) -> PyResult<Vec<RuntimeField>> {
         });
     }
     Ok(parsed)
+}
+
+fn configure_autocommit(
+    autocommit: bool,
+    autocommit_path: Option<String>,
+    autocommit_format: &str,
+) -> PyResult<Option<PyAutocommitTarget>> {
+    if !autocommit {
+        return Ok(None);
+    }
+
+    let path = autocommit_path.ok_or_else(|| {
+        PyTypeError::new_err("autocommit_path is required when autocommit is enabled")
+    })?;
+    let format = PySessionFileFormat::parse(autocommit_format)?;
+
+    Ok(Some(PyAutocommitTarget {
+        format,
+        path: PathBuf::from(path),
+    }))
+}
+
+impl PySessionFileFormat {
+    fn parse(value: &str) -> PyResult<Self> {
+        match value {
+            "json" => Ok(Self::Json),
+            "binary" | "bin" => Ok(Self::Binary),
+            _ => Err(PyTypeError::new_err(
+                "autocommit_format must be 'json' or 'binary'",
+            )),
+        }
+    }
+
+    fn keyword(&self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Binary => "binary",
+        }
+    }
 }
 
 fn required_string(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<String> {
