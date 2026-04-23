@@ -12,6 +12,7 @@ use crate::{
 };
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
 use crate::backend::{BinaryPersistedGraphStore, GraphStore, PersistedGraphStore};
+use crate::dsl::CompareOp;
 
 pub struct SessionState {
     client: GraphClient<InMemoryBackend>,
@@ -40,6 +41,45 @@ enum SessionFileFormat {
 struct AutocommitTarget {
     format: SessionFileFormat,
     path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct SessionPredicate {
+    field: String,
+    op: CompareOp,
+    raw_value: String,
+}
+
+#[derive(Debug, Clone)]
+struct SessionOrder {
+    field: String,
+    direction: SortDirection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, Default)]
+struct NodeFindQuery {
+    predicates: Vec<SessionPredicate>,
+    order: Option<SessionOrder>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    id_filter: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct EdgeFindQuery {
+    predicates: Vec<SessionPredicate>,
+    order: Option<SessionOrder>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    id_filter: Option<i64>,
+    from_filter: Option<i64>,
+    to_filter: Option<i64>,
 }
 
 impl Default for SessionState {
@@ -334,27 +374,34 @@ impl SessionState {
         Ok(())
     }
 
-    pub fn find_nodes(
+    pub fn find_nodes(&self, model_name: &str, filters: &BTreeMap<String, String>) -> Result<Vec<StoredNode>> {
+        let query = self.parse_node_find_query(model_name, filters)?;
+        self.find_nodes_with_query(model_name, &query)
+    }
+
+    fn find_nodes_with_query(
         &self,
         model_name: &str,
-        filters: &BTreeMap<String, String>,
+        query: &NodeFindQuery,
     ) -> Result<Vec<StoredNode>> {
         let model = self
             .catalog
             .get_node_model(model_name)
             .ok_or(crate::GrmError::NotFound)?;
-        let id_filter =
-            self.extract_id_filter(filters, &model.id_field_name, self.node_id_type())?;
-        let prop_filters = self.parse_model_filters(filters, model)?;
+        let prop_filters = self.parse_model_predicates(&query.predicates, model)?;
 
         let mut nodes = self.client.backend().snapshot_nodes();
         nodes.retain(|node| node.labels.iter().any(|label| label == &model.label));
 
-        if let Some(id) = id_filter {
+        if let Some(id) = query.id_filter {
             nodes.retain(|node| node.id == id);
         }
 
-        nodes.retain(|node| matches_props(&node.props, &prop_filters));
+        nodes.retain(|node| matches_predicates(&node.props, &prop_filters));
+        if let Some(order) = &query.order {
+            self.sort_nodes(&mut nodes, model, order)?;
+        }
+        nodes = apply_offset_limit(nodes, query.offset, query.limit);
         Ok(nodes)
     }
 
@@ -363,37 +410,63 @@ impl SessionState {
         model_name: &str,
         filters: &BTreeMap<String, String>,
     ) -> Result<Vec<StoredRel>> {
+        let query = self.parse_edge_find_query(model_name, filters)?;
+        self.find_relationships_with_query(model_name, &query)
+    }
+
+    fn find_relationships_with_query(
+        &self,
+        model_name: &str,
+        query: &EdgeFindQuery,
+    ) -> Result<Vec<StoredRel>> {
         let model = self
             .catalog
             .get_rel_model(model_name)
             .ok_or(crate::GrmError::NotFound)?;
-        let id_filter =
-            self.extract_id_filter(filters, &model.id_field_name, self.rel_id_type())?;
-        let from_filter = filters
-            .get("from")
-            .map(|raw| self.parse_backend_id(raw, self.node_id_type(), "from"))
-            .transpose()?;
-        let to_filter = filters
-            .get("to")
-            .map(|raw| self.parse_backend_id(raw, self.node_id_type(), "to"))
-            .transpose()?;
-        let prop_filters = self.parse_rel_filters(filters, model)?;
+        let prop_filters = self.parse_rel_predicates(&query.predicates, model)?;
 
         let mut rels = self.client.backend().snapshot_relationships();
         rels.retain(|rel| rel.rel_type == model.rel_type);
 
-        if let Some(id) = id_filter {
+        if let Some(id) = query.id_filter {
             rels.retain(|rel| rel.id == id);
         }
-        if let Some(from) = from_filter {
+        if let Some(from) = query.from_filter {
             rels.retain(|rel| rel.from == from);
         }
-        if let Some(to) = to_filter {
+        if let Some(to) = query.to_filter {
             rels.retain(|rel| rel.to == to);
         }
 
-        rels.retain(|rel| matches_props(&rel.props, &prop_filters));
+        rels.retain(|rel| matches_predicates(&rel.props, &prop_filters));
+        if let Some(order) = &query.order {
+            self.sort_relationships(&mut rels, model, order)?;
+        }
+        rels = apply_offset_limit(rels, query.offset, query.limit);
         Ok(rels)
+    }
+
+    fn parse_model_predicates(
+        &self,
+        predicates: &[SessionPredicate],
+        model: &RuntimeNodeModel,
+    ) -> Result<Vec<(String, CompareOp, Value)>> {
+        let mut parsed = Vec::new();
+        for predicate in predicates {
+            let Some(field) = model.field(&predicate.field) else {
+                return Err(crate::GrmError::Constraint(format!(
+                    "unknown field '{}' for model '{}'",
+                    predicate.field, model.name
+                )));
+            };
+
+            parsed.push((
+                predicate.field.clone(),
+                predicate.op,
+                field.value_type.parse_value(&predicate.raw_value)?,
+            ));
+        }
+        Ok(parsed)
     }
 
     fn parse_model_filters(
@@ -415,6 +488,29 @@ impl SessionState {
             };
 
             parsed.insert(key.clone(), field.value_type.parse_value(raw)?);
+        }
+        Ok(parsed)
+    }
+
+    fn parse_rel_predicates(
+        &self,
+        predicates: &[SessionPredicate],
+        model: &RuntimeRelModel,
+    ) -> Result<Vec<(String, CompareOp, Value)>> {
+        let mut parsed = Vec::new();
+        for predicate in predicates {
+            let Some(field) = model.field(&predicate.field) else {
+                return Err(crate::GrmError::Constraint(format!(
+                    "unknown field '{}' for link '{}'",
+                    predicate.field, model.name
+                )));
+            };
+
+            parsed.push((
+                predicate.field.clone(),
+                predicate.op,
+                field.value_type.parse_value(&predicate.raw_value)?,
+            ));
         }
         Ok(parsed)
     }
@@ -442,21 +538,28 @@ impl SessionState {
         Ok(parsed)
     }
 
-    fn extract_id_filter(
+    fn parse_node_find_query(
         &self,
+        model_name: &str,
         filters: &BTreeMap<String, String>,
-        id_field_name: &str,
-        id_type: crate::BackendIdType,
-    ) -> Result<Option<i64>> {
-        match (filters.get("id"), filters.get(id_field_name)) {
-            (Some(_), Some(_)) => Err(crate::GrmError::Constraint(format!(
-                "use either 'id' or '{}' when filtering by backend id",
-                id_field_name
-            ))),
-            (Some(raw), None) => self.parse_backend_id(raw, id_type, "id").map(Some),
-            (None, Some(raw)) => self.parse_backend_id(raw, id_type, id_field_name).map(Some),
-            (None, None) => Ok(None),
-        }
+    ) -> Result<NodeFindQuery> {
+        let model = self
+            .catalog
+            .get_node_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        parse_node_find_query(filters, model, self.node_id_type())
+    }
+
+    fn parse_edge_find_query(
+        &self,
+        model_name: &str,
+        filters: &BTreeMap<String, String>,
+    ) -> Result<EdgeFindQuery> {
+        let model = self
+            .catalog
+            .get_rel_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        parse_edge_find_query(filters, model, self.rel_id_type(), self.node_id_type())
     }
 
     fn parse_backend_id(
@@ -473,6 +576,28 @@ impl SessionState {
                 "uuid runtime session ids are not supported by this backend yet",
             )),
         }
+    }
+
+    fn sort_nodes(
+        &self,
+        nodes: &mut [StoredNode],
+        model: &RuntimeNodeModel,
+        order: &SessionOrder,
+    ) -> Result<()> {
+        validate_node_order_field(model, order)?;
+        nodes.sort_by(|left, right| compare_node_order_values(left, right, model, order));
+        Ok(())
+    }
+
+    fn sort_relationships(
+        &self,
+        rels: &mut [StoredRel],
+        model: &RuntimeRelModel,
+        order: &SessionOrder,
+    ) -> Result<()> {
+        validate_rel_order_field(model, order)?;
+        rels.sort_by(|left, right| compare_rel_order_values(left, right, model, order));
+        Ok(())
     }
 }
 
@@ -578,9 +703,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             return Ok(false);
         }
 
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        let command = parts[0];
-        let args = &parts[1..];
+        let parts = tokenize_command_line(trimmed)?;
+        let command = parts[0].as_str();
+        let args: Vec<&str> = parts[1..].iter().map(String::as_str).collect();
+        let args = args.as_slice();
 
         match command {
             "?" | "help" => self.write_help()?,
@@ -636,11 +762,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  link.list")?;
         writeln!(self.writer, "  link.show <name>")?;
         writeln!(self.writer, "  node.create <ModelName> [field=value ...]")?;
-        writeln!(self.writer, "  node.find <ModelName> [field=value ...]")?;
+        writeln!(self.writer, "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc] [limit=<n>] [offset=<n>]")?;
         writeln!(self.writer, "  node.update <ModelName> <id> [field=value ...]")?;
         writeln!(self.writer, "  node.delete <ModelName> <id>")?;
         writeln!(self.writer, "  edge.create <LinkName> from=<id> to=<id> [field=value ...]")?;
-        writeln!(self.writer, "  edge.find <LinkName> [from=<id>] [to=<id>] [field=value ...]")?;
+        writeln!(self.writer, "  edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc] [limit=<n>] [offset=<n>]")?;
         writeln!(self.writer, "  edge.update <LinkName> <id> [field=value ...]")?;
         writeln!(self.writer, "  edge.delete <LinkName> <id>")?;
         writeln!(self.writer, "  session.save --json <path>")?;
@@ -969,22 +1095,25 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     fn handle_node_find(&mut self, args: &[&str]) -> Result<()> {
         if args.is_empty() {
             return Err(crate::GrmError::Constraint(
-                "usage: node.find <ModelName> [field=value ...]".into(),
+                "usage: node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc] [limit=<n>] [offset=<n>]".into(),
             ));
         }
 
         let model_name = args[0];
-        let filters = parse_key_value_args(&args[1..])?;
+        let filters = parse_find_args(&args[1..])?;
         let model = self
             .state
             .model(model_name)
             .ok_or(crate::GrmError::NotFound)?
             .clone();
-        let nodes = self.state.find_nodes(model_name, &filters)?;
+        let query = self.state.parse_node_find_query(model_name, &filters)?;
+        let nodes = self.state.find_nodes_with_query(model_name, &query)?;
         if nodes.is_empty() {
             writeln!(self.writer, "No nodes matched model '{}'.", model_name)?;
             return Ok(());
         }
+
+        writeln!(self.writer, "{} nodes matched model '{}'.", nodes.len(), model_name)?;
 
         for node in nodes {
             writeln!(
@@ -1071,22 +1200,25 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     fn handle_edge_find(&mut self, args: &[&str]) -> Result<()> {
         if args.is_empty() {
             return Err(crate::GrmError::Constraint(
-                "usage: edge.find <LinkName> [from=<id>] [to=<id>] [field=value ...]".into(),
+                "usage: edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc] [limit=<n>] [offset=<n>]".into(),
             ));
         }
 
         let model_name = args[0];
-        let filters = parse_key_value_args(&args[1..])?;
+        let filters = parse_find_args(&args[1..])?;
         let model = self
             .state
             .rel_model(model_name)
             .ok_or(crate::GrmError::NotFound)?
             .clone();
-        let rels = self.state.find_relationships(model_name, &filters)?;
+        let query = self.state.parse_edge_find_query(model_name, &filters)?;
+        let rels = self.state.find_relationships_with_query(model_name, &query)?;
         if rels.is_empty() {
             writeln!(self.writer, "No edges matched link '{}'.", model_name)?;
             return Ok(());
         }
+
+        writeln!(self.writer, "{} edges matched link '{}'.", rels.len(), model_name)?;
 
         for rel in rels {
             writeln!(
@@ -1600,10 +1732,21 @@ fn parse_key_value_args(args: &[&str]) -> Result<BTreeMap<String, String>> {
     Ok(values)
 }
 
-fn matches_props(props: &BTreeMap<String, Value>, filters: &BTreeMap<String, Value>) -> bool {
-    filters
-        .iter()
-        .all(|(key, value)| props.get(key).map(|stored| stored == value).unwrap_or(false))
+fn parse_find_args(args: &[&str]) -> Result<BTreeMap<String, String>> {
+    let mut values = BTreeMap::new();
+    for arg in args {
+        let (key, value) = split_find_arg(arg)?;
+        values.insert(key.to_string(), value.to_string());
+    }
+    Ok(values)
+}
+
+fn matches_predicates(props: &BTreeMap<String, Value>, filters: &[(String, CompareOp, Value)]) -> bool {
+    filters.iter().all(|(key, op, value)| {
+        props.get(key)
+            .map(|stored| compare_values(stored, *op, value))
+            .unwrap_or(false)
+    })
 }
 
 fn format_props(props: &BTreeMap<String, Value>) -> String {
@@ -1620,9 +1763,359 @@ fn format_props(props: &BTreeMap<String, Value>) -> String {
 
 fn format_value(value: &Value) -> String {
     match value {
-        Value::String(s) => s.clone(),
+        Value::String(s) => {
+            if s.contains(char::is_whitespace) {
+                format!("\"{s}\"")
+            } else {
+                s.clone()
+            }
+        }
         _ => value.to_string(),
     }
+}
+
+fn tokenize_command_line(input: &str) -> Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) => match ch {
+                '\\' => {
+                    let Some(next) = chars.next() else {
+                        return Err(crate::GrmError::Constraint(
+                            "unterminated escape sequence in quoted string".into(),
+                        ));
+                    };
+                    current.push(match next {
+                        'n' => '\n',
+                        't' => '\t',
+                        '\\' => '\\',
+                        '\'' => '\'',
+                        '"' => '"',
+                        other => other,
+                    });
+                }
+                _ if ch == q => quote = None,
+                _ => current.push(ch),
+            },
+            None => match ch {
+                '"' | '\'' => quote = Some(ch),
+                c if c.is_whitespace() => {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(ch),
+            },
+        }
+    }
+
+    if quote.is_some() {
+        return Err(crate::GrmError::Constraint(
+            "unterminated quoted string".into(),
+        ));
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    Ok(tokens)
+}
+
+fn split_find_arg(arg: &str) -> Result<(&str, &str)> {
+    for operator in ["!=", ">=", "<=", ">", "<", "~", "="] {
+        if let Some((key, value)) = arg.split_once(operator) {
+            if key.is_empty() || value.is_empty() {
+                return Err(crate::GrmError::Constraint(format!(
+                    "invalid query term '{}'",
+                    arg
+                )));
+            }
+            let encoded_key = match operator {
+                "=" => key,
+                "!=" => return Ok((&arg[..key.len() + 1], value)),
+                ">=" => return Ok((&arg[..key.len() + 2], value)),
+                "<=" => return Ok((&arg[..key.len() + 2], value)),
+                ">" => return Ok((&arg[..key.len() + 1], value)),
+                "<" => return Ok((&arg[..key.len() + 1], value)),
+                "~" => return Ok((&arg[..key.len() + 1], value)),
+                _ => key,
+            };
+            return Ok((encoded_key, value));
+        }
+    }
+
+    Err(crate::GrmError::Constraint(format!(
+        "invalid query term '{}'",
+        arg
+    )))
+}
+
+fn parse_node_find_query(
+    filters: &BTreeMap<String, String>,
+    model: &RuntimeNodeModel,
+    id_type: crate::BackendIdType,
+) -> Result<NodeFindQuery> {
+    let mut query = NodeFindQuery::default();
+    for (raw_key, raw_value) in filters {
+        match raw_key.as_str() {
+            "limit" => query.limit = Some(parse_usize_term(raw_value, "limit")?),
+            "offset" => query.offset = Some(parse_usize_term(raw_value, "offset")?),
+            "order" => query.order = Some(parse_order_term(raw_value)?),
+            key if key == "id" || key == model.id_field_name => {
+                query.id_filter = Some(parse_backend_id(raw_value, id_type, key)?);
+            }
+            _ => {
+                let (field, op) = split_predicate_key(raw_key)?;
+                if field == "id" || field == model.id_field_name {
+                    return Err(crate::GrmError::Constraint(format!(
+                        "backend id filter '{}' only supports '='",
+                        field
+                    )));
+                }
+                query.predicates.push(SessionPredicate {
+                    field: field.to_string(),
+                    op,
+                    raw_value: raw_value.clone(),
+                });
+            }
+        }
+    }
+    Ok(query)
+}
+
+fn parse_edge_find_query(
+    filters: &BTreeMap<String, String>,
+    model: &RuntimeRelModel,
+    rel_id_type: crate::BackendIdType,
+    node_id_type: crate::BackendIdType,
+) -> Result<EdgeFindQuery> {
+    let mut query = EdgeFindQuery::default();
+    for (raw_key, raw_value) in filters {
+        match raw_key.as_str() {
+            "limit" => query.limit = Some(parse_usize_term(raw_value, "limit")?),
+            "offset" => query.offset = Some(parse_usize_term(raw_value, "offset")?),
+            "order" => query.order = Some(parse_order_term(raw_value)?),
+            "from" => query.from_filter = Some(parse_backend_id(raw_value, node_id_type, "from")?),
+            "to" => query.to_filter = Some(parse_backend_id(raw_value, node_id_type, "to")?),
+            key if key == "id" || key == model.id_field_name => {
+                query.id_filter = Some(parse_backend_id(raw_value, rel_id_type, key)?);
+            }
+            _ => {
+                let (field, op) = split_predicate_key(raw_key)?;
+                if field == "id" || field == model.id_field_name || field == "from" || field == "to" {
+                    return Err(crate::GrmError::Constraint(format!(
+                        "special filter '{}' only supports '='",
+                        field
+                    )));
+                }
+                query.predicates.push(SessionPredicate {
+                    field: field.to_string(),
+                    op,
+                    raw_value: raw_value.clone(),
+                });
+            }
+        }
+    }
+    Ok(query)
+}
+
+fn split_predicate_key(raw_key: &str) -> Result<(&str, CompareOp)> {
+    for (suffix, op) in [
+        ("!","Ne"),
+        (">=","Ge"),
+        ("<=","Le"),
+        (">","Gt"),
+        ("<","Lt"),
+        ("~","Contains"),
+    ] {
+        if let Some(field) = raw_key.strip_suffix(suffix) {
+            if field.is_empty() {
+                break;
+            }
+            let op = match op {
+                "Ne" => CompareOp::Ne,
+                "Ge" => CompareOp::Ge,
+                "Le" => CompareOp::Le,
+                "Gt" => CompareOp::Gt,
+                "Lt" => CompareOp::Lt,
+                _ => CompareOp::Contains,
+            };
+            return Ok((field, op));
+        }
+    }
+
+    Ok((raw_key, CompareOp::Eq))
+}
+
+fn parse_order_term(raw: &str) -> Result<SessionOrder> {
+    let Some((field, direction)) = raw.split_once(':') else {
+        return Err(crate::GrmError::Constraint(
+            "order must use order=<field>:asc|desc".into(),
+        ));
+    };
+
+    let direction = match direction {
+        "asc" => SortDirection::Asc,
+        "desc" => SortDirection::Desc,
+        _ => {
+            return Err(crate::GrmError::Constraint(
+                "order direction must be asc or desc".into(),
+            ))
+        }
+    };
+
+    Ok(SessionOrder {
+        field: field.to_string(),
+        direction,
+    })
+}
+
+fn parse_usize_term(raw: &str, subject: &str) -> Result<usize> {
+    raw.parse::<usize>().map_err(|_| {
+        crate::GrmError::Constraint(format!("{subject} must be a non-negative integer"))
+    })
+}
+
+fn parse_backend_id(raw: &str, id_type: crate::BackendIdType, subject: &str) -> Result<i64> {
+    match id_type {
+        crate::BackendIdType::Int64 => raw.trim().parse::<i64>().map_err(|_| {
+            crate::GrmError::Constraint(format!("{subject} must be an int id"))
+        }),
+        crate::BackendIdType::Uuid => Err(crate::GrmError::NotSupported(
+            "uuid runtime session ids are not supported by this backend yet",
+        )),
+    }
+}
+
+fn compare_values(left: &Value, op: CompareOp, right: &Value) -> bool {
+    match op {
+        CompareOp::Eq => left == right,
+        CompareOp::Ne => left != right,
+        CompareOp::Gt => numeric_cmp(left, right, |a, b| a > b),
+        CompareOp::Ge => numeric_cmp(left, right, |a, b| a >= b),
+        CompareOp::Lt => numeric_cmp(left, right, |a, b| a < b),
+        CompareOp::Le => numeric_cmp(left, right, |a, b| a <= b),
+        CompareOp::Contains => match (left.as_str(), right.as_str()) {
+            (Some(lhs), Some(rhs)) => lhs.contains(rhs),
+            _ => false,
+        },
+    }
+}
+
+fn numeric_cmp<F>(a: &Value, b: &Value, cmp: F) -> bool
+where
+    F: Fn(f64, f64) -> bool,
+{
+    match (a.as_f64(), b.as_f64()) {
+        (Some(la), Some(rb)) => cmp(la, rb),
+        _ => false,
+    }
+}
+
+fn validate_node_order_field(model: &RuntimeNodeModel, order: &SessionOrder) -> Result<()> {
+    if order.field == "id" || order.field == model.id_field_name {
+        return Ok(());
+    }
+    if model.field(&order.field).is_none() {
+        return Err(crate::GrmError::Constraint(format!(
+            "unknown order field '{}' for model '{}'",
+            order.field, model.name
+        )));
+    }
+    Ok(())
+}
+
+fn validate_rel_order_field(model: &RuntimeRelModel, order: &SessionOrder) -> Result<()> {
+    if order.field == "id" || order.field == model.id_field_name || order.field == "from" || order.field == "to" {
+        return Ok(());
+    }
+    if model.field(&order.field).is_none() {
+        return Err(crate::GrmError::Constraint(format!(
+            "unknown order field '{}' for link '{}'",
+            order.field, model.name
+        )));
+    }
+    Ok(())
+}
+
+fn compare_node_order_values(
+    left: &StoredNode,
+    right: &StoredNode,
+    model: &RuntimeNodeModel,
+    order: &SessionOrder,
+) -> std::cmp::Ordering {
+    let ordering = if order.field == "id" || order.field == model.id_field_name {
+        left.id.cmp(&right.id)
+    } else {
+        compare_optional_values(left.props.get(&order.field), right.props.get(&order.field))
+    };
+
+    match order.direction {
+        SortDirection::Asc => ordering,
+        SortDirection::Desc => ordering.reverse(),
+    }
+}
+
+fn compare_rel_order_values(
+    left: &StoredRel,
+    right: &StoredRel,
+    model: &RuntimeRelModel,
+    order: &SessionOrder,
+) -> std::cmp::Ordering {
+    let ordering = match order.field.as_str() {
+        "id" => left.id.cmp(&right.id),
+        "from" => left.from.cmp(&right.from),
+        "to" => left.to.cmp(&right.to),
+        field if field == model.id_field_name => left.id.cmp(&right.id),
+        _ => compare_optional_values(left.props.get(&order.field), right.props.get(&order.field)),
+    };
+
+    match order.direction {
+        SortDirection::Asc => ordering,
+        SortDirection::Desc => ordering.reverse(),
+    }
+}
+
+fn compare_optional_values(left: Option<&Value>, right: Option<&Value>) -> std::cmp::Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => compare_orderable_values(left, right),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn compare_orderable_values(left: &Value, right: &Value) -> std::cmp::Ordering {
+    if let (Some(lhs), Some(rhs)) = (left.as_f64(), right.as_f64()) {
+        return lhs.partial_cmp(&rhs).unwrap_or(std::cmp::Ordering::Equal);
+    }
+    if let (Some(lhs), Some(rhs)) = (left.as_str(), right.as_str()) {
+        return lhs.cmp(rhs);
+    }
+    if let (Some(lhs), Some(rhs)) = (left.as_bool(), right.as_bool()) {
+        return lhs.cmp(&rhs);
+    }
+    format_value(left).cmp(&format_value(right))
+}
+
+fn apply_offset_limit<T>(items: Vec<T>, offset: Option<usize>, limit: Option<usize>) -> Vec<T> {
+    let start = offset.unwrap_or(0);
+    if start >= items.len() {
+        return Vec::new();
+    }
+
+    let end = if let Some(limit) = limit {
+        start.saturating_add(limit).min(items.len())
+    } else {
+        items.len()
+    };
+
+    items.into_iter().skip(start).take(end - start).collect()
 }
 
 impl SessionFileFormat {
