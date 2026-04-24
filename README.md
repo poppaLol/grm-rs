@@ -637,9 +637,12 @@ This lays a solid foundation for richer projections, safer execution, and cleane
 
 ## 🚧 Roadmap (Short Term)
 
-Planned next steps:
+Current priorities:
 
-* Adjacency indexes for performance
-* Persisted backends
-* Neo4j backend
-* CLI for interactive graph inspection
+* Persistence durability and smarter autocommit behavior
+* Session-core cleanup and runtime schema refactoring
+* Python/session integration improvements
+* Concurrency and coordination for persisted sessions
+* Traversal and graph-output polish for denser query results
+
+For the detailed CLI/session roadmap, see [docs/cli-roadmap.md](docs/cli-roadmap.md).
