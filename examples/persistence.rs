@@ -40,8 +40,8 @@ struct Authored {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let json_file = "graph.json";
-    let bin_file = "graph.bin";
+    let json_file = "test-dbs/graph.json";
+    let bin_file = "test-dbs/graph.bin";
 
     let backend = InMemoryBackend::new();
 

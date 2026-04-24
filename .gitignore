@@ -25,8 +25,5 @@ target
 .claude
 .codex
 
-#test output for json
-graph.json
-*.bin
-*.bak
-*.log
+# local persistence and scratch databases
+test-dbs/
