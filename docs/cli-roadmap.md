@@ -24,21 +24,23 @@ The `grm session` CLI already supports a useful local workflow:
   - default human-readable output
   - `format=jsonl`
   - `format=table`
+  - `format=graph`
+- traversal-oriented `node.find` queries with chained `via=...` hops
+- coloured CLI output and improved script summaries
 
 This means a user can now:
 
 1. bootstrap models and links from a script
 2. create and query data interactively
-3. choose between human-readable and machine-readable find output
-4. reload later with schema and data ready to use
+3. traverse related persisted data from the session query surface
+4. choose between default, `jsonl`, `table`, and `graph` find output
+5. get colour-aware interactive output on supported terminals
+6. reload later with schema and data ready to use
 
 ## Current Drawbacks
 
 The current CLI is useful, but there are several major limitations:
 
-- traversal-oriented query is not implemented yet
-- graph-shaped output is not implemented yet
-- coloured terminal output is not implemented yet
 - autocommit rewrites the whole session file on each successful change
 - persistence is snapshot-based only
 - runtime schema is primarily a CLI-layer concept, not yet a deeper core abstraction
@@ -52,26 +54,29 @@ The current CLI is useful, but there are several major limitations:
 
 1. Query language expansion
 2. Real command parser
+3. Traversal-oriented session queries
+4. Graph output for graph-shaped and traversal-shaped results
+5. Coloured terminal output
+6. Session UX polish
 
 ### Now
 
-1. Graph output for graph-shaped and traversal-shaped results
-2. Coloured terminal output
-3. Session UX polish
-4. Traversal-oriented session queries
+1. Persistence durability improvements
+2. Smarter autocommit strategy
+3. Python integration surface improvements
+4. Session-core cleanup and runtime/schema refactor prep
 
 ### Next
 
-1. Persistence durability improvements
-2. Smarter autocommit strategy
-3. Concurrency and session coordination
-4. Python integration surface
-5. Explicit bulk-update design for matched query results
+1. Concurrency and session coordination
+2. Explicit bulk-update design for matched query results
+3. Richer traversal result controls and graph presentation polish
+4. Backend-neutral identity support
 
 ### Later
 
 1. Runtime schema and session-core refactor
-2. Backend-neutral identity support
+2. Stronger Python/library integration surface
 3. Stronger script language
 4. Pubsub and live subscriptions
 
@@ -85,7 +90,7 @@ The current CLI is useful, but there are several major limitations:
 ### Query Language
 
 Status:
-completed for the non-traversal phase, with traversal still outstanding.
+completed for the current session query surface, including the first traversal phase.
 
 The CLI now supports richer session queries beyond exact-match filters.
 
@@ -97,17 +102,20 @@ Completed:
 - comparison operators like `!=`, `>`, `<`, `>=`, `<=`
 - string-oriented matching via `~`
 - limits, ordering, multi-field ordering, and paging
+- traversal-oriented `node.find` with chained `via=...` hops
+- traversal-scoped `end.*` and `edge.*` / `rel.*` filters
+- traversal return controls via `return=root|end|edge`
 - explicit `find` output formats:
   - default human-readable output
   - `format=jsonl`
   - `format=table`
+  - `format=graph`
 
 Outstanding:
 
-- traversal-oriented session queries
-- graph-shaped result rendering
-- richer graph-aware result display once traversal lands
 - explicit bulk-update commands for multi-match query results
+- richer traversal controls beyond the first session-level traversal shape
+- graph presentation polish for denser or more complex traversal results
 
 Guiding rule:
 extend the current dotted command style first instead of replacing it immediately.
@@ -139,20 +147,21 @@ Follow-on work:
 ### Output And Presentation
 
 Status:
-active; this is the next user-facing focus area.
+partially completed, with presentation polish still active.
 
 Current state:
 
 - `find` supports the current human-readable default output
 - `format=jsonl` supports machine-readable piping and scripting
 - `format=table` supports text-only tabular output
+- `format=graph` supports graph-shaped and traversal-shaped session results
+- coloured output is available for the interactive CLI surface
 
 Next additions:
 
-- graph output for graph-shaped and traversal-shaped results
-- coloured terminal output for default and table renderers
 - decide how colour behaves when output is piped or redirected
 - keep non-colour output stable and script-friendly
+- refine graph rendering for more branching and denser result sets
 
 Guiding rule:
 rendering should stay separate from query execution so new formats do not require query rewrites.
@@ -282,11 +291,12 @@ Keep making the CLI feel like a real product surface.
 Target areas:
 
 - better help and onboarding
+- example scripts that demonstrate the happy path clearly
+- improved script summaries and interactive readability
 - cleaner error messages
 - history and line-editing support
 - completion support later
 - install/distribution polish
-- example scripts that demonstrate the happy path clearly
 
 ### Long-Term Import / Inference / Codegen
 
