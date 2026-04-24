@@ -1440,6 +1440,44 @@ async fn session_load_recovers_from_json_backup_when_primary_is_damaged() {
 }
 
 #[tokio::test]
+async fn session_load_recovers_from_backup_and_replays_log_entries() {
+    let json_path = "/tmp/grm-session-recovery-log-test.json";
+    let backup_path = "/tmp/grm-session-recovery-log-test.json.bak";
+    let log_path = "/tmp/grm-session-recovery-log-test.json.log";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+
+    let input = Cursor::new(format!(
+        "session.autocommit --json {json_path}\nmodel.define User userId name:string:required\nnode.create User name=Alice\nnode.create User name=Bob\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+    session.run().await.unwrap();
+
+    fs::write(json_path, "{ damaged primary").unwrap();
+
+    let load_input = Cursor::new(format!(
+        "session.load --json {json_path}\nnode.find User name=Alice\nnode.find User name=Bob\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut load_session = CliSession::new(load_input, output);
+    load_session.run().await.unwrap();
+
+    let (_, _, output) = load_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Recovered session from backup JSON file"));
+    assert!(output.contains("Node User userId=1 {name=Alice}"));
+    assert!(output.contains("Node User userId=2 {name=Bob}"));
+    assert!(fs::metadata(log_path).is_ok());
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+}
+
+#[tokio::test]
 async fn session_describe_summarizes_current_state() {
     let input = Cursor::new(
         "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.describe\nsession.exit\n",
