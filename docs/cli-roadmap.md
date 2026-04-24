@@ -69,9 +69,10 @@ The current CLI is useful, but there are several major limitations:
 ### Next
 
 1. Concurrency and session coordination
-2. Explicit bulk-update design for matched query results
-3. Richer traversal result controls and graph presentation polish
-4. Backend-neutral identity support
+2. Import/export design and bulk interchange surface
+3. Explicit bulk-update design for matched query results
+4. Richer traversal result controls and graph presentation polish
+5. Backend-neutral identity support
 
 ### Later
 
@@ -79,6 +80,7 @@ The current CLI is useful, but there are several major limitations:
 2. Stronger Python/library integration surface
 3. Stronger script language
 4. Pubsub and live subscriptions
+5. Link directionality semantics, including bidirectional-by-default link types
 
 ### Stretch
 
@@ -178,6 +180,33 @@ Target areas:
 - define recovery behavior for damaged session files
 - keep `session.save`, `session.load`, and `session.autocommit` simple from the user perspective
 
+### Import / Export Surface
+
+Status:
+planned, with the current direction now clearer than the implementation.
+
+Core direction:
+
+- keep `.grm` as the human-authored script format for setup, examples, demos, and tests
+- keep `session.save` / `session.load` focused on restoring a local workspace snapshot
+- add `session.import` / `session.export` later as a separate interchange-oriented command family
+
+Likely format split:
+
+- `JSON` as the default structured interchange format for full graph or session-style bundles
+- `JSONL` for larger streaming-oriented exports and imports
+- binary as the speed/size-oriented local persistence format rather than the main cross-tool interchange format
+
+Implementation bias:
+
+- avoid replaying bulk imports through the one-command-at-a-time CLI path
+- parse and validate in batches
+- create nodes and edges in batches
+- avoid per-object transaction and rendering overhead where possible
+
+Guiding rule:
+separate workspace persistence semantics from interchange semantics, even if some internal representations overlap.
+
 ### Concurrency And Session Coordination
 
 Status:
@@ -200,6 +229,9 @@ Target areas:
 
 Guiding rule:
 prefer explicit and safe coordination semantics over accidental multi-user behavior.
+
+Sequencing note:
+directionality features such as bidirectional-by-default link types should wait until after durability/logging and multi-user coordination decisions are clearer, since shared semantics and recovery behavior will affect how safe those features are to introduce.
 
 ### Pubsub And Live Subscriptions
 
@@ -233,6 +265,27 @@ Suggested evolution:
 
 Guiding rule:
 start with explicit entity events before introducing higher-level query subscriptions.
+
+### Link Directionality Semantics
+
+Status:
+not started; this is a near-term but not immediate follow-on area.
+
+Why this matters:
+
+- some relationship types are naturally symmetric from a user perspective
+- the current model stores links with explicit `from` and `to` semantics only
+- traversal already supports `out`, `in`, and `both`, but link definitions do not yet express whether a link type should behave as directed or bidirectional by default
+
+Target areas:
+
+- decide whether link definitions should support an explicit directionality setting
+- decide whether "bidirectional" means symmetric traversal semantics, automatic mirror-edge creation, or both
+- keep query and rendering behavior understandable when a link type is treated as bidirectional
+- make sure persistence, recovery, and concurrent-write behavior remain safe once these semantics exist
+
+Guiding rule:
+do not introduce bidirectional-by-default link behavior until durability/logging and multi-user coordination semantics are settled enough to support it cleanly.
 
 ### Python Integration Surface
 
