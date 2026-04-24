@@ -1101,6 +1101,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 break;
             };
 
+            let line = strip_script_comment(&line);
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
@@ -2646,6 +2647,30 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
         Ok(Some(line))
     }
+}
+
+fn strip_script_comment(line: &str) -> String {
+    let mut quote: Option<char> = None;
+    let mut chars = line.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        match quote {
+            Some(q) => match ch {
+                '\\' => {
+                    chars.next();
+                }
+                _ if ch == q => quote = None,
+                _ => {}
+            },
+            None => match ch {
+                '"' | '\'' => quote = Some(ch),
+                '#' => return line[..index].trim_end().to_string(),
+                _ => {}
+            },
+        }
+    }
+
+    line.to_string()
 }
 
 impl From<io::Error> for crate::GrmError {

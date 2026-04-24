@@ -484,6 +484,46 @@ async fn script_mode_can_define_models() {
 }
 
 #[tokio::test]
+async fn script_mode_supports_inline_comments() {
+    let input = Cursor::new(
+        "# setup models\nmodel.define User userId name:string:required # primary entity\nnode.create User name=Alice # seed row\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run_script().await.unwrap();
+
+    let (state, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(state.model("User").is_some());
+    assert!(output.contains("Script Summary"));
+    assert!(output.contains("| node |"));
+}
+
+#[tokio::test]
+async fn script_mode_keeps_hash_inside_quoted_values() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required bio:string:optional\nnode.create User name=Alice bio=\"likes #graphs\"\n",
+    );
+    let output = Vec::new();
+    let mut script_session = CliSession::new(input, output);
+
+    script_session.run_script().await.unwrap();
+
+    let (state, _, output) = script_session.into_parts();
+    let interactive_input = Cursor::new("node.find User bio~\"#graphs\"\nsession.exit\n");
+    let mut interactive_session = CliSession::with_state(state, interactive_input, output);
+
+    interactive_session.continue_interactive().await.unwrap();
+
+    let (_, _, output) = interactive_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("#graphs"));
+}
+
+#[tokio::test]
 async fn script_mode_outputs_colored_summary() {
     let input = Cursor::new(
         "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId authoredOn:string:required\nnode.create User name=\"Alice Jones\"\nnode.create Post title=\"Graph Notes\"\nedge.create Authored from=1 to=2 authoredOn=2026-04-12\nnode.find User name=\"Alice Jones\"\n",
