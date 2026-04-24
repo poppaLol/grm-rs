@@ -13,6 +13,7 @@ use crate::dsl::{
 };
 use crate::runtime::{parse_command_line, KeyValueArg, QueryTerm, SessionCommand};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
+use crate::fsutil::{backup_path, log_path, write_file_atomically_with_backup};
 use crate::{
     BackendIdentity, GraphClient, GraphTx, InMemoryBackend, Result, RuntimeField, RuntimeNodeModel,
     RuntimeRelModel, RuntimeValueType, SessionModelCatalog, StoredNode, StoredRel,
@@ -21,6 +22,12 @@ use crate::{
 pub struct SessionState {
     client: GraphClient<InMemoryBackend>,
     catalog: SessionModelCatalog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadSource {
+    Primary,
+    Backup,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +42,18 @@ struct BinaryPersistedSession {
     catalog: SessionModelCatalog,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum SessionLogEntry {
+    RegisterNodeModel { model: RuntimeNodeModel },
+    RegisterRelModel { model: RuntimeRelModel },
+    UpsertNode { node: StoredNode },
+    DeleteNode { id: i64 },
+    UpsertRel { rel: StoredRel },
+    DeleteRel { id: i64 },
+}
+
+const AUTOCOMMIT_CHECKPOINT_INTERVAL: usize = 8;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionFileFormat {
     Json,
@@ -45,6 +64,7 @@ enum SessionFileFormat {
 struct AutocommitTarget {
     format: SessionFileFormat,
     path: PathBuf,
+    pending_entries: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -199,16 +219,21 @@ impl SessionState {
     }
 
     pub fn save_to_json(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
         let json = serde_json::to_string_pretty(&self.persisted_session()).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to serialize session as JSON")
         })?;
-        fs::write(path, json).map_err(|_| {
+        write_file_atomically_with_backup(path, json.as_bytes()).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to write JSON session file")
+        })?;
+        clear_session_log(path).map_err(|_| {
+            crate::error::GrmError::SaveAborted("failed to clear session log file")
         })?;
         Ok(())
     }
 
     pub fn save_to_binary(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
         let persisted = BinaryPersistedSession {
             graph: self
                 .client
@@ -220,34 +245,53 @@ impl SessionState {
         let bytes = bincode::serialize(&persisted).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to serialize session as binary")
         })?;
-        fs::write(path, bytes).map_err(|_| {
+        write_file_atomically_with_backup(path, &bytes).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to write binary session file")
+        })?;
+        clear_session_log(path).map_err(|_| {
+            crate::error::GrmError::SaveAborted("failed to clear session log file")
         })?;
         Ok(())
     }
 
     pub fn load_from_json(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        self.load_from_json_with_source(path).map(|_| ())
+    }
+
+    fn load_from_json_with_source(&mut self, path: impl AsRef<Path>) -> Result<LoadSource> {
+        let path = path.as_ref();
         let json = fs::read_to_string(path)
             .map_err(|_| crate::error::GrmError::LoadAborted("failed to read JSON session file"))?;
-        let persisted: PersistedSession = serde_json::from_str(&json).map_err(|_| {
-            crate::error::GrmError::LoadAborted("failed to deserialize JSON session file")
-        })?;
-        self.apply_persisted_session(persisted);
-        Ok(())
+        match serde_json::from_str::<PersistedSession>(&json) {
+            Ok(persisted) => {
+                self.apply_persisted_session(persisted);
+                self.apply_session_log(path)?;
+                Ok(LoadSource::Primary)
+            }
+            Err(_) => self.load_json_backup(path),
+        }
     }
 
     pub fn load_from_binary(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        self.load_from_binary_with_source(path).map(|_| ())
+    }
+
+    fn load_from_binary_with_source(&mut self, path: impl AsRef<Path>) -> Result<LoadSource> {
+        let path = path.as_ref();
         let bytes = fs::read(path).map_err(|_| {
             crate::error::GrmError::LoadAborted("failed to read binary session file")
         })?;
-        let persisted: BinaryPersistedSession = bincode::deserialize(&bytes).map_err(|_| {
-            crate::error::GrmError::LoadAborted("failed to deserialize binary session file")
-        })?;
-        self.client
-            .backend()
-            .replace_store(GraphStore::from_binary_persisted(persisted.graph)?);
-        self.catalog = persisted.catalog;
-        Ok(())
+        match bincode::deserialize::<BinaryPersistedSession>(&bytes) {
+            Ok(persisted) => {
+                self.client
+                    .backend()
+                    .replace_store(GraphStore::from_binary_persisted(persisted.graph)?);
+                self.catalog = persisted.catalog;
+                self.apply_session_log(path)?;
+                Ok(LoadSource::Primary)
+            }
+            Err(_) => self.load_binary_backup(path),
+        }
     }
 
     pub fn register_model(&mut self, model: RuntimeNodeModel) -> Result<()> {
@@ -1499,7 +1543,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let model = RuntimeNodeModel::new(name, id_field_name, self.state.node_id_type(), fields)?;
         self.state.register_model(model.clone())?;
         self.script_summary.created_node_types.push(model.name.clone());
-        self.persist_autocommit()?;
+        self.persist_autocommit_entry(SessionLogEntry::RegisterNodeModel {
+            model: model.clone(),
+        })?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(self.writer, "Model '{}' created from script.", model.name)?;
         }
@@ -1533,7 +1579,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         self.state.register_rel_model(model.clone())?;
         self.script_summary.created_link_types.push(model.name.clone());
-        self.persist_autocommit()?;
+        self.persist_autocommit_entry(SessionLogEntry::RegisterRelModel {
+            model: model.clone(),
+        })?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(self.writer, "Link '{}' created from script.", model.name)?;
         }
@@ -1555,7 +1603,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         self.state.register_model(model.clone())?;
-        self.persist_autocommit()?;
+        self.persist_autocommit_entry(SessionLogEntry::RegisterNodeModel {
+            model: model.clone(),
+        })?;
         writeln!(self.writer, "Model '{}' created.", model.name)?;
 
         if self.prompt_yes_no("Create the first instance now? [y/n]: ")? {
@@ -1589,7 +1639,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         self.state.register_rel_model(model.clone())?;
-        self.persist_autocommit()?;
+        self.persist_autocommit_entry(SessionLogEntry::RegisterRelModel {
+            model: model.clone(),
+        })?;
         writeln!(self.writer, "Link '{}' created.", model.name)?;
 
         if self.prompt_yes_no("Create the first link now? [y/n]: ")? {
@@ -1606,21 +1658,26 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     ) -> Result<()> {
         let values = collect_assignments(assignments);
         let created = self.state.create_instance(model_name, &values).await?;
-        let model = self
-            .state
-            .model(model_name)
-            .ok_or(crate::GrmError::NotFound)?;
+        let (model_name, model_id_field_name) = {
+            let model = self
+                .state
+                .model(model_name)
+                .ok_or(crate::GrmError::NotFound)?;
+            (model.name.clone(), model.id_field_name.clone())
+        };
         *self
             .script_summary
             .inserted_nodes
-            .entry(model.name.clone())
+            .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit()?;
+        self.persist_autocommit_entry(SessionLogEntry::UpsertNode {
+            node: created.clone(),
+        })?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(
                 self.writer,
                 "Created node {} with backend id {}. {}={}.",
-                model.name, created.id, model.id_field_name, created.id
+                model_name, created.id, model_id_field_name, created.id
             )?;
         }
         Ok(())
@@ -1636,16 +1693,21 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .update_node_instance(model_name, id, &collect_assignments(assignments))
             .await?;
-        let model = self
-            .state
-            .model(model_name)
-            .ok_or(crate::GrmError::NotFound)?;
-        self.persist_autocommit()?;
+        let (model_name, model_id_field_name) = {
+            let model = self
+                .state
+                .model(model_name)
+                .ok_or(crate::GrmError::NotFound)?;
+            (model.name.clone(), model.id_field_name.clone())
+        };
+        self.persist_autocommit_entry(SessionLogEntry::UpsertNode {
+            node: updated.clone(),
+        })?;
         writeln!(
             self.writer,
             "Updated node {} {}={} {}",
-            model.name,
-            model.id_field_name,
+            model_name,
+            model_id_field_name,
             updated.id,
             format_props(&updated.props, &self.colors)
         )?;
@@ -1654,7 +1716,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
     async fn handle_node_delete_parsed(&mut self, model_name: &str, id: &str) -> Result<()> {
         self.state.delete_node_instance(model_name, id).await?;
-        self.persist_autocommit()?;
+        let raw_id = self
+            .state
+            .parse_backend_id(id, self.state.node_id_type(), "node id")?;
+        self.persist_autocommit_entry(SessionLogEntry::DeleteNode { id: raw_id })?;
         writeln!(self.writer, "Deleted node {} {}.", model_name, id)?;
         Ok(())
     }
@@ -1685,21 +1750,30 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .create_relationship_instance(model_name, &from_id, &to_id, &values)
             .await?;
-        let model = self
-            .state
-            .rel_model(model_name)
-            .ok_or(crate::GrmError::NotFound)?;
+        let (rel_type, model_name, model_id_field_name) = {
+            let model = self
+                .state
+                .rel_model(model_name)
+                .ok_or(crate::GrmError::NotFound)?;
+            (
+                model.rel_type.clone(),
+                model.name.clone(),
+                model.id_field_name.clone(),
+            )
+        };
         *self
             .script_summary
             .inserted_edges
-            .entry(model.name.clone())
+            .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit()?;
+        self.persist_autocommit_entry(SessionLogEntry::UpsertRel {
+            rel: created.clone(),
+        })?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(
                 self.writer,
                 "Created edge {} of type '{}'. {}={}.",
-                created.id, model.rel_type, model.id_field_name, created.id
+                created.id, rel_type, model_id_field_name, created.id
             )?;
         }
         Ok(())
@@ -1715,16 +1789,21 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .update_relationship_instance(model_name, id, &collect_assignments(assignments))
             .await?;
-        let model = self
-            .state
-            .rel_model(model_name)
-            .ok_or(crate::GrmError::NotFound)?;
-        self.persist_autocommit()?;
+        let (model_name, model_id_field_name) = {
+            let model = self
+                .state
+                .rel_model(model_name)
+                .ok_or(crate::GrmError::NotFound)?;
+            (model.name.clone(), model.id_field_name.clone())
+        };
+        self.persist_autocommit_entry(SessionLogEntry::UpsertRel {
+            rel: updated.clone(),
+        })?;
         writeln!(
             self.writer,
             "Updated edge {} {}={} from={} to={} {}",
-            model.name,
-            model.id_field_name,
+            model_name,
+            model_id_field_name,
             updated.id,
             updated.from,
             updated.to,
@@ -1737,7 +1816,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.state
             .delete_relationship_instance(model_name, id)
             .await?;
-        self.persist_autocommit()?;
+        let raw_id = self
+            .state
+            .parse_backend_id(id, self.state.rel_id_type(), "edge id")?;
+        self.persist_autocommit_entry(SessionLogEntry::DeleteRel { id: raw_id })?;
         writeln!(self.writer, "Deleted edge {} {}.", model_name, id)?;
         Ok(())
     }
@@ -1793,18 +1875,42 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
         match args[0] {
             "--json" => {
-                self.state.load_from_json(args[1])?;
-                self.persist_autocommit()?;
-                writeln!(self.writer, "Loaded session from JSON file '{}'.", args[1])?;
+                let source = self.state.load_from_json_with_source(args[1])?;
+                self.checkpoint_autocommit()?;
+                match source {
+                    LoadSource::Primary => {
+                        writeln!(self.writer, "Loaded session from JSON file '{}'.", args[1])?;
+                    }
+                    LoadSource::Backup => {
+                        let backup = backup_path(args[1]);
+                        writeln!(
+                            self.writer,
+                            "Recovered session from backup JSON file '{}'.",
+                            backup.display()
+                        )?;
+                    }
+                }
             }
             "--bin" => {
-                self.state.load_from_binary(args[1])?;
-                self.persist_autocommit()?;
-                writeln!(
-                    self.writer,
-                    "Loaded session from binary file '{}'.",
-                    args[1]
-                )?;
+                let source = self.state.load_from_binary_with_source(args[1])?;
+                self.checkpoint_autocommit()?;
+                match source {
+                    LoadSource::Primary => {
+                        writeln!(
+                            self.writer,
+                            "Loaded session from binary file '{}'.",
+                            args[1]
+                        )?;
+                    }
+                    LoadSource::Backup => {
+                        let backup = backup_path(args[1]);
+                        writeln!(
+                            self.writer,
+                            "Recovered session from backup binary file '{}'.",
+                            backup.display()
+                        )?;
+                    }
+                }
             }
             _ => {
                 return Err(crate::GrmError::Constraint(
@@ -1842,8 +1948,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 self.autocommit = Some(AutocommitTarget {
                     format,
                     path: PathBuf::from(path),
+                    pending_entries: 0,
                 });
-                self.persist_autocommit()?;
+                self.checkpoint_autocommit()?;
                 writeln!(
                     self.writer,
                     "Autocommit enabled: {} {}",
@@ -2388,22 +2495,47 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         })
     }
 
-    fn persist_autocommit(&self) -> Result<()> {
-        let Some(target) = &self.autocommit else {
+    fn checkpoint_autocommit(&mut self) -> Result<()> {
+        let Some(target) = &mut self.autocommit else {
             return Ok(());
         };
 
-        match target.format {
+        let path = target.path.clone();
+        let format = target.format;
+        match format {
             SessionFileFormat::Json => self.state.save_to_json(&target.path),
             SessionFileFormat::Binary => self.state.save_to_binary(&target.path),
         }
         .map_err(|err| {
             crate::GrmError::Backend(format!(
                 "autocommit failed for '{}': {}",
+                path.display(),
+                err
+            ))
+        })?;
+        target.pending_entries = 0;
+        Ok(())
+    }
+
+    fn persist_autocommit_entry(&mut self, entry: SessionLogEntry) -> Result<()> {
+        let Some(target) = &mut self.autocommit else {
+            return Ok(());
+        };
+
+        append_session_log(&target.path, &entry).map_err(|err| {
+            crate::GrmError::Backend(format!(
+                "autocommit failed for '{}': {}",
                 target.path.display(),
                 err
             ))
-        })
+        })?;
+        target.pending_entries += 1;
+
+        if target.pending_entries >= AUTOCOMMIT_CHECKPOINT_INTERVAL {
+            self.checkpoint_autocommit()?;
+        }
+
+        Ok(())
     }
 
     fn prompt_required_flag(&mut self) -> Result<bool> {
@@ -2647,6 +2779,137 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
         Ok(Some(line))
     }
+}
+
+impl SessionState {
+    fn apply_session_log(&mut self, path: &Path) -> Result<()> {
+        let entries = read_session_log(path)?;
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut store = self.client.backend().snapshot_store();
+        let mut catalog = self.catalog.clone();
+        for entry in &entries {
+            apply_session_log_entry(&mut store, &mut catalog, entry).map_err(|_| {
+                crate::error::GrmError::LoadAborted("failed to apply session log file")
+            })?;
+        }
+
+        self.client.backend().replace_store(store);
+        self.catalog = catalog;
+        Ok(())
+    }
+
+    fn load_json_backup(&mut self, path: &Path) -> Result<LoadSource> {
+        let backup = backup_path(path);
+        let json = fs::read_to_string(&backup).map_err(|_| {
+            crate::error::GrmError::LoadAborted("failed to deserialize JSON session file")
+        })?;
+        let persisted: PersistedSession = serde_json::from_str(&json).map_err(|_| {
+            crate::error::GrmError::LoadAborted("failed to deserialize JSON session file")
+        })?;
+        self.apply_persisted_session(persisted);
+        self.apply_session_log(path)?;
+        Ok(LoadSource::Backup)
+    }
+
+    fn load_binary_backup(&mut self, path: &Path) -> Result<LoadSource> {
+        let backup = backup_path(path);
+        let bytes = fs::read(&backup).map_err(|_| {
+            crate::error::GrmError::LoadAborted("failed to deserialize binary session file")
+        })?;
+        let persisted: BinaryPersistedSession = bincode::deserialize(&bytes).map_err(|_| {
+            crate::error::GrmError::LoadAborted("failed to deserialize binary session file")
+        })?;
+        self.client
+            .backend()
+            .replace_store(GraphStore::from_binary_persisted(persisted.graph)?);
+        self.catalog = persisted.catalog;
+        self.apply_session_log(path)?;
+        Ok(LoadSource::Backup)
+    }
+}
+
+fn append_session_log(path: &Path, entry: &SessionLogEntry) -> io::Result<()> {
+    let log_path = log_path(path);
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    let line = serde_json::to_vec(entry)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "failed to serialize session log"))?;
+    file.write_all(&line)?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn clear_session_log(path: &Path) -> io::Result<()> {
+    let log_path = log_path(path);
+    match fs::remove_file(log_path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn read_session_log(path: &Path) -> Result<Vec<SessionLogEntry>> {
+    let log_path = log_path(path);
+    let contents = match fs::read_to_string(&log_path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            return Err(crate::error::GrmError::LoadAborted(
+                "failed to read session log file",
+            ))
+        }
+    };
+
+    let mut entries = Vec::new();
+    for line in contents.lines().filter(|line| !line.trim().is_empty()) {
+        let entry = serde_json::from_str(line).map_err(|_| {
+            crate::error::GrmError::LoadAborted("failed to deserialize session log file")
+        })?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn apply_session_log_entry(
+    store: &mut GraphStore,
+    catalog: &mut SessionModelCatalog,
+    entry: &SessionLogEntry,
+) -> Result<()> {
+    match entry {
+        SessionLogEntry::RegisterNodeModel { model } => {
+            if catalog.get_node_model(&model.name).is_none() {
+                catalog.register_node_model(model.clone())?;
+            }
+        }
+        SessionLogEntry::RegisterRelModel { model } => {
+            if catalog.get_rel_model(&model.name).is_none() {
+                catalog.register_rel_model(model.clone())?;
+            }
+        }
+        SessionLogEntry::UpsertNode { node } => {
+            store.next_node_id = store.next_node_id.max(node.id + 1);
+            store.nodes.insert(node.id, node.clone());
+        }
+        SessionLogEntry::DeleteNode { id } => {
+            store.nodes.remove(id);
+            store.rels.retain(|_, rel| rel.from != *id && rel.to != *id);
+        }
+        SessionLogEntry::UpsertRel { rel } => {
+            store.next_rel_id = store.next_rel_id.max(rel.id + 1);
+            store.rels.insert(rel.id, rel.clone());
+        }
+        SessionLogEntry::DeleteRel { id } => {
+            store.rels.remove(id);
+        }
+    }
+
+    Ok(())
 }
 
 fn strip_script_comment(line: &str) -> String {
