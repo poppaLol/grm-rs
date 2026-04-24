@@ -27,4 +27,5 @@ target
 
 #test output for json
 graph.json
-graph.bin
+*.bin
+*.bak

@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod dsl;
 pub mod error;
+mod fsutil;
 pub mod macros;
 pub mod model;
 pub mod repo;
