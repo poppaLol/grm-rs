@@ -1199,6 +1199,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         match parse_command_line(trimmed)? {
             SessionCommand::Help => self.write_help()?,
             SessionCommand::Exit => return Ok(true),
+            SessionCommand::SessionDescribe => self.write_session_summary()?,
             SessionCommand::ModelDefine { args } => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 if args.is_empty() {
@@ -1358,6 +1359,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  session.autocommit --bin <path>")?;
         writeln!(self.writer, "  session.autocommit status")?;
         writeln!(self.writer, "  session.autocommit off")?;
+        writeln!(self.writer, "  session.describe")?;
         writeln!(self.writer, "  session.help")?;
         writeln!(self.writer, "  session.exit")?;
         Ok(())
@@ -2360,6 +2362,105 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 &rows,
                 &self.colors,
             )?;
+        }
+
+        Ok(())
+    }
+
+    fn write_session_summary(&mut self) -> Result<()> {
+        writeln!(self.writer, "Session Summary")?;
+
+        let node_models = self.state.model_list();
+        let rel_models = self.state.rel_model_list();
+        writeln!(self.writer, "Types defined:")?;
+        if node_models.is_empty() && rel_models.is_empty() {
+            writeln!(self.writer, "  none")?;
+        } else {
+            if !node_models.is_empty() {
+                let nodes = node_models
+                    .iter()
+                    .map(|model| self.colors.type_name(&model.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(self.writer, "  nodes: {nodes}")?;
+            }
+            if !rel_models.is_empty() {
+                let links = rel_models
+                    .iter()
+                    .map(|model| self.colors.type_name(&model.name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(self.writer, "  links: {links}")?;
+            }
+        }
+
+        let snapshot = self.state.client().backend().snapshot_store();
+        writeln!(
+            self.writer,
+            "Stored rows: {} nodes, {} edges",
+            snapshot.nodes.len(),
+            snapshot.rels.len()
+        )?;
+
+        let headers = vec!["kind".into(), "type".into(), "count".into()];
+        let header_kinds = vec![
+            TableHeaderKind::Plain,
+            TableHeaderKind::Type,
+            TableHeaderKind::Property,
+        ];
+        let mut rows = Vec::new();
+
+        let mut node_counts = BTreeMap::<String, usize>::new();
+        for node in snapshot.nodes.values() {
+            let label = node
+                .labels
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Node".to_string());
+            *node_counts.entry(label).or_insert(0) += 1;
+        }
+        for (name, count) in node_counts {
+            rows.push(vec![
+                "node".into(),
+                self.colors.type_name(&name),
+                count.to_string(),
+            ]);
+        }
+
+        let mut rel_counts = BTreeMap::<String, usize>::new();
+        for rel in snapshot.rels.values() {
+            *rel_counts.entry(rel.rel_type.clone()).or_insert(0) += 1;
+        }
+        for (name, count) in rel_counts {
+            rows.push(vec![
+                "edge".into(),
+                self.colors.type_name(&name),
+                count.to_string(),
+            ]);
+        }
+
+        writeln!(self.writer, "By type:")?;
+        if rows.is_empty() {
+            writeln!(self.writer, "  none")?;
+        } else {
+            write_table(
+                &mut self.writer,
+                &headers,
+                &header_kinds,
+                &rows,
+                &self.colors,
+            )?;
+        }
+
+        if let Some(target) = &self.autocommit {
+            writeln!(
+                self.writer,
+                "Autocommit: {} {}",
+                target.format.flag(),
+                target.path.display()
+            )?;
+        } else {
+            writeln!(self.writer, "Autocommit: off")?;
         }
 
         Ok(())
