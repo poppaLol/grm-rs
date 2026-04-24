@@ -117,6 +117,7 @@ Outstanding:
 
 - explicit bulk-update commands for multi-match query results
 - richer traversal controls beyond the first session-level traversal shape
+- projection semantics for choosing which fields are returned or emphasized in result output
 - graph presentation polish for denser or more complex traversal results
 
 Guiding rule:
@@ -232,6 +233,8 @@ Longer-term polish:
 - decide how colour behaves when output is piped or redirected
 - keep non-colour output stable and script-friendly
 - refine graph rendering for more branching and denser result sets
+- add pager-style handling for large `table` and `graph` output
+- support terminal-friendly vertical paging and horizontal scrolling for wide output
 
 Guiding rule:
 rendering should stay separate from query execution so new formats do not require query rewrites.
