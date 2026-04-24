@@ -146,31 +146,12 @@ Follow-on work:
 - extend the parser cleanly as traversal syntax is designed
 - preserve clear error reporting as the command surface grows
 
-### Output And Presentation
-
-Status:
-partially completed, with presentation polish still active.
-
-Current state:
-
-- `find` supports the current human-readable default output
-- `format=jsonl` supports machine-readable piping and scripting
-- `format=table` supports text-only tabular output
-- `format=graph` supports graph-shaped and traversal-shaped session results
-- coloured output is available for the interactive CLI surface
-
-Next additions:
-
-- decide how colour behaves when output is piped or redirected
-- keep non-colour output stable and script-friendly
-- refine graph rendering for more branching and denser result sets
-
-Guiding rule:
-rendering should stay separate from query execution so new formats do not require query rewrites.
-
 ### Persistence And Autocommit
 
 Improve durability without changing the simple user-facing model.
+
+Testing note:
+see [docs/durability-testing.md](durability-testing.md) for the current durability-confidence scope, initial Linux/macOS targets, and the need for larger scripted scale-data tests.
 
 Target areas:
 
@@ -232,6 +213,28 @@ prefer explicit and safe coordination semantics over accidental multi-user behav
 
 Sequencing note:
 directionality features such as bidirectional-by-default link types should wait until after durability/logging and multi-user coordination decisions are clearer, since shared semantics and recovery behavior will affect how safe those features are to introduce.
+
+### Output And Presentation
+
+Status:
+partially completed, with additional presentation polish still deferred.
+
+Current state:
+
+- `find` supports the current human-readable default output
+- `format=jsonl` supports machine-readable piping and scripting
+- `format=table` supports text-only tabular output
+- `format=graph` supports graph-shaped and traversal-shaped session results
+- coloured output is available for the interactive CLI surface
+
+Longer-term polish:
+
+- decide how colour behaves when output is piped or redirected
+- keep non-colour output stable and script-friendly
+- refine graph rendering for more branching and denser result sets
+
+Guiding rule:
+rendering should stay separate from query execution so new formats do not require query rewrites.
 
 ### Pubsub And Live Subscriptions
 
