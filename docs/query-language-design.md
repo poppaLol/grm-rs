@@ -210,6 +210,17 @@ node.find User name="Alice Jones" via=out:Authored:Post format=graph
 node.find User name=Alice via=out:Knows:User via=out:Knows:User format=graph
 ```
 
+Example graph output for the `Knows` chain in `query_playground.grm`:
+
+```text
+graph: 3 nodes, 2 links
+* (User#7) age=31 name=Alice
+|\
+| * [Knows#1] -> (User#2) age=35 name="Bob Smith"
+|   |\
+|   | * [Knows#2] -> (User#3) age=29 name="Eve Turner"
+```
+
 ## Output Design
 
 Default behavior:
@@ -302,6 +313,17 @@ Simple branching:
 |\
 | * [Authored#7] -> (Post#3) title="Hello World"
 | * [Accessed#9] -> (Post#4) title="Draft Notes"
+```
+
+Two-hop user relationship chain:
+
+```text
+graph: 3 nodes, 2 links
+* (User#7) age=31 name=Alice
+|\
+| * [Knows#1] -> (User#2) age=35 name="Bob Smith"
+|   |\
+|   | * [Knows#2] -> (User#3) age=29 name="Eve Turner"
 ```
 
 Traversal completed but only node entries are shown:
