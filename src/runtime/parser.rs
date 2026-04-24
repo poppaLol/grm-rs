@@ -22,6 +22,7 @@ pub struct QueryTerm {
 pub enum SessionCommand {
     Help,
     Exit,
+    SessionDescribe,
     ModelDefine { args: Vec<String> },
     ModelList,
     ModelShow { name: String },
@@ -57,6 +58,7 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
     match command {
         "?" | "help" | "session.help" => Ok(SessionCommand::Help),
         "exit" | "session.exit" => Ok(SessionCommand::Exit),
+        "session.describe" => Ok(SessionCommand::SessionDescribe),
         "model.define" => Ok(SessionCommand::ModelDefine {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),

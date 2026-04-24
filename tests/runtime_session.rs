@@ -1438,3 +1438,28 @@ async fn session_load_recovers_from_json_backup_when_primary_is_damaged() {
     let _ = fs::remove_file(json_path);
     let _ = fs::remove_file(backup_path);
 }
+
+#[tokio::test]
+async fn session_describe_summarizes_current_state() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.describe\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Session Summary"));
+    assert!(output.contains("Types defined:"));
+    assert!(output.contains("nodes:"));
+    assert!(output.contains("User"));
+    assert!(output.contains("Post"));
+    assert!(output.contains("links: Authored"));
+    assert!(output.contains("Stored rows: 2 nodes, 1 edges"));
+    assert!(output.contains("| node |"));
+    assert!(output.contains("| edge |"));
+    assert!(output.contains("Autocommit: off"));
+}
