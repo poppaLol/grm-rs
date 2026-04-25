@@ -78,6 +78,7 @@ From there you can:
 * query runtime data with `node.find` and `edge.find`
 * inspect definitions with `model.list`, `model.show <name>`, `link.list`, and `link.show <name>`
 * save the current graph with `session.save --json test-dbs/<name>.json` or `session.save --bin test-dbs/<name>.bin`
+* export a machine-friendly graph interchange document with `session.export --json test-dbs/<name>.export.json`
 * keep a working session durable with `session.autocommit --json test-dbs/<name>.json` or `session.autocommit --bin test-dbs/<name>.bin`
 
 For current limitations and planned next steps, see [docs/cli-roadmap.md](docs/cli-roadmap.md).
@@ -183,6 +184,7 @@ session.save --json test-dbs/<name>.json
 session.save --bin test-dbs/<name>.bin
 session.load --json test-dbs/<name>.json
 session.load --bin test-dbs/<name>.bin
+session.export --json test-dbs/<name>.export.json
 session.autocommit --json test-dbs/<name>.json
 session.autocommit --bin test-dbs/<name>.bin
 session.autocommit status
@@ -193,6 +195,7 @@ session.exit
 ### Notes
 
 * runtime models and links are persisted with session save/load files
+* `session.export --json` writes an interchange v1 draft document; see [docs/import-export.md](docs/import-export.md)
 * for local scratch databases and session files, prefer keeping them under `test-dbs/` so the repo root stays tidy
 * model and relationship IDs are backend-assigned; the CLI asks for the user-facing ID field name and uses the backend-reported ID type
 * the current in-memory backend reports `int` IDs

@@ -123,6 +123,18 @@ fn parser_preserves_output_format_term() {
 }
 
 #[test]
+fn parser_builds_session_export_command() {
+    let command = parse_command_line("session.export --json /tmp/grm-export.json").unwrap();
+
+    assert_eq!(
+        command,
+        SessionCommand::SessionExport {
+            args: vec!["--json".into(), "/tmp/grm-export.json".into()],
+        }
+    );
+}
+
+#[test]
 fn parser_preserves_traversal_terms_in_node_find() {
     let command = parse_command_line(
         r#"node.find User name="Alice Jones" via=out:Authored:Post end.title~"Hello" return=edge"#,

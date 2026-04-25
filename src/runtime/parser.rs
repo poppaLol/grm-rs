@@ -23,33 +23,76 @@ pub enum SessionCommand {
     Help,
     Exit,
     SessionDescribe,
-    ModelDefine { args: Vec<String> },
+    ModelDefine {
+        args: Vec<String>,
+    },
     ModelList,
-    ModelShow { name: String },
-    LinkDefine { args: Vec<String> },
+    ModelShow {
+        name: String,
+    },
+    LinkDefine {
+        args: Vec<String>,
+    },
     LinkList,
-    LinkShow { name: String },
-    NodeCreate { model_name: String, assignments: Vec<KeyValueArg> },
-    NodeFind { model_name: String, terms: Vec<QueryTerm> },
-    NodeUpdate { model_name: String, id: String, assignments: Vec<KeyValueArg> },
-    NodeDelete { model_name: String, id: String },
-    EdgeCreate { model_name: String, assignments: Vec<KeyValueArg> },
-    EdgeFind { model_name: String, terms: Vec<QueryTerm> },
-    EdgeUpdate { model_name: String, id: String, assignments: Vec<KeyValueArg> },
-    EdgeDelete { model_name: String, id: String },
-    SessionSave { args: Vec<String> },
-    SessionLoad { args: Vec<String> },
-    SessionAutocommit { args: Vec<String> },
-    Unknown { raw: String },
+    LinkShow {
+        name: String,
+    },
+    NodeCreate {
+        model_name: String,
+        assignments: Vec<KeyValueArg>,
+    },
+    NodeFind {
+        model_name: String,
+        terms: Vec<QueryTerm>,
+    },
+    NodeUpdate {
+        model_name: String,
+        id: String,
+        assignments: Vec<KeyValueArg>,
+    },
+    NodeDelete {
+        model_name: String,
+        id: String,
+    },
+    EdgeCreate {
+        model_name: String,
+        assignments: Vec<KeyValueArg>,
+    },
+    EdgeFind {
+        model_name: String,
+        terms: Vec<QueryTerm>,
+    },
+    EdgeUpdate {
+        model_name: String,
+        id: String,
+        assignments: Vec<KeyValueArg>,
+    },
+    EdgeDelete {
+        model_name: String,
+        id: String,
+    },
+    SessionSave {
+        args: Vec<String>,
+    },
+    SessionLoad {
+        args: Vec<String>,
+    },
+    SessionExport {
+        args: Vec<String>,
+    },
+    SessionAutocommit {
+        args: Vec<String>,
+    },
+    Unknown {
+        raw: String,
+    },
 }
 
 pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
     let trimmed = input.trim();
     let tokens = tokenize_command_line_internal(trimmed)?;
     if tokens.is_empty() {
-        return Ok(SessionCommand::Unknown {
-            raw: String::new(),
-        });
+        return Ok(SessionCommand::Unknown { raw: String::new() });
     }
 
     let command = tokens[0].text.as_str();
@@ -113,6 +156,9 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
         "session.load" => Ok(SessionCommand::SessionLoad {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),
+        "session.export" => Ok(SessionCommand::SessionExport {
+            args: args.iter().map(|token| token.text.clone()).collect(),
+        }),
         "session.autocommit" => Ok(SessionCommand::SessionAutocommit {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),
@@ -152,7 +198,7 @@ fn tokenize_command_line_internal(input: &str) -> Result<Vec<ParsedToken>> {
                                 input,
                                 index,
                                 format!("invalid escape sequence '\\{}' in quoted string", other),
-                            ))
+                            ));
                         }
                     });
                 }
@@ -250,13 +296,21 @@ fn parse_query_terms(args: &[ParsedToken], input: &str) -> Result<Vec<QueryTerm>
 
 fn split_query_term<'a>(arg: &'a str, input: &str, start: usize) -> Result<(&'a str, &'a str)> {
     if arg.contains(">>") || arg.contains("<<") {
-        return Err(constraint_at(input, start, format!("invalid query term '{}'", arg)));
+        return Err(constraint_at(
+            input,
+            start,
+            format!("invalid query term '{}'", arg),
+        ));
     }
 
     for operator in ["!=", ">=", "<=", ">", "<", "~", "="] {
         if let Some((key, value)) = arg.split_once(operator) {
             if key.is_empty() || value.is_empty() {
-                return Err(constraint_at(input, start, format!("invalid query term '{}'", arg)));
+                return Err(constraint_at(
+                    input,
+                    start,
+                    format!("invalid query term '{}'", arg),
+                ));
             }
             let result = (
                 match operator {
@@ -278,7 +332,11 @@ fn split_query_term<'a>(arg: &'a str, input: &str, start: usize) -> Result<(&'a 
         }
     }
 
-    Err(constraint_at(input, start, format!("invalid query term '{}'", arg)))
+    Err(constraint_at(
+        input,
+        start,
+        format!("invalid query term '{}'", arg),
+    ))
 }
 
 fn validate_format_term_shape(raw: &str, input: &str, start: usize) -> Result<()> {
@@ -317,7 +375,7 @@ fn validate_order_term_shape(raw: &str, input: &str, start: usize) -> Result<()>
                     input,
                     start,
                     "order direction must be asc or desc",
-                ))
+                ));
             }
         }
     }
@@ -332,10 +390,14 @@ fn expect_single_arg<'a>(command: &str, args: &'a [ParsedToken]) -> Result<&'a s
     Ok(args[0].text.as_str())
 }
 
-fn required_positional<'a>(command: &str, args: &'a [ParsedToken], index: usize) -> Result<&'a str> {
-    args.get(index).map(|token| token.text.as_str()).ok_or_else(|| {
-        GrmError::Constraint(format!("missing required argument for {}", command))
-    })
+fn required_positional<'a>(
+    command: &str,
+    args: &'a [ParsedToken],
+    index: usize,
+) -> Result<&'a str> {
+    args.get(index)
+        .map(|token| token.text.as_str())
+        .ok_or_else(|| GrmError::Constraint(format!("missing required argument for {}", command)))
 }
 
 fn constraint_at(input: &str, offset: usize, message: impl Into<String>) -> GrmError {
@@ -346,7 +408,11 @@ fn constraint_at(input: &str, offset: usize, message: impl Into<String>) -> GrmE
         .map(|idx| offset + idx)
         .unwrap_or(input.len());
     let line = &input[line_start..line_end];
-    let line_number = input[..offset].bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let line_number = input[..offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
     let column = input[line_start..offset].chars().count() + 1;
     let caret_pad = " ".repeat(column.saturating_sub(1));
 
