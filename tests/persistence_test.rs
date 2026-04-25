@@ -1,21 +1,30 @@
 mod common;
 
-use common::{Authored, Post, User, UserId, PostId, AuthoredId};
-use grm_rs::{GraphClient, InMemoryBackend, NodeModel, Query, NodePattern};
+use common::{Authored, AuthoredId, Post, PostId, User, UserId};
+use grm_rs::{GraphClient, InMemoryBackend, NodeModel, NodePattern, Query};
+
+fn cleanup_test_file(path: &str) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(format!("{path}.bak"));
+}
 
 #[tokio::test]
 async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
     println!("Testing InMemoryBackend persistence...");
 
-    let json_file = "test_graph.json";
-    let bin_file = "test_graph.bin";
+    std::fs::create_dir_all("test-dbs")?;
+    let json_file = "test-dbs/test_graph.json";
+    let bin_file = "test-dbs/test_graph.bin";
+    cleanup_test_file(json_file);
+    cleanup_test_file(bin_file);
 
     // Create a backend and save to file
     let backend = InMemoryBackend::new();
     let client = GraphClient::new(backend);
 
     println!("  -> Saving to {}...", json_file);
-    client.persistence()
+    client
+        .persistence()
         .expect("Backend does not support persistence")
         .save_to_file(json_file)?;
 
@@ -25,7 +34,8 @@ async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
     let _loaded_client = GraphClient::new(InMemoryBackend::load_from_file(json_file)?);
 
     println!("  -> Saving binary to {}...", bin_file);
-    client.persistence()
+    client
+        .persistence()
         .expect("Backend does not support persistence")
         .save_to_binary_file(bin_file)?;
 
@@ -35,8 +45,8 @@ async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ InMemoryBackend persistence test passed!");
 
     // Clean up
-    std::fs::remove_file(json_file)?;
-    std::fs::remove_file(bin_file)?;
+    cleanup_test_file(json_file);
+    cleanup_test_file(bin_file);
     println!("\n✓ Test file removed");
 
     Ok(())
@@ -46,8 +56,11 @@ async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::Error>> {
     println!("Testing persistence with typed models...");
 
-    let json_file = "test_graph_typed.json";
-    let bin_file = "test_graph_typed.bin";
+    std::fs::create_dir_all("test-dbs")?;
+    let json_file = "test-dbs/test_graph_typed.json";
+    let bin_file = "test-dbs/test_graph_typed.bin";
+    cleanup_test_file(json_file);
+    cleanup_test_file(bin_file);
 
     // Create data using typed models
     let backend = InMemoryBackend::new();
@@ -102,14 +115,19 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
         repo.nodes::<User>().create(&mut user2).await?;
         repo.nodes::<Post>().create(&mut post1).await?;
         repo.nodes::<Post>().create(&mut post2).await?;
-        repo.rels::<Authored>().create_between(user1.id(), post1.id(), &mut authored1).await?;
-        repo.rels::<Authored>().create_between(user2.id(), post2.id(), &mut authored2).await?;
+        repo.rels::<Authored>()
+            .create_between(user1.id(), post1.id(), &mut authored1)
+            .await?;
+        repo.rels::<Authored>()
+            .create_between(user2.id(), post2.id(), &mut authored2)
+            .await?;
 
         tx.commit().await?;
     }
 
     // Save using persistence accessor
-    client.persistence()
+    client
+        .persistence()
         .expect("Backend does not support persistence")
         .save_to_file(json_file)?;
 
@@ -122,7 +140,9 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
     // Verify data
     println!("  -> Verifying users...");
     let mut tx = _loaded_client.transaction().await?;
-    let users = tx.query::<User, User>(Query::matching(NodePattern::new())).await?;
+    let users = tx
+        .query::<User, User>(Query::matching(NodePattern::new()))
+        .await?;
     drop(tx);
 
     assert_eq!(users.len(), 2, "Should have 2 users");
@@ -131,17 +151,26 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
 
     println!("  -> Verifying posts...");
     let mut tx = _loaded_client.transaction().await?;
-    let posts = tx.query::<Post, Post>(Query::matching(NodePattern::new())).await?;
+    let posts = tx
+        .query::<Post, Post>(Query::matching(NodePattern::new()))
+        .await?;
     drop(tx);
 
     assert_eq!(posts.len(), 2, "Should have 2 posts");
-    assert!(posts.iter().any(|p| p.title == "Hello World"), "Should have Hello World post");
-    assert!(posts.iter().any(|p| p.title == "Graph Persistence"), "Should have Graph Persistence post");
+    assert!(
+        posts.iter().any(|p| p.title == "Hello World"),
+        "Should have Hello World post"
+    );
+    assert!(
+        posts.iter().any(|p| p.title == "Graph Persistence"),
+        "Should have Graph Persistence post"
+    );
 
     println!("  -> Verifying relationships (skipped - Authored is a RelModel, not NodeModel)");
 
     println!("  -> Saving binary to {}...", bin_file);
-    client.persistence()
+    client
+        .persistence()
         .expect("Backend does not support persistence")
         .save_to_binary_file(bin_file)?;
 
@@ -150,14 +179,18 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
 
     println!("  -> Verifying users from binary load...");
     let mut tx = _loaded_binary_client.transaction().await?;
-    let users = tx.query::<User, User>(Query::matching(NodePattern::new())).await?;
+    let users = tx
+        .query::<User, User>(Query::matching(NodePattern::new()))
+        .await?;
     drop(tx);
 
     assert_eq!(users.len(), 2, "Binary load should have 2 users");
 
     println!("  -> Verifying posts from binary load...");
     let mut tx = _loaded_binary_client.transaction().await?;
-    let posts = tx.query::<Post, Post>(Query::matching(NodePattern::new())).await?;
+    let posts = tx
+        .query::<Post, Post>(Query::matching(NodePattern::new()))
+        .await?;
     drop(tx);
 
     assert_eq!(posts.len(), 2, "Binary load should have 2 posts");
@@ -166,8 +199,8 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
     println!("\nData verified successfully");
 
     // Clean up
-    std::fs::remove_file(json_file)?;
-    std::fs::remove_file(bin_file)?;
+    cleanup_test_file(json_file);
+    cleanup_test_file(bin_file);
     println!("\n✓ Test file removed");
 
     Ok(())
