@@ -5,15 +5,17 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::backend::{BinaryPersistedGraphStore, GraphStore, PersistedGraphStore};
 use crate::dsl::{
     CompareOp, Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, ReturnKind, VarGen,
 };
-use crate::runtime::{parse_command_line, KeyValueArg, QueryTerm, SessionCommand};
+use crate::fsutil::{
+    backup_path, log_path, write_file_atomically, write_file_atomically_with_backup,
+};
+use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
-use crate::fsutil::{backup_path, log_path, write_file_atomically_with_backup};
 use crate::{
     BackendIdentity, GraphClient, GraphTx, InMemoryBackend, Result, RuntimeField, RuntimeNodeModel,
     RuntimeRelModel, RuntimeValueType, SessionModelCatalog, StoredNode, StoredRel,
@@ -40,6 +42,76 @@ struct PersistedSession {
 struct BinaryPersistedSession {
     graph: BinaryPersistedGraphStore,
     catalog: SessionModelCatalog,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeDocument {
+    format: &'static str,
+    version: u32,
+    kind: &'static str,
+    identity: InterchangeIdentity,
+    schema: InterchangeSchema,
+    data: InterchangeData,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeIdentity {
+    node: &'static str,
+    edge: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeSchema {
+    nodes: Vec<InterchangeNodeModel>,
+    edges: Vec<InterchangeEdgeModel>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeNodeModel {
+    name: String,
+    id_field: String,
+    id_type: &'static str,
+    fields: Vec<InterchangeField>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeEdgeModel {
+    name: String,
+    from: String,
+    to: String,
+    id_field: String,
+    id_type: &'static str,
+    fields: Vec<InterchangeField>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeField {
+    name: String,
+    #[serde(rename = "type")]
+    value_type: &'static str,
+    required: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeData {
+    nodes: Vec<InterchangeNode>,
+    edges: Vec<InterchangeEdge>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeNode {
+    id: i64,
+    model: String,
+    props: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InterchangeEdge {
+    id: i64,
+    model: String,
+    from: i64,
+    to: i64,
+    props: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +283,89 @@ impl SessionState {
         }
     }
 
+    fn interchange_document(&self) -> InterchangeDocument {
+        let store = self.client.backend().snapshot_store();
+        let node_models = self.catalog.list_node_models();
+        let edge_models = self.catalog.list_rel_models();
+
+        let schema = InterchangeSchema {
+            nodes: node_models
+                .iter()
+                .map(|model| InterchangeNodeModel {
+                    name: model.name.clone(),
+                    id_field: model.id_field_name.clone(),
+                    id_type: model.id_type.keyword(),
+                    fields: interchange_fields(&model.fields),
+                })
+                .collect(),
+            edges: edge_models
+                .iter()
+                .map(|model| InterchangeEdgeModel {
+                    name: model.name.clone(),
+                    from: model.from_model.clone(),
+                    to: model.to_model.clone(),
+                    id_field: model.id_field_name.clone(),
+                    id_type: model.id_type.keyword(),
+                    fields: interchange_fields(&model.fields),
+                })
+                .collect(),
+        };
+
+        let data = InterchangeData {
+            nodes: store
+                .nodes
+                .values()
+                .map(|node| InterchangeNode {
+                    id: node.id,
+                    model: self.interchange_node_model_name(node),
+                    props: node.props.clone(),
+                })
+                .collect(),
+            edges: store
+                .rels
+                .values()
+                .map(|rel| InterchangeEdge {
+                    id: rel.id,
+                    model: self.interchange_edge_model_name(rel),
+                    from: rel.from,
+                    to: rel.to,
+                    props: rel.props.clone(),
+                })
+                .collect(),
+        };
+
+        InterchangeDocument {
+            format: "grm.interchange",
+            version: 1,
+            kind: "graph",
+            identity: InterchangeIdentity {
+                node: self.node_id_type().keyword(),
+                edge: self.rel_id_type().keyword(),
+            },
+            schema,
+            data,
+        }
+    }
+
+    fn interchange_node_model_name(&self, node: &StoredNode) -> String {
+        self.catalog
+            .list_node_models()
+            .into_iter()
+            .find(|model| node.labels.iter().any(|label| label == &model.label))
+            .map(|model| model.name.clone())
+            .or_else(|| node.labels.first().cloned())
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+
+    fn interchange_edge_model_name(&self, rel: &StoredRel) -> String {
+        self.catalog
+            .list_rel_models()
+            .into_iter()
+            .find(|model| model.rel_type == rel.rel_type)
+            .map(|model| model.name.clone())
+            .unwrap_or_else(|| rel.rel_type.clone())
+    }
+
     fn apply_persisted_session(&mut self, persisted: PersistedSession) {
         self.client
             .backend()
@@ -226,9 +381,18 @@ impl SessionState {
         write_file_atomically_with_backup(path, json.as_bytes()).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to write JSON session file")
         })?;
-        clear_session_log(path).map_err(|_| {
-            crate::error::GrmError::SaveAborted("failed to clear session log file")
+        clear_session_log(path)
+            .map_err(|_| crate::error::GrmError::SaveAborted("failed to clear session log file"))?;
+        Ok(())
+    }
+
+    pub fn export_to_json(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        let json = serde_json::to_string_pretty(&self.interchange_document()).map_err(|_| {
+            crate::error::GrmError::SaveAborted("failed to serialize graph export as JSON")
         })?;
+        write_file_atomically(path, json.as_bytes())
+            .map_err(|_| crate::error::GrmError::SaveAborted("failed to write JSON export file"))?;
         Ok(())
     }
 
@@ -248,9 +412,8 @@ impl SessionState {
         write_file_atomically_with_backup(path, &bytes).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to write binary session file")
         })?;
-        clear_session_log(path).map_err(|_| {
-            crate::error::GrmError::SaveAborted("failed to clear session log file")
-        })?;
+        clear_session_log(path)
+            .map_err(|_| crate::error::GrmError::SaveAborted("failed to clear session log file"))?;
         Ok(())
     }
 
@@ -1054,6 +1217,17 @@ impl SessionState {
     }
 }
 
+fn interchange_fields(fields: &[RuntimeField]) -> Vec<InterchangeField> {
+    fields
+        .iter()
+        .map(|field| InterchangeField {
+            name: field.name.clone(),
+            value_type: field.value_type.keyword(),
+            required: field.required,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct RuntimeTraversalPlan {
     graph_query: GraphQuery,
@@ -1270,6 +1444,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 self.handle_session_load(args.as_slice())?
             }
+            SessionCommand::SessionExport { args } => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.handle_session_export(args.as_slice())?
+            }
             SessionCommand::SessionAutocommit { args } => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 self.handle_session_autocommit(args.as_slice())?
@@ -1355,6 +1533,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  session.save --bin <path>")?;
         writeln!(self.writer, "  session.load --json <path>")?;
         writeln!(self.writer, "  session.load --bin <path>")?;
+        writeln!(self.writer, "  session.export --json <path>")?;
         writeln!(self.writer, "  session.autocommit --json <path>")?;
         writeln!(self.writer, "  session.autocommit --bin <path>")?;
         writeln!(self.writer, "  session.autocommit status")?;
@@ -1544,7 +1723,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
         let model = RuntimeNodeModel::new(name, id_field_name, self.state.node_id_type(), fields)?;
         self.state.register_model(model.clone())?;
-        self.script_summary.created_node_types.push(model.name.clone());
+        self.script_summary
+            .created_node_types
+            .push(model.name.clone());
         self.persist_autocommit_entry(SessionLogEntry::RegisterNodeModel {
             model: model.clone(),
         })?;
@@ -1580,7 +1761,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             fields,
         )?;
         self.state.register_rel_model(model.clone())?;
-        self.script_summary.created_link_types.push(model.name.clone());
+        self.script_summary
+            .created_link_types
+            .push(model.name.clone());
         self.persist_autocommit_entry(SessionLogEntry::RegisterRelModel {
             model: model.clone(),
         })?;
@@ -1923,6 +2106,27 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
+    fn handle_session_export(&mut self, args: &[&str]) -> Result<()> {
+        if args.len() != 2 {
+            return Err(crate::GrmError::Constraint(
+                "usage: session.export --json <path>".into(),
+            ));
+        }
+
+        match args[0] {
+            "--json" => {
+                self.state.export_to_json(args[1])?;
+                writeln!(self.writer, "Exported graph to JSON file '{}'.", args[1])?;
+            }
+            _ => {
+                return Err(crate::GrmError::Constraint(
+                    "usage: session.export --json <path>".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn handle_session_autocommit(&mut self, args: &[&str]) -> Result<()> {
         match args {
             ["status"] => {
@@ -2108,12 +2312,21 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 for node in rows {
                     let mut row = vec![node.id.to_string()];
                     for field in &model.fields {
-                        row.push(format_table_value(node.props.get(&field.name), &self.colors));
+                        row.push(format_table_value(
+                            node.props.get(&field.name),
+                            &self.colors,
+                        ));
                     }
                     matrix.push(row);
                 }
 
-                write_table(&mut self.writer, &headers, &header_kinds, &matrix, &self.colors)?;
+                write_table(
+                    &mut self.writer,
+                    &headers,
+                    &header_kinds,
+                    &matrix,
+                    &self.colors,
+                )?;
             }
             SessionQueryResult::Edges { model, rows } => {
                 let mut headers = vec![
@@ -2147,7 +2360,13 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                     matrix.push(row);
                 }
 
-                write_table(&mut self.writer, &headers, &header_kinds, &matrix, &self.colors)?;
+                write_table(
+                    &mut self.writer,
+                    &headers,
+                    &header_kinds,
+                    &matrix,
+                    &self.colors,
+                )?;
             }
             SessionQueryResult::Graph(_) => {
                 return Err(crate::GrmError::NotSupported(
@@ -2171,7 +2390,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let mut grouped = BTreeMap::<i64, Vec<GraphRenderPath>>::new();
         let mut roots = BTreeMap::<i64, StoredNode>::new();
         for path in paths {
-            roots.entry(path.root.id).or_insert_with(|| path.root.clone());
+            roots
+                .entry(path.root.id)
+                .or_insert_with(|| path.root.clone());
             grouped.entry(path.root.id).or_default().push(path);
         }
 
@@ -2938,8 +3159,12 @@ fn append_session_log(path: &Path, entry: &SessionLogEntry) -> io::Result<()> {
         .create(true)
         .append(true)
         .open(log_path)?;
-    let line = serde_json::to_vec(entry)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "failed to serialize session log"))?;
+    let line = serde_json::to_vec(entry).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to serialize session log",
+        )
+    })?;
     file.write_all(&line)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
@@ -2963,7 +3188,7 @@ fn read_session_log(path: &Path) -> Result<Vec<SessionLogEntry>> {
         Err(_) => {
             return Err(crate::error::GrmError::LoadAborted(
                 "failed to read session log file",
-            ))
+            ));
         }
     };
 
@@ -3071,8 +3296,13 @@ fn format_props(props: &BTreeMap<String, Value>, colors: &SessionColors) -> Stri
     format!("{{{}}}", parts.join(" "))
 }
 
-fn format_graph_props(props: &BTreeMap<String, Value>, limit: usize, colors: &SessionColors) -> String {
-    props.iter()
+fn format_graph_props(
+    props: &BTreeMap<String, Value>,
+    limit: usize,
+    colors: &SessionColors,
+) -> String {
+    props
+        .iter()
         .take(limit)
         .map(|(key, value)| {
             format!(
@@ -3270,13 +3500,17 @@ fn build_graph_render_paths(graph: &SessionGraphResult) -> Result<Vec<GraphRende
                         crate::dsl::KernelValue::Rel(rel) => Some(stored_rel_from_kernel(rel)),
                         _ => None,
                     })
-                    .ok_or_else(|| crate::GrmError::Backend("graph result missing relationship".into()))?;
+                    .ok_or_else(|| {
+                        crate::GrmError::Backend("graph result missing relationship".into())
+                    })?;
                 let node = row
                     .values
                     .get(&hop.end)
                     .and_then(|value| value.as_node())
                     .map(stored_node_from_kernel)
-                    .ok_or_else(|| crate::GrmError::Backend("graph result missing end node".into()))?;
+                    .ok_or_else(|| {
+                        crate::GrmError::Backend("graph result missing end node".into())
+                    })?;
                 steps.push(GraphRenderStep { rel, node });
             }
         }

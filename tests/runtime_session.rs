@@ -6,6 +6,7 @@ use grm_rs::{
     BackendIdType, CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
     SessionModelCatalog, SessionState,
 };
+use serde_json::Value;
 
 #[test]
 fn session_catalog_starts_empty() {
@@ -745,7 +746,9 @@ async fn node_find_supports_colored_default_output() {
 
     assert!(output.contains("1 nodes matched model 'User'."));
     assert!(output.contains("Node \u{1b}[32mUser\u{1b}[0m \u{1b}[34muserId\u{1b}[0m=1"));
-    assert!(output.contains("{\u{1b}[34mage\u{1b}[0m=42 \u{1b}[34mname\u{1b}[0m=\u{1b}[38;5;208mAlice\u{1b}[0m}"));
+    assert!(output.contains(
+        "{\u{1b}[34mage\u{1b}[0m=42 \u{1b}[34mname\u{1b}[0m=\u{1b}[38;5;208mAlice\u{1b}[0m}"
+    ));
 }
 
 #[tokio::test]
@@ -858,8 +861,12 @@ async fn node_find_traversal_supports_graph_format() {
     assert!(output.contains("graph: 3 nodes, 2 links"));
     assert!(output.contains("* (User#1) name=\"Alice Jones\""));
     assert!(output.contains("|\\"));
-    assert!(output.contains("| * [Authored#1] authoredOn=2026-04-10 -> (Post#2) title=\"Hello World\""));
-    assert!(output.contains("| * [Authored#2] authoredOn=2026-04-20 -> (Post#3) title=\"Draft Notes\""));
+    assert!(
+        output.contains("| * [Authored#1] authoredOn=2026-04-10 -> (Post#2) title=\"Hello World\"")
+    );
+    assert!(
+        output.contains("| * [Authored#2] authoredOn=2026-04-20 -> (Post#3) title=\"Draft Notes\"")
+    );
 }
 
 #[tokio::test]
@@ -1253,6 +1260,49 @@ async fn session_load_restores_graph_and_runtime_schema() {
     assert!(output.contains("Link: Authored"));
     assert!(output.contains("Node User userId=1 {name=Alice}"));
     assert!(output.contains("Edge Authored authoredId=1 from=1 to=2 {year=2024}"));
+
+    let _ = fs::remove_file(json_path);
+}
+
+#[tokio::test]
+async fn session_export_writes_interchange_json() {
+    let json_path = "/tmp/grm-session-export-test.json";
+    let _ = fs::remove_file(json_path);
+
+    let input = Cursor::new(format!(
+        "model.define User userId name:string:required age:int:optional\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice age=42\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.export --json {json_path}\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    let exported: Value = serde_json::from_str(&fs::read_to_string(json_path).unwrap()).unwrap();
+
+    assert!(output.contains("Exported graph to JSON file"));
+    assert_eq!(exported["format"], "grm.interchange");
+    assert_eq!(exported["version"], 1);
+    assert_eq!(exported["kind"], "graph");
+    assert_eq!(exported["identity"]["node"], "int");
+    let exported_user_schema = exported["schema"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "User")
+        .unwrap();
+    assert_eq!(exported_user_schema["id_field"], "userId");
+    assert_eq!(exported_user_schema["fields"][0]["type"], "string");
+    assert_eq!(exported["schema"]["edges"][0]["name"], "Authored");
+    assert_eq!(exported["schema"]["edges"][0]["from"], "User");
+    assert_eq!(exported["schema"]["edges"][0]["to"], "Post");
+    assert_eq!(exported["data"]["nodes"][0]["id"], 1);
+    assert_eq!(exported["data"]["nodes"][0]["model"], "User");
+    assert_eq!(exported["data"]["nodes"][0]["props"]["name"], "Alice");
+    assert_eq!(exported["data"]["edges"][0]["model"], "Authored");
+    assert_eq!(exported["data"]["edges"][0]["from"], 1);
+    assert_eq!(exported["data"]["edges"][0]["to"], 2);
 
     let _ = fs::remove_file(json_path);
 }
