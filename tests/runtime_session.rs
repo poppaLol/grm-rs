@@ -6,7 +6,7 @@ use grm_rs::{
     BackendIdType, CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
     SessionModelCatalog, SessionState,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[test]
 fn session_catalog_starts_empty() {
@@ -1280,29 +1280,10 @@ async fn session_export_writes_interchange_json() {
     let (_, _, output) = session.into_parts();
     let output = String::from_utf8(output).unwrap();
     let exported: Value = serde_json::from_str(&fs::read_to_string(json_path).unwrap()).unwrap();
+    let expected = valid_interchange_document();
 
     assert!(output.contains("Exported graph to JSON file"));
-    assert_eq!(exported["format"], "grm.interchange");
-    assert_eq!(exported["version"], 1);
-    assert_eq!(exported["kind"], "graph");
-    assert_eq!(exported["identity"]["node"], "int");
-    let exported_user_schema = exported["schema"]["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|node| node["name"] == "User")
-        .unwrap();
-    assert_eq!(exported_user_schema["id_field"], "userId");
-    assert_eq!(exported_user_schema["fields"][0]["type"], "string");
-    assert_eq!(exported["schema"]["edges"][0]["name"], "Authored");
-    assert_eq!(exported["schema"]["edges"][0]["from"], "User");
-    assert_eq!(exported["schema"]["edges"][0]["to"], "Post");
-    assert_eq!(exported["data"]["nodes"][0]["id"], 1);
-    assert_eq!(exported["data"]["nodes"][0]["model"], "User");
-    assert_eq!(exported["data"]["nodes"][0]["props"]["name"], "Alice");
-    assert_eq!(exported["data"]["edges"][0]["model"], "Authored");
-    assert_eq!(exported["data"]["edges"][0]["from"], 1);
-    assert_eq!(exported["data"]["edges"][0]["to"], 2);
+    assert_eq!(exported, expected);
 
     let _ = fs::remove_file(json_path);
 }
@@ -1339,7 +1320,7 @@ async fn session_import_loads_interchange_json_into_empty_session() {
 }
 
 #[tokio::test]
-async fn session_import_requires_empty_session_for_now() {
+async fn session_import_requires_empty_session() {
     let json_path = "/tmp/grm-session-import-non-empty-test.json";
     let _ = fs::remove_file(json_path);
 
@@ -1360,6 +1341,259 @@ async fn session_import_requires_empty_session_for_now() {
     assert!(output.contains("constraint violation: session.import requires an empty session"));
 
     let _ = fs::remove_file(json_path);
+}
+
+fn valid_interchange_document() -> Value {
+    serde_json::from_str(include_str!("fixtures/interchange_v1_basic.json")).unwrap()
+}
+
+async fn assert_import_contract_error(case_name: &str, document: Value, expected: &str) {
+    let json_path = format!("/tmp/grm-import-contract-{case_name}.json");
+    let _ = fs::remove_file(&json_path);
+    fs::write(&json_path, serde_json::to_string_pretty(&document).unwrap()).unwrap();
+
+    let input = Cursor::new(format!("session.import --json {json_path}\nsession.exit\n"));
+    let mut session = CliSession::new(input, Vec::new());
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    assert!(
+        output.contains(expected),
+        "expected output to contain {expected:?}, got:\n{output}"
+    );
+
+    let _ = fs::remove_file(json_path);
+}
+
+#[tokio::test]
+async fn session_import_rejects_invalid_interchange_headers() {
+    let mut document = valid_interchange_document();
+    document["format"] = json!("not.grm");
+    assert_import_contract_error(
+        "wrong-format",
+        document,
+        "constraint violation: import file is not a grm.interchange document",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["version"] = json!(2);
+    assert_import_contract_error(
+        "unsupported-version",
+        document,
+        "constraint violation: unsupported import version '2'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["kind"] = json!("schema");
+    assert_import_contract_error(
+        "unsupported-kind",
+        document,
+        "constraint violation: unsupported import kind 'schema'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["identity"]["node"] = json!("uuid");
+    assert_import_contract_error(
+        "unsupported-node-id-type",
+        document,
+        "constraint violation: unsupported import id type 'uuid'",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn session_import_rejects_invalid_interchange_schema() {
+    let mut document = valid_interchange_document();
+    document["schema"]["nodes"][0]["fields"][0]["type"] = json!("date");
+    assert_import_contract_error(
+        "unsupported-field-type",
+        document,
+        "constraint violation: unsupported import field type 'date'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["schema"]["edges"][0]["from"] = json!("Author");
+    assert_import_contract_error(
+        "missing-from-model",
+        document,
+        "constraint violation: from model 'Author' is not defined in import schema",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["schema"]["edges"][0]["to"] = json!("Article");
+    assert_import_contract_error(
+        "missing-to-model",
+        document,
+        "constraint violation: to model 'Article' is not defined in import schema",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn session_import_rejects_invalid_interchange_node_data() {
+    let mut document = valid_interchange_document();
+    document["data"]["nodes"][0]["id"] = json!(0);
+    assert_import_contract_error(
+        "non-positive-node-id",
+        document,
+        "constraint violation: imported node id '0' must be positive",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["nodes"][0]["model"] = json!("Person");
+    assert_import_contract_error(
+        "unknown-node-model",
+        document,
+        "constraint violation: node model 'Person' is not defined in import schema",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": 1, "model": "Post", "props": { "title": "Duplicate" } }));
+    assert_import_contract_error(
+        "duplicate-node-id",
+        document,
+        "constraint violation: import contains duplicate node id '1'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["nodes"][0]["props"]
+        .as_object_mut()
+        .unwrap()
+        .remove("name");
+    assert_import_contract_error(
+        "missing-required-node-field",
+        document,
+        "constraint violation: missing required field 'name' for imported node model 'User'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["nodes"][0]["props"]["name"] = json!(42);
+    assert_import_contract_error(
+        "wrong-node-field-type",
+        document,
+        "constraint violation: field 'name' for imported node model 'User' must be string",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["nodes"][0]["props"]["extra"] = json!("surprise");
+    assert_import_contract_error(
+        "unknown-node-field",
+        document,
+        "constraint violation: unknown field 'extra' for imported node model 'User'",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn session_import_rejects_invalid_interchange_edge_data() {
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["id"] = json!(0);
+    assert_import_contract_error(
+        "non-positive-edge-id",
+        document,
+        "constraint violation: imported edge id '0' must be positive",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["model"] = json!("Edited");
+    assert_import_contract_error(
+        "unknown-edge-model",
+        document,
+        "constraint violation: edge model 'Edited' is not defined in import schema",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"].as_array_mut().unwrap().push(
+        json!({ "id": 1, "model": "Authored", "from": 1, "to": 2, "props": { "year": 2025 } }),
+    );
+    assert_import_contract_error(
+        "duplicate-edge-id",
+        document,
+        "constraint violation: import contains duplicate edge id '1'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["from"] = json!(99);
+    assert_import_contract_error(
+        "missing-from-node",
+        document,
+        "constraint violation: edge '1' references missing from node '99'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["to"] = json!(99);
+    assert_import_contract_error(
+        "missing-to-node",
+        document,
+        "constraint violation: edge '1' references missing to node '99'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["from"] = json!(2);
+    assert_import_contract_error(
+        "wrong-from-node-model",
+        document,
+        "constraint violation: edge '1' from node '2' does not match model 'User'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["to"] = json!(1);
+    assert_import_contract_error(
+        "wrong-to-node-model",
+        document,
+        "constraint violation: edge '1' to node '1' does not match model 'Post'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["props"]
+        .as_object_mut()
+        .unwrap()
+        .remove("year");
+    assert_import_contract_error(
+        "missing-required-edge-field",
+        document,
+        "constraint violation: missing required field 'year' for imported edge model 'Authored'",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["props"]["year"] = json!("2024");
+    assert_import_contract_error(
+        "wrong-edge-field-type",
+        document,
+        "constraint violation: field 'year' for imported edge model 'Authored' must be int",
+    )
+    .await;
+
+    let mut document = valid_interchange_document();
+    document["data"]["edges"][0]["props"]["extra"] = json!(true);
+    assert_import_contract_error(
+        "unknown-edge-field",
+        document,
+        "constraint violation: unknown field 'extra' for imported edge model 'Authored'",
+    )
+    .await;
 }
 
 #[tokio::test]
