@@ -11,6 +11,7 @@ The `grm session` CLI already supports a useful local workflow:
 - session commands:
   - `session.save --json|--bin`
   - `session.load --json|--bin`
+  - `session.import --json`
   - `session.export --json`
   - `session.autocommit --json|--bin`
 - script bootstrap into an interactive session
@@ -166,7 +167,7 @@ Target areas:
 ### Import / Export Surface
 
 Status:
-started, with JSON export available as an interchange v1 draft.
+started, with JSON import/export available as an interchange v1 draft.
 
 Design note:
 see [docs/import-export.md](import-export.md) for the current command, JSON shape, and planned import follow-ups.
@@ -177,6 +178,7 @@ Core direction:
 - keep `session.save` / `session.load` focused on restoring a local workspace snapshot
 - grow `session.import` / `session.export` as a separate interchange-oriented command family
 - `session.export --json <path>` is the first available command in that family
+- `session.import --json <path>` imports the same document shape into an empty session only for now
 
 Likely format split:
 

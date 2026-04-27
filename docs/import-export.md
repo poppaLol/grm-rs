@@ -4,6 +4,7 @@ GRM-RS keeps local persistence separate from graph interchange.
 
 - `session.save` / `session.load` restore a local workspace snapshot, including storage bookkeeping.
 - `session.export` writes a machine-friendly interchange document for external tools, fixtures, migration, and future bulk import.
+- `session.import` reads the same interchange document into a fresh session.
 - `.grm` scripts remain the human-authored format for setup, examples, demos, and tests.
 
 ## Export Command
@@ -12,7 +13,15 @@ GRM-RS keeps local persistence separate from graph interchange.
 session.export --json <path>
 ```
 
-The JSON export format is currently an interchange v1 draft. It is versioned now so import behavior can validate the format explicitly when it lands.
+## Import Command
+
+```text
+session.import --json <path>
+```
+
+Import currently requires an empty session. If the session already has schema or graph data, GRM-RS raises an error for now instead of merging or replacing contents.
+
+The JSON import/export format is currently an interchange v1 draft. It is versioned so import behavior can validate the format explicitly.
 
 ## JSON Shape
 
@@ -83,9 +92,10 @@ The JSON export format is currently an interchange v1 draft. It is versioned now
 - `data.nodes` and `data.edges` are arrays rather than storage maps so external tools can stream or transform them more easily.
 - Exported IDs are included because edges reference nodes by ID.
 - Storage-only fields such as `next_node_id` and `next_rel_id` are intentionally omitted.
+- Import restores the exported IDs and advances the next generated IDs beyond the imported maximums.
 
 ## Planned Follow-Ups
 
-- `session.import --json <path>` with schema and data validation diagnostics.
-- `session.export --jsonl <path>` and `session.import --jsonl <path>` for streaming-oriented bulk workflows.
 - Conflict handling for imports into non-empty sessions.
+- Richer schema and data validation diagnostics.
+- `session.export --jsonl <path>` and `session.import --jsonl <path>` for streaming-oriented bulk workflows.
