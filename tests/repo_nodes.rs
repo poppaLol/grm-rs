@@ -24,9 +24,7 @@ async fn in_memory_backend_create_and_update_with_graph_client() {
     let client = GraphClient::new(backend);
     let mut tx = client.transaction().await.unwrap();
 
-    let q = Query::<User>::matching(
-        NodePattern::<User>::new().filter(User::name_prop().eq("Bob")),
-    );
+    let q = Query::<User>::matching(NodePattern::<User>::new().filter(User::name_prop().eq("Bob")));
 
     let users: Vec<User> = tx.query(q).await.expect("query failed");
     tx.commit().await.unwrap();

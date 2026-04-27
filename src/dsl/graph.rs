@@ -168,7 +168,11 @@ impl GraphQuery {
         // first must be node
         let root = match &self.matches[0] {
             MatchClause::Node(n) => n.var,
-            _ => return Err(GrmError::Mapping("GraphQuery must start with NodeMatch".into())),
+            _ => {
+                return Err(GrmError::Mapping(
+                    "GraphQuery must start with NodeMatch".into(),
+                ));
+            }
         };
 
         // ensure hop start refers to an already-bound node var
@@ -305,8 +309,7 @@ impl<N: NodeModel> Query<N> {
             ReturnMode::Root => Return::Node(root.id),
             ReturnMode::End => Return::Node(end_var),
             ReturnMode::Rel => {
-                let rel_var = last_rel_var
-                    .expect("return_rel used with no traversal");
+                let rel_var = last_rel_var.expect("return_rel used with no traversal");
                 Return::Rel(rel_var)
             }
         };

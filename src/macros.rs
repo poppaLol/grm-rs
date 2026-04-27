@@ -11,7 +11,7 @@ macro_rules! typed_id {
             Eq,
             PartialOrd,
             Ord,
-            Default
+            Default,
         )]
         pub struct $name(pub i64);
 

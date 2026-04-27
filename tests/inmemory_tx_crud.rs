@@ -1,9 +1,9 @@
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
 use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 
-use grm_rs::{GraphTx, InMemoryBackend, Result, GraphBackend};
+use grm_rs::{GraphBackend, GraphTx, InMemoryBackend, Result};
 
 #[tokio::test]
 async fn in_memory_backend_create_and_match_node() {
@@ -39,11 +39,16 @@ async fn tx_incoming_returns_from_node_for_matching_type() -> Result<()> {
 
     let (a_id, b_id, rel_type) = {
         let mut tx = backend.begin_tx().await?;
-        let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
-        let b = tx.create_node(vec!["B".to_string()], Default::default()).await?;
+        let a = tx
+            .create_node(vec!["A".to_string()], Default::default())
+            .await?;
+        let b = tx
+            .create_node(vec!["B".to_string()], Default::default())
+            .await?;
         let rel_type = "R";
 
-        tx.create_relationship(a.id, b.id, rel_type, Default::default()).await?;
+        tx.create_relationship(a.id, b.id, rel_type, Default::default())
+            .await?;
         tx.commit().await?;
         (a.id, b.id, rel_type)
     };
@@ -70,13 +75,21 @@ async fn tx_both_returns_neighbors_from_outgoing_and_incoming() -> Result<()> {
     let (a_id, b_id, c_id, rel_type) = {
         let mut tx = backend.begin_tx().await?;
 
-        let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
-        let b = tx.create_node(vec!["B".to_string()], Default::default()).await?;
-        let c = tx.create_node(vec!["C".to_string()], Default::default()).await?;
+        let a = tx
+            .create_node(vec!["A".to_string()], Default::default())
+            .await?;
+        let b = tx
+            .create_node(vec!["B".to_string()], Default::default())
+            .await?;
+        let c = tx
+            .create_node(vec!["C".to_string()], Default::default())
+            .await?;
 
         let rel_type = "R";
-        tx.create_relationship(c.id, a.id, rel_type, Default::default()).await?;
-        tx.create_relationship(a.id, b.id, rel_type, Default::default()).await?;
+        tx.create_relationship(c.id, a.id, rel_type, Default::default())
+            .await?;
+        tx.create_relationship(a.id, b.id, rel_type, Default::default())
+            .await?;
 
         tx.commit().await?;
         (a.id, b.id, c.id, rel_type)

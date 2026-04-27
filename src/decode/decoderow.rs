@@ -1,5 +1,7 @@
 use crate::{
-    GraphQuery, GrmError, NodeModel, dsl::{KernelValue, QueryRow, VarId}, error::Result
+    GraphQuery, GrmError, NodeModel,
+    dsl::{KernelValue, QueryRow, VarId},
+    error::Result,
 };
 
 /// Decode a typed value from a single kernel `QueryRow`.
@@ -43,4 +45,3 @@ impl<M: NodeModel> DecodeFromRowAt for M {
         M::from_properties(node.id.into(), node.props.clone())
     }
 }
-

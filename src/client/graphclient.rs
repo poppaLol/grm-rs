@@ -1,10 +1,10 @@
 use crate::{
     DecodeFromRow, GraphBackend, GraphTx, RelModel,
+    backend::GraphPersistence,
     decode::decode_rel_from_row,
     dsl::{GraphQuery, Query, QueryResult, Return},
     error::{GrmError, Result},
     model::NodeModel,
-    backend::GraphPersistence,
 };
 
 // Returned by `Transaction::execute` so callers can inspect kernel IR + raw kernel rows.

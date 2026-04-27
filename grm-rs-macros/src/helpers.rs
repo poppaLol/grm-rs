@@ -1,7 +1,7 @@
-use syn::Field;
-use quote::{quote, format_ident};
-use syn::DeriveInput;
 use proc_macro2::TokenStream as TokenStream2;
+use quote::{format_ident, quote};
+use syn::DeriveInput;
+use syn::Field;
 
 /// Is this field the GRM "ID field"?
 ///

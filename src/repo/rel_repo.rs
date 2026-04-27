@@ -185,7 +185,12 @@ where
         for (stored_rel, stored_node) in pairs {
             // Decode relationship model
             let rel_id: R::Id = stored_rel.id.into();
-            let rel_model = R::from_parts(rel_id, stored_rel.from.into(), stored_rel.to.into(), stored_rel.props)?;
+            let rel_model = R::from_parts(
+                rel_id,
+                stored_rel.from.into(),
+                stored_rel.to.into(),
+                stored_rel.props,
+            )?;
 
             // Enforce node labels match R::From (because we're decoding R::From from stored_node)
             if !labels_match::<R::From>(&stored_node) {

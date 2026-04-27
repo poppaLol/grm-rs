@@ -1,16 +1,16 @@
-mod inmemory;
 mod graph;
+mod graphpersistence;
+mod graphstore;
+mod inmemory;
+mod persisted;
 mod storednode;
 mod storedrel;
-mod graphstore;
-mod persisted;
-mod graphpersistence;
 
+pub use graph::*;
+pub use graphpersistence::GraphPersistence;
+pub use graphstore::GraphStore;
 pub use inmemory::InMemoryBackend;
+pub(crate) use persisted::BinaryPersistedGraphStore;
+pub use persisted::PersistedGraphStore;
 pub use storednode::StoredNode;
 pub use storedrel::StoredRel;
-pub use graphstore::GraphStore;
-pub use persisted::PersistedGraphStore;
-pub(crate) use persisted::BinaryPersistedGraphStore;
-pub use graphpersistence::GraphPersistence;
-pub use graph::*;

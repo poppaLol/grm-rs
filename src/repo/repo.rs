@@ -46,4 +46,3 @@ impl<'a, T: GraphTx + Send> Repo<'a, T> {
         RelRepositoryTx::new(self.tx)
     }
 }
-

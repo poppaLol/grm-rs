@@ -18,13 +18,19 @@ pub struct PickRel<R> {
 
 impl<M> PickNode<M> {
     pub fn new(var: VarId) -> Self {
-        Self { var, _pd: PhantomData }
+        Self {
+            var,
+            _pd: PhantomData,
+        }
     }
 }
 
 impl<R> PickRel<R> {
     pub fn new(var: VarId) -> Self {
-        Self { var, _pd: PhantomData }
+        Self {
+            var,
+            _pd: PhantomData,
+        }
     }
 }
 
@@ -73,7 +79,12 @@ impl<R: RelModel> ResultShape for PickRel<R> {
             _ => return Err(GrmError::Backend("expected rel at var".into())),
         };
 
-        R::from_parts(relv.id.into(), relv.from.into(), relv.to.into(), relv.props.clone())
+        R::from_parts(
+            relv.id.into(),
+            relv.from.into(),
+            relv.to.into(),
+            relv.props.clone(),
+        )
     }
 }
 

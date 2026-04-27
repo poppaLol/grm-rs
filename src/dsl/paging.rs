@@ -1,4 +1,3 @@
-
 pub fn apply_paging<T>(mut items: Vec<T>, offset: Option<usize>, limit: Option<usize>) -> Vec<T> {
     let start = offset.unwrap_or(0);
     if start >= items.len() {

@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::fsutil::{backup_path, write_file_atomically_with_backup};
 
 // Use the public types from the backend module
-use crate::backend::{StoredNode, StoredRel, GraphStore};
+use crate::backend::{GraphStore, StoredNode, StoredRel};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedGraphStore {
@@ -44,9 +44,7 @@ pub(crate) struct BinaryPersistedGraphStore {
     rels: BTreeMap<KernelRelId, BinaryStoredRel>,
 }
 
-fn encode_props(
-    props: &BTreeMap<String, Value>,
-) -> Result<BTreeMap<String, Vec<u8>>> {
+fn encode_props(props: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Vec<u8>>> {
     props
         .iter()
         .map(|(key, value)| {
@@ -57,9 +55,7 @@ fn encode_props(
         .collect()
 }
 
-fn decode_props(
-    props: BTreeMap<String, Vec<u8>>,
-) -> Result<BTreeMap<String, Value>> {
+fn decode_props(props: BTreeMap<String, Vec<u8>>) -> Result<BTreeMap<String, Value>> {
     props
         .into_iter()
         .map(|(key, bytes)| {
@@ -172,8 +168,9 @@ impl GraphStore {
     }
 
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.to_persisted())
-            .map_err(|_| crate::error::GrmError::SaveAborted("failed to serialize graph as JSON"))?;
+        let json = serde_json::to_string_pretty(&self.to_persisted()).map_err(|_| {
+            crate::error::GrmError::SaveAborted("failed to serialize graph as JSON")
+        })?;
         write_file_atomically_with_backup(path, json.as_bytes())
             .map_err(|_| crate::error::GrmError::SaveAborted("failed to write JSON graph file"))?;
         Ok(())
@@ -199,10 +196,12 @@ impl GraphStore {
     }
 
     pub fn save_to_binary_file(&self, path: impl AsRef<Path>) -> Result<()> {
-        let bytes = bincode::serialize(&self.to_binary_persisted()?)
-            .map_err(|_| crate::error::GrmError::SaveAborted("failed to serialize graph as binary"))?;
-        write_file_atomically_with_backup(path, &bytes)
-            .map_err(|_| crate::error::GrmError::SaveAborted("failed to write binary graph file"))?;
+        let bytes = bincode::serialize(&self.to_binary_persisted()?).map_err(|_| {
+            crate::error::GrmError::SaveAborted("failed to serialize graph as binary")
+        })?;
+        write_file_atomically_with_backup(path, &bytes).map_err(|_| {
+            crate::error::GrmError::SaveAborted("failed to write binary graph file")
+        })?;
         Ok(())
     }
 
@@ -217,8 +216,12 @@ impl GraphStore {
                 let bytes = fs::read(backup).map_err(|_| {
                     crate::error::GrmError::LoadAborted("failed to deserialize binary graph file")
                 })?;
-                let persisted: BinaryPersistedGraphStore = bincode::deserialize(&bytes)
-                    .map_err(|_| crate::error::GrmError::LoadAborted("failed to deserialize binary graph file"))?;
+                let persisted: BinaryPersistedGraphStore =
+                    bincode::deserialize(&bytes).map_err(|_| {
+                        crate::error::GrmError::LoadAborted(
+                            "failed to deserialize binary graph file",
+                        )
+                    })?;
                 Self::from_binary_persisted(persisted)
             }
         }

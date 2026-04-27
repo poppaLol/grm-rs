@@ -5,5 +5,5 @@ use serde::{Deserialize, Serialize};
 pub struct StoredNode {
     pub id: i64,
     pub labels: Vec<String>,
-    pub props: Props
+    pub props: Props,
 }

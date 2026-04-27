@@ -1,22 +1,25 @@
 mod common;
 
-use grm_rs::{GraphBackend, GraphTx, NodeModel, RelModel, Result};
+use grm_rs::InMemoryBackend;
 use grm_rs::dsl::{NodePattern, Query};
 use grm_rs::repo::NodeRepository;
-use grm_rs::InMemoryBackend;
+use grm_rs::{GraphBackend, GraphTx, NodeModel, RelModel, Result};
 
-use crate::common::{A, C, AC, AId};
+use crate::common::{A, AC, AId, C};
 
 #[tokio::test]
 async fn repo_query_return_end_returns_end_nodes_not_root() -> Result<()> {
-
     let backend = InMemoryBackend::new();
 
     // ---- Arrange: create (A)-[:AB]->(B) ----
     let (a_id, c_id): (i64, i64) = {
         let mut tx = backend.begin_tx().await?;
-        let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
-        let c = tx.create_node(vec!["C".to_string()], Default::default()).await?;
+        let a = tx
+            .create_node(vec!["A".to_string()], Default::default())
+            .await?;
+        let c = tx
+            .create_node(vec!["C".to_string()], Default::default())
+            .await?;
         tx.create_relationship(a.id, c.id, AC::TYPE, Default::default())
             .await?;
         tx.commit().await?;
@@ -28,7 +31,7 @@ async fn repo_query_return_end_returns_end_nodes_not_root() -> Result<()> {
         NodePattern::<A>::new()
             .with_id(AId(a_id))
             .out::<AC>()
-            .to::<C>()
+            .to::<C>(),
     )
     .return_end();
 
@@ -43,4 +46,3 @@ async fn repo_query_return_end_returns_end_nodes_not_root() -> Result<()> {
 
     Ok(())
 }
-

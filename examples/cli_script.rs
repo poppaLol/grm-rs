@@ -17,8 +17,8 @@ async fn main() -> grm_rs::Result<()> {
     session.run_script().await?;
 
     let (_, _, output) = session.into_parts();
-    let output = String::from_utf8(output)
-        .map_err(|err| grm_rs::GrmError::Backend(err.to_string()))?;
+    let output =
+        String::from_utf8(output).map_err(|err| grm_rs::GrmError::Backend(err.to_string()))?;
 
     println!("Ran examples/session_setup.grm");
     println!("{output}");
