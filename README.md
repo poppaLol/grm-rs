@@ -81,6 +81,7 @@ From there you can:
 * import a machine-friendly graph interchange document into a new empty session with `session.import --json test-dbs/<name>.export.json`
 * export a machine-friendly graph interchange document with `session.export --json test-dbs/<name>.export.json`
 * keep a working session durable with `session.autocommit --json test-dbs/<name>.json` or `session.autocommit --bin test-dbs/<name>.bin`
+* checkpoint the current autocommit target and clear its replay log with `session.compact`
 
 For current limitations and planned next steps, see [docs/cli-roadmap.md](docs/cli-roadmap.md).
 
@@ -187,6 +188,7 @@ session.load --json test-dbs/<name>.json
 session.load --bin test-dbs/<name>.bin
 session.import --json test-dbs/<name>.export.json
 session.export --json test-dbs/<name>.export.json
+session.compact
 session.autocommit --json test-dbs/<name>.json
 session.autocommit --bin test-dbs/<name>.bin
 session.autocommit status
@@ -199,10 +201,11 @@ session.exit
 * runtime models and links are persisted with session save/load files
 * `session.import --json` currently requires an empty session and raises an error if schema or graph data already exists
 * `session.export --json` writes an interchange v1 draft document; see [docs/import-export.md](docs/import-export.md)
+* `session.compact` requires autocommit to be enabled and rewrites the target snapshot so the replay log can be cleared
 * for local scratch databases and session files, prefer keeping them under `test-dbs/` so the repo root stays tidy
 * model and relationship IDs are backend-assigned; the CLI asks for the user-facing ID field name and uses the backend-reported ID type
 * the current in-memory backend reports `int` IDs
-* `session.autocommit` writes the whole session after each successful change, including model/link definitions, data mutations, and `session.load`
+* `session.autocommit` keeps a durable snapshot plus replay log for successful model/link definitions, data mutations, and `session.load`
 
 ---
 

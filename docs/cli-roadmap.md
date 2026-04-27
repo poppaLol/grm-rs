@@ -13,6 +13,7 @@ The `grm session` CLI already supports a useful local workflow:
   - `session.load --json|--bin`
   - `session.import --json`
   - `session.export --json`
+  - `session.compact`
   - `session.autocommit --json|--bin`
 - script bootstrap into an interactive session
 - session persistence that restores both graph data and runtime schema
@@ -43,7 +44,8 @@ This means a user can now:
 
 The current CLI is useful, but there are several major limitations:
 
-- autocommit rewrites the whole session file on each successful change
+- autocommit appends change-log entries and checkpoints them into the session file
+- `session.compact` manually checkpoints the current autocommit target and clears the replay log
 - persistence is snapshot-based only
 - runtime schema is primarily a CLI-layer concept, not yet a deeper core abstraction
 - backend identity is only partially abstracted and still effectively `i64`-centric

@@ -147,6 +147,13 @@ fn parser_builds_session_import_command() {
 }
 
 #[test]
+fn parser_builds_session_compact_command() {
+    let command = parse_command_line("session.compact").unwrap();
+
+    assert_eq!(command, SessionCommand::SessionCompact);
+}
+
+#[test]
 fn parser_preserves_traversal_terms_in_node_find() {
     let command = parse_command_line(
         r#"node.find User name="Alice Jones" via=out:Authored:Post end.title~"Hello" return=edge"#,
