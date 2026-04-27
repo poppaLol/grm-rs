@@ -2,15 +2,12 @@ use log::trace;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use super::returnplan::{stored_node_to_kernel, stored_rel_to_kernel, ReturnPlan};
-use crate::backend::{BackendIdType, BackendIdentity, GraphStore, GraphTx, StoredNode, StoredRel};
-use crate::dsl::{
-    Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult,
-    VarId,
-};
-use crate::dsl::numeric_cmp;
-use crate::error::{GrmError, Result};
+use super::returnplan::{ReturnPlan, stored_node_to_kernel, stored_rel_to_kernel};
 use crate::backend::GraphPersistence;
+use crate::backend::{BackendIdType, BackendIdentity, GraphStore, GraphTx, StoredNode, StoredRel};
+use crate::dsl::numeric_cmp;
+use crate::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, QueryResult, VarId};
+use crate::error::{GrmError, Result};
 use crate::{CompareOp, PropertyFilter, QueryRow, ReturnKind};
 
 fn labels_match(node_labels: &[String], required: &'static [&'static str]) -> bool {
@@ -63,23 +60,23 @@ fn select_bindings_for_return(q: &GraphQuery, bindings: Vec<Binding>) -> Vec<Bin
 
     // Functional deduplication using fold - collects unique bindings
     // State: (HashSet<i64>, Vec<Binding>)
-    let (_ids, unique_bindings) = bindings.into_iter().fold(
-        (HashSet::new(), Vec::new()),
-        |(mut seen, mut out), b| {
-            let id_opt = match ret_kind {
-                ReturnKind::Node => b.nodes.get(&ret_var).copied(),
-                ReturnKind::Rel => b.rels.get(&ret_var).copied(),
-            };
+    let (_ids, unique_bindings) =
+        bindings
+            .into_iter()
+            .fold((HashSet::new(), Vec::new()), |(mut seen, mut out), b| {
+                let id_opt = match ret_kind {
+                    ReturnKind::Node => b.nodes.get(&ret_var).copied(),
+                    ReturnKind::Rel => b.rels.get(&ret_var).copied(),
+                };
 
-            if let Some(id) = id_opt {
-                if seen.insert(id) {
-                    out.push(b);
+                if let Some(id) = id_opt {
+                    if seen.insert(id) {
+                        out.push(b);
+                    }
                 }
-            }
 
-            (seen, out)
-        },
-    );
+                (seen, out)
+            });
 
     // Apply paging to rows/bindings (stateful operations)
     let off = q.offset.unwrap_or(0);
@@ -177,10 +174,7 @@ impl ExecCtx {
             }
         }
 
-        Ok(Self {
-            root_nm,
-            hops,
-        })
+        Ok(Self { root_nm, hops })
     }
 }
 
@@ -197,23 +191,11 @@ impl InMemoryBackend {
     }
 
     pub fn snapshot_nodes(&self) -> Vec<StoredNode> {
-        self.store
-            .lock()
-            .unwrap()
-            .nodes
-            .values()
-            .cloned()
-            .collect()
+        self.store.lock().unwrap().nodes.values().cloned().collect()
     }
 
     pub fn snapshot_relationships(&self) -> Vec<StoredRel> {
-        self.store
-            .lock()
-            .unwrap()
-            .rels
-            .values()
-            .cloned()
-            .collect()
+        self.store.lock().unwrap().rels.values().cloned().collect()
     }
 
     pub fn snapshot_store(&self) -> GraphStore {

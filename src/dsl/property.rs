@@ -77,10 +77,10 @@ impl<N, T> Property<N, T> {
     where
         V: Into<Value>,
     {
-            PropertyFilter {
-                key: self.key,
-                op: CompareOp::Lt,
-                value: v.into(),
-            }
+        PropertyFilter {
+            key: self.key,
+            op: CompareOp::Lt,
+            value: v.into(),
+        }
     }
 }

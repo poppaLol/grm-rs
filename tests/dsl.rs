@@ -625,7 +625,7 @@ mod tests {
                 .to::<Post>(),
         )
         .return_rel();
-        
+
         // need to query this from the user repo for now, but will
         // prefer arbitrary node or rel repo in future
         let exec = u_repo.execute(q).await?;

@@ -6,8 +6,8 @@ use std::fmt::Binary;
  * e.g. UserId / User. Additionally you should be able to see properties for the fields e.g. name_prop being
  * the reference for name property "title"
  */
-use serde::{Deserialize, Serialize};
 use grm_rs::{NodeModel, RelModel, typed_id};
+use serde::{Deserialize, Serialize};
 
 typed_id!(UserId);
 typed_id!(PostId);
@@ -68,7 +68,7 @@ pub struct B {
 pub struct C {
     #[grm(id)]
     #[serde(skip)]
-    id: CId
+    id: CId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, RelModel)]

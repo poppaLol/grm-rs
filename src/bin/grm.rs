@@ -24,7 +24,8 @@ async fn main() {
                         }
                     };
                     let reader = BufReader::new(file);
-                    let mut session = CliSession::new_with_color(reader, writer, should_enable_color());
+                    let mut session =
+                        CliSession::new_with_color(reader, writer, should_enable_color());
                     if let Err(err) = session.run_script().await {
                         eprintln!("{err}");
                         std::process::exit(1);
@@ -33,8 +34,12 @@ async fn main() {
                     let (state, _, writer) = session.into_parts();
                     let stdin = io::stdin();
                     let reader = BufReader::new(stdin.lock());
-                    let mut session =
-                        CliSession::with_state_and_color(state, reader, writer, should_enable_color());
+                    let mut session = CliSession::with_state_and_color(
+                        state,
+                        reader,
+                        writer,
+                        should_enable_color(),
+                    );
                     if let Err(err) = session.continue_interactive().await {
                         eprintln!("{err}");
                         std::process::exit(1);
@@ -43,7 +48,8 @@ async fn main() {
                 (None, None) => {
                     let stdin = io::stdin();
                     let reader = BufReader::new(stdin.lock());
-                    let mut session = CliSession::new_with_color(reader, writer, should_enable_color());
+                    let mut session =
+                        CliSession::new_with_color(reader, writer, should_enable_color());
                     if let Err(err) = session.run().await {
                         eprintln!("{err}");
                         std::process::exit(1);

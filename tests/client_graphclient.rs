@@ -1,8 +1,8 @@
 mod common;
 use crate::common::*;
 
-use std::collections::BTreeMap;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use grm_rs::{GraphClient, GraphTx, InMemoryBackend, NodePattern, Query};
 
@@ -22,9 +22,8 @@ async fn in_memory_backend_create_and_find_by_name_with_client() {
         .await
         .expect("create_node failed");
 
-    let q = Query::<User>::matching(
-        NodePattern::<User>::new().filter(User::name_prop().eq("Alice")),
-    );
+    let q =
+        Query::<User>::matching(NodePattern::<User>::new().filter(User::name_prop().eq("Alice")));
 
     let exec = tx.execute(q).await.expect("execute_graph failed");
     assert_eq!(exec.qr.rows.len(), 1);
@@ -39,7 +38,6 @@ async fn in_memory_backend_create_and_find_by_name_with_client() {
 
     tx.commit().await.expect("commit failed");
 }
-
 
 #[tokio::test]
 async fn tx_query_rel_returns_typed_authored() {
@@ -74,12 +72,8 @@ async fn tx_query_rel_returns_typed_authored() {
         .expect("create relationship failed");
 
     // 3) Query: (User)-[:AUTHORED]->(Post) and return the relationship
-    let q = Query::<User>::matching(
-        NodePattern::<User>::new()
-            .out::<Authored>()
-            .to::<Post>(),
-    )
-    .return_rel();
+    let q = Query::<User>::matching(NodePattern::<User>::new().out::<Authored>().to::<Post>())
+        .return_rel();
 
     let rels: Vec<Authored> = tx.query_rel(q).await.expect("query_rel failed");
     assert_eq!(rels.len(), 1);

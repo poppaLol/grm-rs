@@ -22,17 +22,11 @@ impl BackendIdType {
 
 #[async_trait]
 pub trait GraphTx {
-    async fn execute_query(
-        &mut self,
-        _query: &str,
-        _params: Value
-    ) -> Result<QueryResult> {
+    async fn execute_query(&mut self, _query: &str, _params: Value) -> Result<QueryResult> {
         Err(GrmError::NotSupported("execute_query"))
     }
 
-    async fn execute_graph(
-        &mut self, _q: &GraphQuery
-    ) -> Result<QueryResult>;
+    async fn execute_graph(&mut self, _q: &GraphQuery) -> Result<QueryResult>;
 
     async fn create_node(
         &mut self,

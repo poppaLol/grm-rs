@@ -16,7 +16,12 @@ pub fn decode_rel_from_row<R: RelModel>(gq: &GraphQuery, row: &QueryRow) -> Resu
         _ => return Err(GrmError::Backend("expected rel return value".into())),
     };
 
-    R::from_parts(rel.id.into(), rel.from.into(), rel.to.into(), rel.props.clone())
+    R::from_parts(
+        rel.id.into(),
+        rel.from.into(),
+        rel.to.into(),
+        rel.props.clone(),
+    )
 }
 
 #[allow(dead_code)]

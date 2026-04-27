@@ -1,7 +1,7 @@
 mod common;
 
-use std::collections::BTreeMap;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use grm_rs::{GraphBackend, GraphTx, InMemoryBackend};
 

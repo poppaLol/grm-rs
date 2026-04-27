@@ -1,13 +1,15 @@
 /**
  * The contract - or the Golden Rules for backend implementation
- * 1) `execute_graph(&GraphQuery)` returns a `QueryResult` containing rows (entities and edges more 
+ * 1) `execute_graph(&GraphQuery)` returns a `QueryResult` containing rows (entities and edges more
  *    to be more specific).
  * 2) Each row is a mapping VarId -> KernelValue for all bound vars in the query
  * 3) The row must contain KernelValue for gq.return_var() whose variant matches gq.return_kind().
  */
 mod common;
 use crate::common::*;
-use grm_rs::{GraphClient, InMemoryBackend, KernelValue, NodePattern, Query, Result, ReturnKind, NodeModel};
+use grm_rs::{
+    GraphClient, InMemoryBackend, KernelValue, NodeModel, NodePattern, Query, Result, ReturnKind,
+};
 
 #[tokio::test]
 async fn execute_graph_rows_contain_bound_vars_and_correct_return_kind() -> Result<()> {
@@ -19,8 +21,15 @@ async fn execute_graph_rows_contain_bound_vars_and_correct_return_kind() -> Resu
     {
         let mut repo = tx.repo();
 
-        let mut user = User { name: "alice".into(), age: 30, id: UserId::default() };
-        let mut post = Post { title: "hello".into(), id: PostId::default() };
+        let mut user = User {
+            name: "alice".into(),
+            age: 30,
+            id: UserId::default(),
+        };
+        let mut post = Post {
+            title: "hello".into(),
+            id: PostId::default(),
+        };
         repo.nodes::<User>().create(&mut user).await?;
         repo.nodes::<Post>().create(&mut post).await?;
 
@@ -30,16 +39,14 @@ async fn execute_graph_rows_contain_bound_vars_and_correct_return_kind() -> Resu
             from: UserId::default(),
             to: PostId::default(),
         };
-        repo.rels::<Authored>().create_between(user.id(), post.id(), &mut rel).await?;
+        repo.rels::<Authored>()
+            .create_between(user.id(), post.id(), &mut rel)
+            .await?;
     }
 
     // Query returns the rel
-    let q = Query::<User>::matching(
-        NodePattern::<User>::new()
-            .out::<Authored>()
-            .to::<Post>(),
-    )
-    .return_rel();
+    let q = Query::<User>::matching(NodePattern::<User>::new().out::<Authored>().to::<Post>())
+        .return_rel();
 
     let exec = tx.execute(q).await?;
 
@@ -59,7 +66,7 @@ async fn execute_graph_rows_contain_bound_vars_and_correct_return_kind() -> Resu
 
         match ret_kind {
             ReturnKind::Node => assert!(matches!(row.get(&ret_var), Some(KernelValue::Node(_)))),
-            ReturnKind::Rel  => assert!(matches!(row.get(&ret_var), Some(KernelValue::Rel(_)))),
+            ReturnKind::Rel => assert!(matches!(row.get(&ret_var), Some(KernelValue::Rel(_)))),
         }
     }
 

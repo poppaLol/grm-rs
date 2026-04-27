@@ -1,7 +1,7 @@
+use crate::dsl::Props;
 use crate::error::GrmError;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use crate::dsl::Props;
 
 /// Trait for graph node models (e.g. User, Post).
 pub trait NodeModel: Sized {

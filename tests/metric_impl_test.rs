@@ -4,7 +4,11 @@
  * shows how the library can be used to acheive this.
  */
 use grm_rs::{
-    GraphClient, InMemoryBackend, KernelValue, NodeModel, NodePattern, Query, RelModel, Result, ReturnKind, decode::{ResultShape, node, rel}, dsl::NodeValue, typed_id
+    GraphClient, InMemoryBackend, KernelValue, NodeModel, NodePattern, Query, RelModel, Result,
+    ReturnKind,
+    decode::{ResultShape, node, rel},
+    dsl::NodeValue,
+    typed_id,
 };
 use serde::{Deserialize, Serialize};
 
@@ -44,11 +48,8 @@ pub struct Contains {
 }
 
 pub fn nodevalue_labels_match<M: NodeModel>(n: &NodeValue) -> bool {
-    M::LABELS
-        .iter()
-        .all(|l| n.labels.iter().any(|nl| nl == l))
+    M::LABELS.iter().all(|l| n.labels.iter().any(|nl| nl == l))
 }
-
 
 #[tokio::test]
 async fn test_document_schema_construction() -> Result<()> {
@@ -123,7 +124,7 @@ async fn test_document_schema_construction() -> Result<()> {
 
     // Find the var ids by inspecting the row
     let mut paragraph_var = None;
-    let mut contains_var= None;
+    let mut contains_var = None;
     let mut metric_var = None;
 
     for v in row.keys().copied() {
@@ -147,7 +148,6 @@ async fn test_document_schema_construction() -> Result<()> {
     let paragraph_var = paragraph_var.expect("Paragraph var not found in row");
     let contains_var = contains_var.expect("Contains var not found in row");
     let metric_var = metric_var.expect("Metric var not found in row");
-
 
     // Now decode the shaped tuple
     let shape = (

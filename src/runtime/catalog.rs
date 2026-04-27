@@ -318,7 +318,10 @@ pub fn validate_model_name(name: &str) -> Result<()> {
         ));
     }
 
-    if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return Err(GrmError::Constraint(
             "model name must contain only ASCII letters, digits, or underscores".into(),
         ));
@@ -348,7 +351,10 @@ pub fn validate_field_name(name: &str) -> Result<()> {
         ));
     }
 
-    if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return Err(GrmError::Constraint(
             "field name must contain only ASCII letters, digits, or underscores".into(),
         ));

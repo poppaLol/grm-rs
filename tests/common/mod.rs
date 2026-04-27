@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
-mod models;
 mod counting;
+mod models;
 
-pub use models::*;
 pub use counting::*;
+pub use models::*;
