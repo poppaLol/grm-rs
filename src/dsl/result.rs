@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::{GraphQuery, KernelValue, dsl::{Return, VarId, graph::Value}};
+use crate::{
+    GraphQuery, KernelValue,
+    dsl::{Return, VarId, graph::Value},
+};
 
 #[derive(Debug, Clone)]
 pub struct QueryRow {

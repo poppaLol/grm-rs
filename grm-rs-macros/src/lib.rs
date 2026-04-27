@@ -5,7 +5,7 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    parse, parse_macro_input, Data, DeriveInput, Error, Field, Fields, Ident, Lit, Token, Type,
+    Data, DeriveInput, Error, Field, Fields, Ident, Lit, Token, Type, parse, parse_macro_input,
 };
 
 struct ModelField {
@@ -130,7 +130,11 @@ fn parse_rel_model_attrs(input: &DeriveInput) -> Result<(Type, Type, String), Er
     let mut to_ty: Option<Type> = None;
     let mut rel_type: Option<String> = None;
 
-    for attr in input.attrs.iter().filter(|attr| attr.path().is_ident("grm")) {
+    for attr in input
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("grm"))
+    {
         let (from, to, ty) = attr.parse_args_with(|meta: parse::ParseStream| {
             let mut from_val = None;
             let mut to_val = None;
@@ -186,10 +190,7 @@ fn parse_rel_model_attrs(input: &DeriveInput) -> Result<(Type, Type, String), Er
 
     Ok((
         from_ty.ok_or_else(|| {
-            Error::new_spanned(
-                struct_ident,
-                "RelModel requires #[grm(from = \"Type\")]",
-            )
+            Error::new_spanned(struct_ident, "RelModel requires #[grm(from = \"Type\")]")
         })?,
         to_ty.ok_or_else(|| {
             Error::new_spanned(struct_ident, "RelModel requires #[grm(to = \"Type\")]")

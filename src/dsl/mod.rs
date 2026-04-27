@@ -1,22 +1,22 @@
-mod query;
 mod compare;
-mod property;
-mod nodepattern;
-mod graph;
 mod eval;
-mod paging;
-mod result;
+mod graph;
 mod kernel;
+mod nodepattern;
+mod paging;
+mod property;
+mod query;
+mod result;
 
-pub use query::{Query, QueryKind};
 pub use compare::CompareOp;
-pub use property::{Property, PropertyFilter};
-pub use nodepattern::NodePattern;
-pub use graph::{Direction, GraphQuery, MatchClause, Return, VarId,
-    HopMatch, NodeMatch, VarGen, Value as KernelValue, NodeValue, RelValue,
-    ReturnKind
-};
 pub use eval::{numeric_cmp, props_match_filters};
-pub use paging::apply_paging;
-pub use result::{QueryResult,QueryRow};
+pub use graph::{
+    Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, NodeValue, RelValue, Return,
+    ReturnKind, Value as KernelValue, VarGen, VarId,
+};
 pub use kernel::{KernelNodeId, KernelRelId, Props};
+pub use nodepattern::NodePattern;
+pub use paging::apply_paging;
+pub use property::{Property, PropertyFilter};
+pub use query::{Query, QueryKind};
+pub use result::{QueryResult, QueryRow};

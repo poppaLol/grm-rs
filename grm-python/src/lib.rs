@@ -61,7 +61,9 @@ impl PySession {
 
     #[getter]
     fn autocommit_format(&self) -> Option<&'static str> {
-        self.autocommit.as_ref().map(|target| target.format.keyword())
+        self.autocommit
+            .as_ref()
+            .map(|target| target.format.keyword())
     }
 
     fn node_id_type(&self) -> &'static str {
@@ -163,7 +165,11 @@ impl PySession {
     ) -> PyResult<PyObject> {
         let id = python_value_to_string(node_id)?;
         let raw_values = extract_string_map(values)?;
-        let node = block_on(py, self.state.update_node_instance(model_name, &id, &raw_values))?;
+        let node = block_on(
+            py,
+            self.state
+                .update_node_instance(model_name, &id, &raw_values),
+        )?;
         self.persist_autocommit().map_err(grm_err)?;
         stored_node_to_py(py, &node)
     }
@@ -187,7 +193,10 @@ impl PySession {
         filters: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
         let raw_filters = extract_string_map(filters)?;
-        let nodes = self.state.find_nodes(model_name, &raw_filters).map_err(grm_err)?;
+        let nodes = self
+            .state
+            .find_nodes(model_name, &raw_filters)
+            .map_err(grm_err)?;
         let items = PyList::empty_bound(py);
         for node in nodes {
             items.append(stored_node_to_py(py, &node)?)?;
@@ -384,18 +393,18 @@ fn required_string(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<String> {
     let value = dict
         .get_item(key)?
         .ok_or_else(|| PyTypeError::new_err(format!("missing required key '{key}'")))?;
-    value.extract::<String>().map_err(|_| {
-        PyTypeError::new_err(format!("field '{key}' must be a string"))
-    })
+    value
+        .extract::<String>()
+        .map_err(|_| PyTypeError::new_err(format!("field '{key}' must be a string")))
 }
 
 fn required_bool(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<bool> {
     let value = dict
         .get_item(key)?
         .ok_or_else(|| PyTypeError::new_err(format!("missing required key '{key}'")))?;
-    value.extract::<bool>().map_err(|_| {
-        PyTypeError::new_err(format!("field '{key}' must be a bool"))
-    })
+    value
+        .extract::<bool>()
+        .map_err(|_| PyTypeError::new_err(format!("field '{key}' must be a bool")))
 }
 
 fn extract_string_map(input: Option<&Bound<'_, PyDict>>) -> PyResult<BTreeMap<String, String>> {

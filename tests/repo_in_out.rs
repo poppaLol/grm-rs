@@ -5,12 +5,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use common::{A, AB, B, AId, CountingBackend};
+use common::{A, AB, AId, B, CountingBackend};
 use grm_rs::{
     GraphBackend, GraphTx, InMemoryBackend, NodePattern, NodeRepository, Query, RelModel,
     RelRepository, Result,
 };
-
 
 /// ---- Counting backend wrapper ----
 /// Counts how many times `commit()` gets called on the tx returned by `begin_tx()`.
@@ -92,7 +91,7 @@ async fn outgoing_from_commits_when_relationship_decode_succeeds() -> Result<()>
 #[tokio::test]
 async fn query_return_end_does_not_commit_if_end_node_decode_fails() -> Result<()> {
     // TODO - this test calls execute - so even tho it is a read we increment the commit count
-    // which means we need to differentiate in excute if this mutates or not 
+    // which means we need to differentiate in excute if this mutates or not
     let commits = Arc::new(AtomicUsize::new(0));
     let backend = CountingBackend {
         inner: InMemoryBackend::new(),
@@ -104,12 +103,17 @@ async fn query_return_end_does_not_commit_if_end_node_decode_fails() -> Result<(
         let mut tx = backend.begin_tx().await?;
 
         // A is fine
-        let a = tx.create_node(vec!["A".to_string()], Default::default()).await?;
+        let a = tx
+            .create_node(vec!["A".to_string()], Default::default())
+            .await?;
 
         // B has the correct label, but is missing required properties
-        let b = tx.create_node(vec!["B".to_string()], Default::default()).await?;
+        let b = tx
+            .create_node(vec!["B".to_string()], Default::default())
+            .await?;
 
-        tx.create_relationship(a.id, b.id, AB::TYPE, Default::default()).await?;
+        tx.create_relationship(a.id, b.id, AB::TYPE, Default::default())
+            .await?;
 
         tx.commit().await?;
         a_id = AId(a.id);
@@ -130,10 +134,7 @@ async fn query_return_end_does_not_commit_if_end_node_decode_fails() -> Result<(
 
     // IMPORTANT:
     // This must be a TYPED query method that decodes B before commit.
-    let result = repo
-        .execute(q)
-        .await
-        .expect("expected decode failure");
+    let result = repo.execute(q).await.expect("expected decode failure");
     assert_eq!(result.gq.matches.len(), 3);
 
     Ok(())

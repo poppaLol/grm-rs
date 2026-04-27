@@ -1,8 +1,8 @@
 mod common;
 use crate::common::*;
 
-use std::collections::BTreeMap;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use grm_rs::dsl::{GraphQuery, KernelValue, MatchClause, NodeMatch, Return};
 use grm_rs::{GraphBackend, GraphTx, InMemoryBackend, NodePattern, Query, Result, VarGen};
@@ -38,7 +38,10 @@ async fn in_memory_backend_create_and_match_node_via_graphquery() {
         offset: None,
     };
 
-    let qr = backend.execute_graph(&gq).await.expect("execute_graph failed");
+    let qr = backend
+        .execute_graph(&gq)
+        .await
+        .expect("execute_graph failed");
     assert_eq!(qr.rows.len(), 1);
 
     let node = qr.rows[0].get_returned(&gq).unwrap().as_node().unwrap();
@@ -54,10 +57,15 @@ async fn execute_graph_out_any_matches_any_relationship_type() -> Result<()> {
     {
         let mut tx = backend.begin_tx().await?;
 
-        let u = tx.create_node(vec!["User".to_string()], Default::default()).await?;
-        let p = tx.create_node(vec!["Post".to_string()], Default::default()).await?;
+        let u = tx
+            .create_node(vec!["User".to_string()], Default::default())
+            .await?;
+        let p = tx
+            .create_node(vec!["Post".to_string()], Default::default())
+            .await?;
 
-        tx.create_relationship(u.id, p.id, "LIKED", Default::default()).await?;
+        tx.create_relationship(u.id, p.id, "LIKED", Default::default())
+            .await?;
 
         tx.commit().await?;
         user_id = u.id;

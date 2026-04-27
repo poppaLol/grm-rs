@@ -1,9 +1,10 @@
+use crate::error::Result;
 use crate::{
-    GraphBackend, GraphQuery, GrmError, InMemoryBackend, QueryResult, backend::inmemory::inmemorytx::InMemoryTx
+    GraphBackend, GraphQuery, GrmError, InMemoryBackend, QueryResult,
+    backend::inmemory::inmemorytx::InMemoryTx,
 };
 use async_trait::async_trait;
 use serde_json::Value;
-use crate::error::{Result};
 
 #[async_trait]
 impl GraphBackend for InMemoryBackend {

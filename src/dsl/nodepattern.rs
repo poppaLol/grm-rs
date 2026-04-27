@@ -56,7 +56,7 @@ impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
 impl<N: NodeModel> TraversalBuilderAny<N> {
     pub fn to<M: NodeModel>(mut self) -> NodePattern<N> {
         self.pat.traversals.push(TraversalStep {
-            rel_type: None,                // <-- KEY DIFFERENCE
+            rel_type: None, // <-- KEY DIFFERENCE
             dir: self.dir,
             end_labels: M::LABELS,
             end_filters: vec![],
@@ -80,7 +80,6 @@ impl<N: NodeModel> TraversalBuilderAny<N> {
         self.pat
     }
 }
-
 
 /// A typed representation of a node pattern in a query.
 ///

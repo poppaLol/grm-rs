@@ -42,16 +42,14 @@ impl<N: NodeModel> Query<N> {
                 limit: None,
                 offset: None,
             },
-            return_mode: ReturnMode::Root
+            return_mode: ReturnMode::Root,
         }
     }
 
     /// Set a LIMIT on the query.
     pub fn limit(mut self, n: usize) -> Self {
         match &mut self.kind {
-            QueryKind::MatchNode {
-                limit, ..
-            } => {
+            QueryKind::MatchNode { limit, .. } => {
                 *limit = Some(n);
             }
         }
@@ -61,9 +59,7 @@ impl<N: NodeModel> Query<N> {
     /// Set an OFFSET on the query.
     pub fn offset(mut self, n: usize) -> Self {
         match &mut self.kind {
-            QueryKind::MatchNode {
-                offset, ..
-            } => {
+            QueryKind::MatchNode { offset, .. } => {
                 *offset = Some(n);
             }
         }
@@ -100,7 +96,7 @@ impl<N: NodeModel> Query<N> {
             QueryKind::MatchNode { offset, .. } => *offset,
         }
     }
-    
+
     pub fn return_end(mut self) -> Self {
         self.return_mode = ReturnMode::End;
         self

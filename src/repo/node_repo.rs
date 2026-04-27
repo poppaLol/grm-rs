@@ -2,12 +2,12 @@ use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
-use crate::{DecodeFromRow, autocommit, labels_match};
 use crate::backend::{GraphBackend, GraphTx};
 use crate::client::{QueryExecution, Transaction};
 use crate::dsl::Query;
 use crate::error::Result;
 use crate::model::NodeModel;
+use crate::{DecodeFromRow, autocommit, labels_match};
 
 /// Decode a StoredNode into M.
 fn decode_stored_node<M: NodeModel>(id: i64, props: BTreeMap<String, JsonValue>) -> Result<M> {
@@ -155,11 +155,7 @@ where
     }
 
     pub async fn find_by(&mut self, key: &str, value: &JsonValue) -> Result<Vec<M>> {
-        let stored = self
-            .tx
-            .tx_mut()?
-            .find_nodes_by_property(key, value)
-            .await?;
+        let stored = self.tx.tx_mut()?.find_nodes_by_property(key, value).await?;
 
         let mut out = Vec::with_capacity(stored.len());
         for n in stored {
