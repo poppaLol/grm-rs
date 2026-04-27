@@ -9,4 +9,4 @@ pub use catalog::{
 pub use parser::{
     KeyValueArg, QueryTerm, SessionCommand, parse_command_line, parse_query_terms_from_strs,
 };
-pub use session::{CliSession, SessionState};
+pub use session::{CliSession, SessionCompactSummary, SessionState};
