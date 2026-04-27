@@ -77,6 +77,9 @@ pub enum SessionCommand {
     SessionLoad {
         args: Vec<String>,
     },
+    SessionImport {
+        args: Vec<String>,
+    },
     SessionExport {
         args: Vec<String>,
     },
@@ -154,6 +157,9 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),
         "session.load" => Ok(SessionCommand::SessionLoad {
+            args: args.iter().map(|token| token.text.clone()).collect(),
+        }),
+        "session.import" => Ok(SessionCommand::SessionImport {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),
         "session.export" => Ok(SessionCommand::SessionExport {

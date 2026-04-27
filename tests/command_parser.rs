@@ -135,6 +135,18 @@ fn parser_builds_session_export_command() {
 }
 
 #[test]
+fn parser_builds_session_import_command() {
+    let command = parse_command_line("session.import --json /tmp/grm-export.json").unwrap();
+
+    assert_eq!(
+        command,
+        SessionCommand::SessionImport {
+            args: vec!["--json".into(), "/tmp/grm-export.json".into()],
+        }
+    );
+}
+
+#[test]
 fn parser_preserves_traversal_terms_in_node_find() {
     let command = parse_command_line(
         r#"node.find User name="Alice Jones" via=out:Authored:Post end.title~"Hello" return=edge"#,

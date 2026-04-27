@@ -1308,6 +1308,61 @@ async fn session_export_writes_interchange_json() {
 }
 
 #[tokio::test]
+async fn session_import_loads_interchange_json_into_empty_session() {
+    let json_path = "/tmp/grm-session-import-test.json";
+    let _ = fs::remove_file(json_path);
+
+    let export_input = Cursor::new(format!(
+        "model.define User userId name:string:required age:int:optional\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice age=42\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.export --json {json_path}\nsession.exit\n"
+    ));
+    let mut export_session = CliSession::new(export_input, Vec::new());
+    export_session.run().await.unwrap();
+
+    let import_input = Cursor::new(format!(
+        "session.import --json {json_path}\nmodel.list\nlink.list\nnode.find User name=Alice\nedge.find Authored from=1\nsession.exit\n"
+    ));
+    let mut import_session = CliSession::new(import_input, Vec::new());
+    import_session.run().await.unwrap();
+
+    let (_, _, output) = import_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Imported graph from JSON file"));
+    assert!(output.contains("User [2 fields, label=User]"));
+    assert!(output.contains("Authored [1 fields, User -> Post, type=Authored]"));
+    assert!(output.contains("1 nodes matched model 'User'."));
+    assert!(output.contains("Node User userId=1 {age=42 name=Alice}"));
+    assert!(output.contains("1 edges matched link 'Authored'."));
+    assert!(output.contains("Edge Authored authoredId=1 from=1 to=2 {year=2024}"));
+
+    let _ = fs::remove_file(json_path);
+}
+
+#[tokio::test]
+async fn session_import_requires_empty_session_for_now() {
+    let json_path = "/tmp/grm-session-import-non-empty-test.json";
+    let _ = fs::remove_file(json_path);
+
+    let export_input = Cursor::new(format!(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nsession.export --json {json_path}\nsession.exit\n"
+    ));
+    let mut export_session = CliSession::new(export_input, Vec::new());
+    export_session.run().await.unwrap();
+
+    let import_input = Cursor::new(format!(
+        "model.define User userId name:string:required\nsession.import --json {json_path}\nsession.exit\n"
+    ));
+    let mut import_session = CliSession::new(import_input, Vec::new());
+    import_session.run().await.unwrap();
+
+    let (_, _, output) = import_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("constraint violation: session.import requires an empty session"));
+
+    let _ = fs::remove_file(json_path);
+}
+
+#[tokio::test]
 async fn session_autocommit_persists_changes_until_disabled() {
     let json_path = "/tmp/grm-session-autocommit-test.json";
     let backup_path = "/tmp/grm-session-autocommit-test.json.bak";

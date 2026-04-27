@@ -44,68 +44,68 @@ struct BinaryPersistedSession {
     catalog: SessionModelCatalog,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeDocument {
-    format: &'static str,
+    format: String,
     version: u32,
-    kind: &'static str,
+    kind: String,
     identity: InterchangeIdentity,
     schema: InterchangeSchema,
     data: InterchangeData,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeIdentity {
-    node: &'static str,
-    edge: &'static str,
+    node: String,
+    edge: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeSchema {
     nodes: Vec<InterchangeNodeModel>,
     edges: Vec<InterchangeEdgeModel>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeNodeModel {
     name: String,
     id_field: String,
-    id_type: &'static str,
+    id_type: String,
     fields: Vec<InterchangeField>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeEdgeModel {
     name: String,
     from: String,
     to: String,
     id_field: String,
-    id_type: &'static str,
+    id_type: String,
     fields: Vec<InterchangeField>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeField {
     name: String,
     #[serde(rename = "type")]
-    value_type: &'static str,
+    value_type: String,
     required: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeData {
     nodes: Vec<InterchangeNode>,
     edges: Vec<InterchangeEdge>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeNode {
     id: i64,
     model: String,
     props: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InterchangeEdge {
     id: i64,
     model: String,
@@ -294,7 +294,7 @@ impl SessionState {
                 .map(|model| InterchangeNodeModel {
                     name: model.name.clone(),
                     id_field: model.id_field_name.clone(),
-                    id_type: model.id_type.keyword(),
+                    id_type: model.id_type.keyword().to_string(),
                     fields: interchange_fields(&model.fields),
                 })
                 .collect(),
@@ -305,7 +305,7 @@ impl SessionState {
                     from: model.from_model.clone(),
                     to: model.to_model.clone(),
                     id_field: model.id_field_name.clone(),
-                    id_type: model.id_type.keyword(),
+                    id_type: model.id_type.keyword().to_string(),
                     fields: interchange_fields(&model.fields),
                 })
                 .collect(),
@@ -335,12 +335,12 @@ impl SessionState {
         };
 
         InterchangeDocument {
-            format: "grm.interchange",
+            format: "grm.interchange".to_string(),
             version: 1,
-            kind: "graph",
+            kind: "graph".to_string(),
             identity: InterchangeIdentity {
-                node: self.node_id_type().keyword(),
-                edge: self.rel_id_type().keyword(),
+                node: self.node_id_type().keyword().to_string(),
+                edge: self.rel_id_type().keyword().to_string(),
             },
             schema,
             data,
@@ -373,6 +373,11 @@ impl SessionState {
         self.catalog = persisted.catalog;
     }
 
+    fn is_empty_for_import(&self) -> bool {
+        let store = self.client.backend().snapshot_store();
+        self.catalog.is_empty() && store.nodes.is_empty() && store.rels.is_empty()
+    }
+
     pub fn save_to_json(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let json = serde_json::to_string_pretty(&self.persisted_session()).map_err(|_| {
@@ -393,6 +398,26 @@ impl SessionState {
         })?;
         write_file_atomically(path, json.as_bytes())
             .map_err(|_| crate::error::GrmError::SaveAborted("failed to write JSON export file"))?;
+        Ok(())
+    }
+
+    pub fn import_from_json(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        if !self.is_empty_for_import() {
+            return Err(crate::GrmError::Constraint(
+                "session.import requires an empty session".into(),
+            ));
+        }
+
+        let path = path.as_ref();
+        let json = fs::read_to_string(path)
+            .map_err(|_| crate::error::GrmError::LoadAborted("failed to read JSON import file"))?;
+        let document: InterchangeDocument = serde_json::from_str(&json).map_err(|_| {
+            crate::error::GrmError::LoadAborted("failed to deserialize JSON import file")
+        })?;
+        let (catalog, store) = build_imported_interchange(document)?;
+
+        self.client.backend().replace_store(store);
+        self.catalog = catalog;
         Ok(())
     }
 
@@ -1222,10 +1247,260 @@ fn interchange_fields(fields: &[RuntimeField]) -> Vec<InterchangeField> {
         .iter()
         .map(|field| InterchangeField {
             name: field.name.clone(),
-            value_type: field.value_type.keyword(),
+            value_type: field.value_type.keyword().to_string(),
             required: field.required,
         })
         .collect()
+}
+
+fn build_imported_interchange(
+    document: InterchangeDocument,
+) -> Result<(SessionModelCatalog, GraphStore)> {
+    validate_interchange_header(&document)?;
+
+    let mut catalog = SessionModelCatalog::new();
+    for model in document.schema.nodes {
+        let id_type = parse_interchange_id_type(&model.id_type)?;
+        let fields = interchange_runtime_fields(model.fields)?;
+        catalog.register_node_model(RuntimeNodeModel::new(
+            model.name,
+            model.id_field,
+            id_type,
+            fields,
+        )?)?;
+    }
+
+    for model in document.schema.edges {
+        let id_type = parse_interchange_id_type(&model.id_type)?;
+        let fields = interchange_runtime_fields(model.fields)?;
+        let rel_model = RuntimeRelModel::new(
+            model.name,
+            model.from,
+            model.to,
+            model.id_field,
+            id_type,
+            fields,
+        )?;
+        if catalog.get_node_model(&rel_model.from_model).is_none() {
+            return Err(crate::GrmError::Constraint(format!(
+                "from model '{}' is not defined in import schema",
+                rel_model.from_model
+            )));
+        }
+        if catalog.get_node_model(&rel_model.to_model).is_none() {
+            return Err(crate::GrmError::Constraint(format!(
+                "to model '{}' is not defined in import schema",
+                rel_model.to_model
+            )));
+        }
+        catalog.register_rel_model(rel_model)?;
+    }
+
+    let mut store = GraphStore::default();
+    let mut max_node_id = 0;
+    for node in document.data.nodes {
+        if node.id <= 0 {
+            return Err(crate::GrmError::Constraint(format!(
+                "imported node id '{}' must be positive",
+                node.id
+            )));
+        }
+        let model = catalog.get_node_model(&node.model).ok_or_else(|| {
+            crate::GrmError::Constraint(format!(
+                "node model '{}' is not defined in import schema",
+                node.model
+            ))
+        })?;
+        validate_interchange_props("node", &model.name, &model.fields, &node.props)?;
+        let inserted = store.nodes.insert(
+            node.id,
+            StoredNode {
+                id: node.id,
+                labels: vec![model.label.clone()],
+                props: node.props,
+            },
+        );
+        if inserted.is_some() {
+            return Err(crate::GrmError::Constraint(format!(
+                "import contains duplicate node id '{}'",
+                node.id
+            )));
+        }
+        max_node_id = max_node_id.max(node.id);
+    }
+
+    let mut max_rel_id = 0;
+    for edge in document.data.edges {
+        if edge.id <= 0 {
+            return Err(crate::GrmError::Constraint(format!(
+                "imported edge id '{}' must be positive",
+                edge.id
+            )));
+        }
+        let model = catalog.get_rel_model(&edge.model).ok_or_else(|| {
+            crate::GrmError::Constraint(format!(
+                "edge model '{}' is not defined in import schema",
+                edge.model
+            ))
+        })?;
+        validate_interchange_props("edge", &model.name, &model.fields, &edge.props)?;
+        let from = store.nodes.get(&edge.from).ok_or_else(|| {
+            crate::GrmError::Constraint(format!(
+                "edge '{}' references missing from node '{}'",
+                edge.id, edge.from
+            ))
+        })?;
+        let to = store.nodes.get(&edge.to).ok_or_else(|| {
+            crate::GrmError::Constraint(format!(
+                "edge '{}' references missing to node '{}'",
+                edge.id, edge.to
+            ))
+        })?;
+        if !from.labels.iter().any(|label| label == &model.from_model) {
+            return Err(crate::GrmError::Constraint(format!(
+                "edge '{}' from node '{}' does not match model '{}'",
+                edge.id, edge.from, model.from_model
+            )));
+        }
+        if !to.labels.iter().any(|label| label == &model.to_model) {
+            return Err(crate::GrmError::Constraint(format!(
+                "edge '{}' to node '{}' does not match model '{}'",
+                edge.id, edge.to, model.to_model
+            )));
+        }
+
+        let inserted = store.rels.insert(
+            edge.id,
+            StoredRel {
+                id: edge.id,
+                rel_type: model.rel_type.clone(),
+                from: edge.from,
+                to: edge.to,
+                props: edge.props,
+            },
+        );
+        if inserted.is_some() {
+            return Err(crate::GrmError::Constraint(format!(
+                "import contains duplicate edge id '{}'",
+                edge.id
+            )));
+        }
+        max_rel_id = max_rel_id.max(edge.id);
+    }
+
+    store.next_node_id = max_node_id + 1;
+    store.next_rel_id = max_rel_id + 1;
+
+    Ok((catalog, store))
+}
+
+fn validate_interchange_header(document: &InterchangeDocument) -> Result<()> {
+    if document.format != "grm.interchange" {
+        return Err(crate::GrmError::Constraint(
+            "import file is not a grm.interchange document".into(),
+        ));
+    }
+    if document.version != 1 {
+        return Err(crate::GrmError::Constraint(format!(
+            "unsupported import version '{}'",
+            document.version
+        )));
+    }
+    if document.kind != "graph" {
+        return Err(crate::GrmError::Constraint(format!(
+            "unsupported import kind '{}'",
+            document.kind
+        )));
+    }
+    parse_interchange_id_type(&document.identity.node)?;
+    parse_interchange_id_type(&document.identity.edge)?;
+    Ok(())
+}
+
+fn parse_interchange_id_type(input: &str) -> Result<crate::BackendIdType> {
+    match input {
+        "int" => Ok(crate::BackendIdType::Int64),
+        other => Err(crate::GrmError::Constraint(format!(
+            "unsupported import id type '{}'",
+            other
+        ))),
+    }
+}
+
+fn interchange_runtime_fields(fields: Vec<InterchangeField>) -> Result<Vec<RuntimeField>> {
+    fields
+        .into_iter()
+        .map(|field| {
+            let value_type =
+                RuntimeValueType::parse_keyword(&field.value_type).ok_or_else(|| {
+                    crate::GrmError::Constraint(format!(
+                        "unsupported import field type '{}'",
+                        field.value_type
+                    ))
+                })?;
+            Ok(RuntimeField {
+                name: field.name,
+                value_type,
+                required: field.required,
+            })
+        })
+        .collect()
+}
+
+fn validate_interchange_props(
+    kind: &str,
+    model_name: &str,
+    fields: &[RuntimeField],
+    props: &BTreeMap<String, Value>,
+) -> Result<()> {
+    for key in props.keys() {
+        if !fields.iter().any(|field| field.name == *key) {
+            return Err(crate::GrmError::Constraint(format!(
+                "unknown field '{}' for imported {} model '{}'",
+                key, kind, model_name
+            )));
+        }
+    }
+
+    for field in fields {
+        match props.get(&field.name) {
+            Some(value) => validate_interchange_value_type(kind, model_name, field, value)?,
+            None if field.required => {
+                return Err(crate::GrmError::Constraint(format!(
+                    "missing required field '{}' for imported {} model '{}'",
+                    field.name, kind, model_name
+                )));
+            }
+            None => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_interchange_value_type(
+    kind: &str,
+    model_name: &str,
+    field: &RuntimeField,
+    value: &Value,
+) -> Result<()> {
+    let matches = match field.value_type {
+        RuntimeValueType::String => value.is_string(),
+        RuntimeValueType::Int => value.as_i64().is_some(),
+        RuntimeValueType::Float => value.as_f64().is_some(),
+        RuntimeValueType::Bool => value.is_boolean(),
+    };
+    if matches {
+        return Ok(());
+    }
+
+    Err(crate::GrmError::Constraint(format!(
+        "field '{}' for imported {} model '{}' must be {}",
+        field.name,
+        kind,
+        model_name,
+        field.value_type.keyword()
+    )))
 }
 
 #[derive(Debug, Clone)]
@@ -1444,6 +1719,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 self.handle_session_load(args.as_slice())?
             }
+            SessionCommand::SessionImport { args } => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.handle_session_import(args.as_slice())?
+            }
             SessionCommand::SessionExport { args } => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 self.handle_session_export(args.as_slice())?
@@ -1533,6 +1812,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  session.save --bin <path>")?;
         writeln!(self.writer, "  session.load --json <path>")?;
         writeln!(self.writer, "  session.load --bin <path>")?;
+        writeln!(self.writer, "  session.import --json <path>")?;
         writeln!(self.writer, "  session.export --json <path>")?;
         writeln!(self.writer, "  session.autocommit --json <path>")?;
         writeln!(self.writer, "  session.autocommit --bin <path>")?;
@@ -2121,6 +2401,28 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             _ => {
                 return Err(crate::GrmError::Constraint(
                     "usage: session.export --json <path>".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_session_import(&mut self, args: &[&str]) -> Result<()> {
+        if args.len() != 2 {
+            return Err(crate::GrmError::Constraint(
+                "usage: session.import --json <path>".into(),
+            ));
+        }
+
+        match args[0] {
+            "--json" => {
+                self.state.import_from_json(args[1])?;
+                self.checkpoint_autocommit()?;
+                writeln!(self.writer, "Imported graph from JSON file '{}'.", args[1])?;
+            }
+            _ => {
+                return Err(crate::GrmError::Constraint(
+                    "usage: session.import --json <path>".into(),
                 ));
             }
         }
