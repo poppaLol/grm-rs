@@ -83,6 +83,7 @@ pub enum SessionCommand {
     SessionExport {
         args: Vec<String>,
     },
+    SessionCompact,
     SessionAutocommit {
         args: Vec<String>,
     },
@@ -165,6 +166,12 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
         "session.export" => Ok(SessionCommand::SessionExport {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),
+        "session.compact" => {
+            if !args.is_empty() {
+                return Err(GrmError::Constraint("usage: session.compact".to_string()));
+            }
+            Ok(SessionCommand::SessionCompact)
+        }
         "session.autocommit" => Ok(SessionCommand::SessionAutocommit {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),

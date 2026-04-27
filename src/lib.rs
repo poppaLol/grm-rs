@@ -26,5 +26,5 @@ pub use model::{NodeModel, RelModel};
 pub use repo::{NodeRepository, RelRepository, Repo};
 pub use runtime::{
     CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionModelCatalog, SessionState,
+    SessionCompactSummary, SessionModelCatalog, SessionState,
 };

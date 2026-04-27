@@ -139,6 +139,12 @@ struct AutocommitTarget {
     pending_entries: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCompactSummary {
+    pub format_flag: &'static str,
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone)]
 struct SessionPredicate {
     field: String,
@@ -1567,6 +1573,33 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         (self.state, self.reader, self.writer)
     }
 
+    pub fn enable_autocommit_json(&mut self, path: impl Into<PathBuf>) -> Result<()> {
+        self.enable_autocommit(SessionFileFormat::Json, path.into())
+    }
+
+    pub fn enable_autocommit_binary(&mut self, path: impl Into<PathBuf>) -> Result<()> {
+        self.enable_autocommit(SessionFileFormat::Binary, path.into())
+    }
+
+    pub fn disable_autocommit(&mut self) {
+        self.autocommit = None;
+    }
+
+    pub fn compact_autocommit(&mut self) -> Result<SessionCompactSummary> {
+        if self.autocommit.is_none() {
+            return Err(crate::GrmError::Constraint(
+                "session.compact requires autocommit to be enabled".into(),
+            ));
+        }
+
+        self.checkpoint_autocommit()?;
+        let target = self.autocommit.as_ref().expect("checked above");
+        Ok(SessionCompactSummary {
+            format_flag: target.format.flag(),
+            path: target.path.clone(),
+        })
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         self.run_interactive_loop(
             "Welcome to GRM-RS CLI.\nFresh in-memory graph session started. Type 'session.help' for commands.",
@@ -1727,6 +1760,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 self.handle_session_export(args.as_slice())?
             }
+            SessionCommand::SessionCompact => self.handle_session_compact()?,
             SessionCommand::SessionAutocommit { args } => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 self.handle_session_autocommit(args.as_slice())?
@@ -1814,6 +1848,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  session.load --bin <path>")?;
         writeln!(self.writer, "  session.import --json <path>")?;
         writeln!(self.writer, "  session.export --json <path>")?;
+        writeln!(self.writer, "  session.compact")?;
         writeln!(self.writer, "  session.autocommit --json <path>")?;
         writeln!(self.writer, "  session.autocommit --bin <path>")?;
         writeln!(self.writer, "  session.autocommit status")?;
@@ -2429,6 +2464,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
+    fn handle_session_compact(&mut self) -> Result<()> {
+        let summary = self.compact_autocommit()?;
+        writeln!(
+            self.writer,
+            "Compacted session into {} file '{}'.",
+            summary.format_flag,
+            summary.path.display()
+        )?;
+        Ok(())
+    }
+
     fn handle_session_autocommit(&mut self, args: &[&str]) -> Result<()> {
         match args {
             ["status"] => {
@@ -2444,7 +2490,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 }
             }
             ["off"] => {
-                self.autocommit = None;
+                self.disable_autocommit();
                 writeln!(self.writer, "Autocommit disabled.")?;
             }
             [flag, path] => {
@@ -2453,12 +2499,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                         "usage: session.autocommit --json <path> | session.autocommit --bin <path> | session.autocommit status | session.autocommit off".into(),
                     )
                 })?;
-                self.autocommit = Some(AutocommitTarget {
-                    format,
-                    path: PathBuf::from(path),
-                    pending_entries: 0,
-                });
-                self.checkpoint_autocommit()?;
+                self.enable_autocommit(format, PathBuf::from(path))?;
                 writeln!(
                     self.writer,
                     "Autocommit enabled: {} {}",
@@ -3139,6 +3180,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         })?;
         target.pending_entries = 0;
         Ok(())
+    }
+
+    fn enable_autocommit(&mut self, format: SessionFileFormat, path: PathBuf) -> Result<()> {
+        self.autocommit = Some(AutocommitTarget {
+            format,
+            path,
+            pending_entries: 0,
+        });
+        self.checkpoint_autocommit()
     }
 
     fn persist_autocommit_entry(&mut self, entry: SessionLogEntry) -> Result<()> {

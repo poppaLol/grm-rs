@@ -1719,6 +1719,82 @@ async fn session_autocommit_supports_binary_targets() {
 }
 
 #[tokio::test]
+async fn session_compact_checkpoints_autocommit_log() {
+    let json_path = "/tmp/grm-session-compact-test.json";
+    let backup_path = "/tmp/grm-session-compact-test.json.bak";
+    let log_path = "/tmp/grm-session-compact-test.json.log";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+
+    let input = Cursor::new(format!(
+        "session.compact\nsession.autocommit --json {json_path}\nmodel.define User userId name:string:required\nnode.create User name=Alice\nsession.compact\nnode.create User name=Bob\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    let compacted = fs::read_to_string(json_path).unwrap();
+    let log = fs::read_to_string(log_path).unwrap();
+
+    assert!(
+        output.contains("constraint violation: session.compact requires autocommit to be enabled")
+    );
+    assert!(output.contains(&format!(
+        "Compacted session into --json file '{json_path}'."
+    )));
+    assert!(compacted.contains("Alice"));
+    assert!(!compacted.contains("Bob"));
+    assert!(log.contains("Bob"));
+    assert!(!log.contains("Alice"));
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+}
+
+#[tokio::test]
+async fn session_compact_is_available_from_api() {
+    let json_path = "/tmp/grm-session-compact-api-test.json";
+    let backup_path = "/tmp/grm-session-compact-api-test.json.bak";
+    let log_path = "/tmp/grm-session-compact-api-test.json.log";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+
+    let input =
+        Cursor::new("model.define User userId name:string:required\nnode.create User name=Alice\n");
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+    session.enable_autocommit_json(json_path).unwrap();
+    session.run().await.unwrap();
+
+    let log_before = fs::read_to_string(log_path).unwrap();
+    assert!(log_before.contains("Alice"));
+
+    let summary = session.compact_autocommit().unwrap();
+    assert_eq!(summary.format_flag, "--json");
+    assert_eq!(summary.path, std::path::PathBuf::from(json_path));
+    assert!(fs::metadata(log_path).is_err());
+
+    let load_input = Cursor::new(format!(
+        "session.load --json {json_path}\nnode.find User name=Alice\nsession.exit\n"
+    ));
+    let output = Vec::new();
+    let mut loaded_session = CliSession::new(load_input, output);
+    loaded_session.run().await.unwrap();
+    let (_, _, output) = loaded_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("Node User userId=1 {name=Alice}"));
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+}
+
+#[tokio::test]
 async fn session_autocommit_checkpoints_after_log_threshold() {
     let json_path = "/tmp/grm-session-autocommit-threshold.json";
     let backup_path = "/tmp/grm-session-autocommit-threshold.json.bak";
