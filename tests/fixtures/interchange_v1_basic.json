@@ -1,0 +1,88 @@
+{
+  "format": "grm.interchange",
+  "version": 1,
+  "kind": "graph",
+  "identity": {
+    "node": "int",
+    "edge": "int"
+  },
+  "schema": {
+    "nodes": [
+      {
+        "name": "Post",
+        "id_field": "postId",
+        "id_type": "int",
+        "fields": [
+          {
+            "name": "title",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      {
+        "name": "User",
+        "id_field": "userId",
+        "id_type": "int",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "required": true
+          },
+          {
+            "name": "age",
+            "type": "int",
+            "required": false
+          }
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "name": "Authored",
+        "from": "User",
+        "to": "Post",
+        "id_field": "authoredId",
+        "id_type": "int",
+        "fields": [
+          {
+            "name": "year",
+            "type": "int",
+            "required": true
+          }
+        ]
+      }
+    ]
+  },
+  "data": {
+    "nodes": [
+      {
+        "id": 1,
+        "model": "User",
+        "props": {
+          "age": 42,
+          "name": "Alice"
+        }
+      },
+      {
+        "id": 2,
+        "model": "Post",
+        "props": {
+          "title": "Hello"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": 1,
+        "model": "Authored",
+        "from": 1,
+        "to": 2,
+        "props": {
+          "year": 2024
+        }
+      }
+    ]
+  }
+}
