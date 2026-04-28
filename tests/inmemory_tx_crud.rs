@@ -34,6 +34,81 @@ async fn in_memory_backend_create_and_match_node() {
 }
 
 #[tokio::test]
+async fn independent_write_transactions_merge_on_commit() -> Result<()> {
+    let backend = InMemoryBackend::new();
+
+    let mut tx1 = backend.begin_tx().await?;
+    let alice = tx1
+        .create_node(
+            vec!["User".to_string()],
+            BTreeMap::from([("name".to_string(), json!("Alice"))]),
+        )
+        .await?;
+
+    let mut tx2 = backend.begin_tx().await?;
+    let bob = tx2
+        .create_node(
+            vec!["User".to_string()],
+            BTreeMap::from([("name".to_string(), json!("Bob"))]),
+        )
+        .await?;
+
+    tx1.commit().await?;
+    tx2.commit().await?;
+
+    let mut read_tx = backend.begin_tx().await?;
+    assert_eq!(
+        read_tx
+            .find_node_by_id(alice.id)
+            .await?
+            .unwrap()
+            .props
+            .get("name"),
+        Some(&json!("Alice"))
+    );
+    assert_eq!(
+        read_tx
+            .find_node_by_id(bob.id)
+            .await?
+            .unwrap()
+            .props
+            .get("name"),
+        Some(&json!("Bob"))
+    );
+    read_tx.commit().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn materialized_read_transaction_does_not_replace_later_commits() -> Result<()> {
+    let backend = InMemoryBackend::new();
+
+    let mut read_tx = backend.begin_tx().await?;
+    let initial = read_tx
+        .find_nodes_by_property("name", &json!("Bob"))
+        .await?;
+    assert!(initial.is_empty());
+
+    let mut write_tx = backend.begin_tx().await?;
+    let bob = write_tx
+        .create_node(
+            vec!["User".to_string()],
+            BTreeMap::from([("name".to_string(), json!("Bob"))]),
+        )
+        .await?;
+    write_tx.commit().await?;
+
+    read_tx.commit().await?;
+
+    let mut verify_tx = backend.begin_tx().await?;
+    assert!(verify_tx.find_node_by_id(bob.id).await?.is_some());
+    verify_tx.commit().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn tx_incoming_returns_from_node_for_matching_type() -> Result<()> {
     let backend = InMemoryBackend::new();
 
