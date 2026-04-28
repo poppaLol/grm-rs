@@ -737,12 +737,15 @@ impl SessionState {
             .ok_or(crate::GrmError::NotFound)?;
         let prop_filters = self.parse_model_predicates(&query.predicates, model)?;
 
-        let mut nodes = self.client.backend().snapshot_nodes();
-        nodes.retain(|node| node.labels.iter().any(|label| label == &model.label));
-
-        if let Some(id) = query.id_filter {
-            nodes.retain(|node| node.id == id);
-        }
+        let indexed_property = prop_filters
+            .iter()
+            .find(|(_, op, _)| *op == CompareOp::Eq)
+            .map(|(key, _, value)| (key.as_str(), value));
+        let mut nodes = self.client.backend().snapshot_nodes_filtered(
+            &model.label,
+            query.id_filter,
+            indexed_property,
+        );
 
         nodes.retain(|node| matches_predicates(&node.props, &prop_filters));
         if !query.order.is_empty() {
@@ -1312,7 +1315,7 @@ fn build_imported_interchange(
             ))
         })?;
         validate_interchange_props("node", &model.name, &model.fields, &node.props)?;
-        let inserted = store.nodes.insert(
+        let inserted = store.insert_node(
             node.id,
             StoredNode {
                 id: node.id,
@@ -3566,7 +3569,7 @@ fn apply_session_log_entry(
         }
         SessionLogEntry::UpsertNode { node } => {
             store.next_node_id = store.next_node_id.max(node.id + 1);
-            store.nodes.insert(node.id, node.clone());
+            store.insert_node(node.id, node.clone());
         }
         SessionLogEntry::DeleteNode { id } => {
             store.remove_node(*id);

@@ -1,6 +1,33 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::backend::{StoredNode, StoredRel};
+use serde_json::Value;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ValueKey {
+    Null,
+    Bool(bool),
+    Int(i64),
+    UInt(u64),
+    FloatBits(u64),
+    String(String),
+}
+
+impl ValueKey {
+    fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::Null => Some(Self::Null),
+            Value::Bool(value) => Some(Self::Bool(*value)),
+            Value::Number(value) => value
+                .as_i64()
+                .map(Self::Int)
+                .or_else(|| value.as_u64().map(Self::UInt))
+                .or_else(|| value.as_f64().map(|value| Self::FloatBits(value.to_bits()))),
+            Value::String(value) => Some(Self::String(value.clone())),
+            Value::Array(_) | Value::Object(_) => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GraphStore {
@@ -8,6 +35,9 @@ pub struct GraphStore {
     pub next_rel_id: i64,
     pub nodes: BTreeMap<i64, StoredNode>,
     pub rels: BTreeMap<i64, StoredRel>,
+    pub nodes_by_label: BTreeMap<String, BTreeSet<i64>>,
+    pub node_props: BTreeMap<(String, String, ValueKey), BTreeSet<i64>>,
+    pub rels_by_type: BTreeMap<String, BTreeSet<i64>>,
     pub outgoing: BTreeMap<(i64, String), BTreeSet<i64>>,
     pub incoming: BTreeMap<(i64, String), BTreeSet<i64>>,
     pub outgoing_any: BTreeMap<i64, BTreeSet<i64>>,
@@ -21,6 +51,9 @@ impl Default for GraphStore {
             next_rel_id: 1,
             nodes: BTreeMap::new(),
             rels: BTreeMap::new(),
+            nodes_by_label: BTreeMap::new(),
+            node_props: BTreeMap::new(),
+            rels_by_type: BTreeMap::new(),
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
             outgoing_any: BTreeMap::new(),
@@ -36,6 +69,9 @@ impl GraphStore {
             next_rel_id: self.next_rel_id,
             nodes: self.nodes.clone(),
             rels: self.rels.clone(),
+            nodes_by_label: self.nodes_by_label.clone(),
+            node_props: self.node_props.clone(),
+            rels_by_type: self.rels_by_type.clone(),
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
             outgoing_any: self.outgoing_any.clone(),
@@ -44,19 +80,37 @@ impl GraphStore {
     }
 
     pub fn rebuild_indexes(&mut self) {
+        self.nodes_by_label.clear();
+        self.node_props.clear();
+        self.rels_by_type.clear();
         self.outgoing.clear();
         self.incoming.clear();
         self.outgoing_any.clear();
         self.incoming_any.clear();
 
+        for node in self.nodes.values().cloned().collect::<Vec<_>>() {
+            self.index_node(&node);
+        }
         for rel in self.rels.values().cloned().collect::<Vec<_>>() {
             self.index_relationship(&rel);
         }
     }
 
+    pub fn insert_node(&mut self, id: i64, node: StoredNode) -> Option<StoredNode> {
+        let previous = self.nodes.insert(id, node.clone());
+        if let Some(previous) = &previous {
+            self.deindex_node(previous);
+        }
+        self.index_node(&node);
+        previous
+    }
+
     pub fn remove_node(&mut self, id: i64) -> Option<StoredNode> {
         let removed = self.nodes.remove(&id);
         if removed.is_some() {
+            if let Some(node) = &removed {
+                self.deindex_node(node);
+            }
             let rel_ids = self
                 .rels
                 .values()
@@ -117,7 +171,67 @@ impl GraphStore {
         }
     }
 
+    pub fn node_ids_by_label(&self, label: &str) -> Vec<i64> {
+        self.nodes_by_label
+            .get(label)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn node_ids_by_label_property(&self, label: &str, key: &str, value: &Value) -> Vec<i64> {
+        let Some(value_key) = ValueKey::from_value(value) else {
+            return Vec::new();
+        };
+        self.node_props
+            .get(&(label.to_string(), key.to_string(), value_key))
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn relationship_ids_by_type(&self, rel_type: &str) -> Vec<i64> {
+        self.rels_by_type
+            .get(rel_type)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    fn index_node(&mut self, node: &StoredNode) {
+        for label in &node.labels {
+            self.nodes_by_label
+                .entry(label.clone())
+                .or_default()
+                .insert(node.id);
+            for (key, value) in &node.props {
+                if let Some(value_key) = ValueKey::from_value(value) {
+                    self.node_props
+                        .entry((label.clone(), key.clone(), value_key))
+                        .or_default()
+                        .insert(node.id);
+                }
+            }
+        }
+    }
+
+    fn deindex_node(&mut self, node: &StoredNode) {
+        for label in &node.labels {
+            remove_index_entry(&mut self.nodes_by_label, label, node.id);
+            for (key, value) in &node.props {
+                if let Some(value_key) = ValueKey::from_value(value) {
+                    remove_index_entry(
+                        &mut self.node_props,
+                        &(label.clone(), key.clone(), value_key),
+                        node.id,
+                    );
+                }
+            }
+        }
+    }
+
     fn index_relationship(&mut self, rel: &StoredRel) {
+        self.rels_by_type
+            .entry(rel.rel_type.clone())
+            .or_default()
+            .insert(rel.id);
         self.outgoing
             .entry((rel.from, rel.rel_type.clone()))
             .or_default()
@@ -134,6 +248,7 @@ impl GraphStore {
     }
 
     fn deindex_relationship(&mut self, rel: &StoredRel) {
+        remove_index_entry(&mut self.rels_by_type, &rel.rel_type, rel.id);
         remove_index_entry(
             &mut self.outgoing,
             &(rel.from, rel.rel_type.clone()),
