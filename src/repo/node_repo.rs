@@ -70,6 +70,18 @@ where
         Ok(())
     }
 
+    /// Create multiple nodes in a single backend transaction.
+    pub async fn create_many<'m, I>(&self, models: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'m mut M>,
+        M: 'm,
+    {
+        autocommit!(self.backend, |tx| {
+            let mut repo_tx = NodeRepositoryTx::<B::Tx, M>::new(&mut tx);
+            repo_tx.create_many(models).await
+        })
+    }
+
     /// Find a node by internal id using typed tx CRUD.
     pub async fn find_by_id(&self, id: &M::Id) -> Result<Option<M>> {
         autocommit!(self.backend, |tx| {
@@ -124,6 +136,17 @@ where
     pub async fn create(&mut self, model: &mut M) -> Result<()> {
         let tx = self.tx.tx_mut()?;
         create_helper(tx, model).await
+    }
+
+    pub async fn create_many<'m, I>(&mut self, models: I) -> Result<()>
+    where
+        I: IntoIterator<Item = &'m mut M>,
+        M: 'm,
+    {
+        for model in models {
+            self.create(model).await?;
+        }
+        Ok(())
     }
 
     pub async fn execute<R: NodeModel>(&mut self, q: Query<R>) -> Result<QueryExecution> {

@@ -2,6 +2,10 @@ mod common;
 use crate::common::*;
 
 use serde_json::json;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use grm_rs::{GraphClient, InMemoryBackend, NodePattern, NodeRepository, Query};
 
@@ -76,4 +80,72 @@ async fn repository_find_by_property() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].name, "Alice");
+}
+
+#[tokio::test]
+async fn node_repository_create_many_uses_one_transaction() {
+    let commits = Arc::new(AtomicUsize::new(0));
+    let backend = CountingBackend {
+        inner: InMemoryBackend::new(),
+        commits: commits.clone(),
+    };
+    let repo = NodeRepository::<_, User>::new(backend);
+
+    let mut users = vec![
+        User {
+            id: UserId(0),
+            name: "Alice".into(),
+            age: 31,
+        },
+        User {
+            id: UserId(0),
+            name: "Bob".into(),
+            age: 32,
+        },
+        User {
+            id: UserId(0),
+            name: "Carol".into(),
+            age: 33,
+        },
+    ];
+
+    repo.create_many(users.iter_mut()).await.unwrap();
+
+    assert_eq!(commits.load(Ordering::SeqCst), 1);
+    assert!(users.iter().all(|user| user.id.0 > 0));
+}
+
+#[tokio::test]
+async fn node_repository_single_creates_commit_per_insert() {
+    let commits = Arc::new(AtomicUsize::new(0));
+    let backend = CountingBackend {
+        inner: InMemoryBackend::new(),
+        commits: commits.clone(),
+    };
+    let repo = NodeRepository::<_, User>::new(backend);
+
+    let mut users = vec![
+        User {
+            id: UserId(0),
+            name: "Alice".into(),
+            age: 31,
+        },
+        User {
+            id: UserId(0),
+            name: "Bob".into(),
+            age: 32,
+        },
+        User {
+            id: UserId(0),
+            name: "Carol".into(),
+            age: 33,
+        },
+    ];
+
+    for user in &mut users {
+        repo.create(user).await.unwrap();
+    }
+
+    assert_eq!(commits.load(Ordering::SeqCst), 3);
+    assert!(users.iter().all(|user| user.id.0 > 0));
 }
