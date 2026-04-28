@@ -54,6 +54,26 @@ where
         })
     }
 
+    /// Create multiple relationships in a single backend transaction.
+    pub async fn create_many_between<'r, I>(&self, rels: I) -> Result<()>
+    where
+        I: IntoIterator<
+            Item = (
+                &'r <R::From as NodeModel>::Id,
+                &'r <R::To as NodeModel>::Id,
+                &'r mut R,
+            ),
+        >,
+        R: 'r,
+        <R::From as NodeModel>::Id: 'r,
+        <R::To as NodeModel>::Id: 'r,
+    {
+        autocommit!(self.backend, |tx| {
+            let mut repo_tx = RelRepositoryTx::<B::Tx, R>::new(&mut tx);
+            repo_tx.create_many_between(rels).await
+        })
+    }
+
     /// Get all outgoing relationships of this type from a given node,
     /// returning (relationship, target_node_id) pairs. (typed)
     pub async fn outgoing_from(
@@ -137,6 +157,25 @@ where
         rel.set_id(stored.id.into());
         rel.set_from(from_id);
         rel.set_to(to_id);
+        Ok(())
+    }
+
+    pub async fn create_many_between<'r, I>(&mut self, rels: I) -> Result<()>
+    where
+        I: IntoIterator<
+            Item = (
+                &'r <R::From as NodeModel>::Id,
+                &'r <R::To as NodeModel>::Id,
+                &'r mut R,
+            ),
+        >,
+        R: 'r,
+        <R::From as NodeModel>::Id: 'r,
+        <R::To as NodeModel>::Id: 'r,
+    {
+        for (from_id, to_id, rel) in rels {
+            self.create_between(from_id, to_id, rel).await?;
+        }
         Ok(())
     }
 
