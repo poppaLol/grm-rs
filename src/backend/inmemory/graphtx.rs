@@ -29,7 +29,7 @@ impl GraphTx for InMemoryTx {
         self.working_copy.next_node_id += 1;
 
         let node = StoredNode { id, labels, props };
-        self.working_copy.nodes.insert(id, node.clone());
+        self.working_copy.insert_node(id, node.clone());
         Ok(node)
     }
 
@@ -38,10 +38,11 @@ impl GraphTx for InMemoryTx {
         id: i64,
         props: BTreeMap<String, Value>,
     ) -> Result<Option<StoredNode>> {
-        if let Some(node) = self.working_copy.nodes.get_mut(&id) {
+        if let Some(mut node) = self.working_copy.nodes.get(&id).cloned() {
             for (k, v) in props {
                 node.props.insert(k, v);
             }
+            self.working_copy.insert_node(id, node.clone());
             return Ok(Some(node.clone()));
         }
         Ok(None)
