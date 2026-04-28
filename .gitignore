@@ -27,3 +27,7 @@ target
 
 # local persistence and scratch databases
 test-dbs/
+
+# local profiler output
+perf.data
+perf.data.old
