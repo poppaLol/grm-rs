@@ -57,6 +57,8 @@ Track:
 The checked-in harness currently uses quick-run local datasets:
 
 - 250 users/posts/authored edges for insert throughput
+- 1,000 users/posts/authored edges for default insert scaling
+- 10,000 users/posts/authored edges for opt-in insert profiling/stress
 - 1,000 and 10,000 users/posts/authored edges for lookup and traversal
 - 1,000 users/posts/authored edges for persistence
 
@@ -90,7 +92,33 @@ scripts/benchmarks.sh persistence
 scripts/benchmarks.sh quick
 scripts/benchmarks.sh scaled
 scripts/benchmarks.sh stress
+scripts/benchmarks.sh profile-insert
 scripts/benchmarks.sh check
+```
+
+`profile-insert` builds the Criterion benchmark, then runs the compiled
+benchmark binary through `flamegraph` in Criterion profile mode. Running the
+bench binary directly keeps Cargo's own build/resolution work out of the SVG.
+The wrapper also sets `GRM_BENCH_PROFILE_GRM_INSERT_ONLY=1`, which registers
+only GRM bulk insert benchmarks during profiling so SQLite and read benchmark
+setup stay out of the sampled process.
+By default it profiles `insert_10k/grm_repo_bulk_transactions` for 10 seconds
+and writes the SVG beside Criterion output:
+
+```bash
+target/criterion/insert_10k/grm_repo_bulk_transactions/flamegraph.svg
+```
+
+The wrapper enables bench debuginfo with `CARGO_PROFILE_BENCH_DEBUG=true` so
+flamegraphs include useful Rust symbols. On Linux, `cargo flamegraph` also needs
+`perf` from the system performance tools package.
+
+Override the benchmark filter, profile duration, or SVG path when needed:
+
+```bash
+scripts/benchmarks.sh profile-insert insert_1k/grm_repo_bulk_transactions
+PROFILE_TIME=30 scripts/benchmarks.sh profile-insert
+FLAMEGRAPH_OUTPUT=target/flamegraph.svg scripts/benchmarks.sh profile-insert
 ```
 
 The SQLite comparator uses `rusqlite` with bundled SQLite, so local benchmark runs

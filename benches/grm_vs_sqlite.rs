@@ -413,6 +413,7 @@ fn populate_sqlite(dataset: &Dataset) -> Connection {
 
 fn bench_inserts(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
+    let profile_grm_insert_only = std::env::var_os("GRM_BENCH_PROFILE_GRM_INSERT_ONLY").is_some();
     for rows in insert_rows() {
         let data = dataset(rows);
         let group_name = format!("insert_{}", size_label(rows));
@@ -421,7 +422,7 @@ fn bench_inserts(c: &mut Criterion) {
         group.warm_up_time(Duration::from_secs(1));
         group.measurement_time(Duration::from_secs(3));
 
-        if rows <= MAX_ROWS_FOR_SINGLE_INSERT_BENCHES {
+        if !profile_grm_insert_only && rows <= MAX_ROWS_FOR_SINGLE_INSERT_BENCHES {
             group.bench_function("grm_session_state", |b| {
                 b.iter_batched(
                     || data.clone(),
@@ -447,19 +448,25 @@ fn bench_inserts(c: &mut Criterion) {
             );
         });
 
-        group.bench_function("sqlite_in_memory_transaction", |b| {
-            b.iter_batched(
-                || data.clone(),
-                |data| black_box(populate_sqlite(&data)),
-                BatchSize::SmallInput,
-            );
-        });
+        if !profile_grm_insert_only {
+            group.bench_function("sqlite_in_memory_transaction", |b| {
+                b.iter_batched(
+                    || data.clone(),
+                    |data| black_box(populate_sqlite(&data)),
+                    BatchSize::SmallInput,
+                );
+            });
+        }
 
         group.finish();
     }
 }
 
 fn bench_property_lookup(c: &mut Criterion) {
+    if std::env::var_os("GRM_BENCH_PROFILE_GRM_INSERT_ONLY").is_some() {
+        return;
+    }
+
     let rt = Runtime::new().unwrap();
     for rows in read_rows() {
         let data = dataset(rows);
@@ -506,6 +513,10 @@ fn bench_property_lookup(c: &mut Criterion) {
 }
 
 fn bench_one_hop(c: &mut Criterion) {
+    if std::env::var_os("GRM_BENCH_PROFILE_GRM_INSERT_ONLY").is_some() {
+        return;
+    }
+
     let rt = Runtime::new().unwrap();
     for rows in read_rows() {
         let data = dataset(rows);
