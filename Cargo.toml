@@ -24,4 +24,15 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 log = "0.4.29"
 
 [dev-dependencies]
+criterion = "0.5"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[bench]]
+name = "grm_vs_sqlite"
+harness = false
+
+[[bench]]
+name = "persistence"
+harness = false
