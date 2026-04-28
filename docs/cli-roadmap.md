@@ -30,6 +30,10 @@ The `grm session` CLI already supports a useful local workflow:
   - `format=graph`
 - traversal-oriented `node.find` queries with chained `via=...` hops
 - coloured CLI output and improved script summaries
+- in-memory lookup indexes for labels, properties, relationship types, and adjacency
+- lazy node property-index rebuilds so insert-heavy workflows avoid immediate property-index churn
+- typed repository bulk insert helpers for nodes and relationships
+- Criterion insert/read benchmarks plus a flamegraph profiling workflow
 
 This means a user can now:
 
@@ -39,6 +43,7 @@ This means a user can now:
 4. choose between default, `jsonl`, `table`, and `graph` find output
 5. get colour-aware interactive output on supported terminals
 6. reload later with schema and data ready to use
+7. rely on indexed local lookup paths while keeping insert performance measurable
 
 ## Current Drawbacks
 
@@ -46,7 +51,9 @@ The current CLI is useful, but there are several major limitations:
 
 - autocommit appends change-log entries and checkpoints them into the session file
 - `session.compact` manually checkpoints the current autocommit target and clears the replay log
-- persistence is snapshot-based only
+- persistence still relies on snapshots plus a replay log rather than a backend-level WAL
+- individual transactions still use whole-store working copies in the in-memory backend
+- lazy property indexes move some work from writes to the first later property-indexed read
 - runtime schema is primarily a CLI-layer concept, not yet a deeper core abstraction
 - backend identity is only partially abstracted and still effectively `i64`-centric
 - the session script format is still a thin command file, not a real DSL
@@ -62,13 +69,18 @@ The current CLI is useful, but there are several major limitations:
 4. Graph output for graph-shaped and traversal-shaped results
 5. Coloured terminal output
 6. Session UX polish
+7. Entity lookup indexes
+8. Bulk insert repository helpers
+9. Lazy node property indexing for cheaper writes
+10. Insert benchmark scaling and flamegraph profiling workflow
 
 ### Now
 
-1. Persistence durability improvements
-2. Smarter autocommit strategy
-3. Python integration surface improvements
-4. Session-core cleanup and runtime/schema refactor prep
+1. Delta-style transaction design for the in-memory backend
+2. Persistence durability improvements
+3. Smarter autocommit strategy and WAL evaluation
+4. Python integration surface improvements
+5. Session-core cleanup and runtime/schema refactor prep
 
 ### Next
 
@@ -165,6 +177,40 @@ Target areas:
 - improve interrupted-write safety
 - define recovery behavior for damaged session files
 - keep `session.save`, `session.load`, and `session.autocommit` simple from the user perspective
+
+### Write Performance And Indexing
+
+Status:
+partially completed, with bulk insert helpers, entity lookup indexes, lazy node property indexing, and benchmark/profiling support in place.
+
+Current state:
+
+- typed repositories support explicit bulk creation for nodes and relationships
+- the in-memory store maintains label, property, relationship-type, and adjacency indexes
+- node property indexes are treated as lazy derived caches:
+  - node writes update source graph rows immediately
+  - node writes update label indexes immediately
+  - node writes mark the property index dirty
+  - the first property-indexed read rebuilds the property index before answering
+- this preserves read-your-writes semantics while reducing write-time index churn
+- insert benchmarks cover `250`, `1k`, and opt-in `10k` data sizes
+- `scripts/benchmarks.sh profile-insert` profiles the GRM bulk insert Criterion benchmark with flamegraph
+
+Measured direction:
+
+- bulk insert helpers removed repeated transaction commits from batch loads
+- lazy property indexing improves insert-heavy paths without changing steady-state indexed lookup behavior
+- replacing live `BTreeMap` indexes with `HashMap` was tested and did not improve the measured insert path, so the current ordered structures remain
+
+Next work:
+
+- design delta-style transactions for the in-memory backend so individual transactions do not require whole-store working copies
+- keep property indexes private or method-gated so future code cannot bypass dirty-cache checks
+- evaluate whether bulk import can use lower-level batch validation and creation paths rather than replaying CLI commands
+- evaluate WAL after the delta transaction shape is clearer, so durability logging records compact operation deltas instead of whole snapshots
+
+Guiding rule:
+optimize the write path without weakening transaction visibility. Lazy indexes are acceptable only when source graph data is updated immediately and all indexed reads rebuild stale derived caches before answering.
 
 ### Import / Export Surface
 
