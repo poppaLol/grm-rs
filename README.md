@@ -650,10 +650,19 @@ This lays a solid foundation for richer projections, safer execution, and cleane
 
 Current priorities:
 
+* Keep insert and indexed-read performance measurable with Criterion benchmarks
+* Continue write-path work with delta transactions before any larger WAL design
 * Persistence durability and smarter autocommit behavior
 * Session-core cleanup and runtime schema refactoring
 * Python/session integration improvements
 * Concurrency and coordination for persisted sessions
 * Traversal and graph-output polish for denser query results
+
+Recently completed:
+
+* Repository bulk insert helpers for typed nodes and relationships
+* In-memory entity lookup indexes for labels, properties, relationship types, and adjacency
+* Lazy node property-index rebuilds, preserving read-your-writes behavior while reducing write-time index churn
+* Insert benchmark scaling and a flamegraph workflow for profiling Criterion benches
 
 For the detailed CLI/session roadmap, see [docs/cli-roadmap.md](docs/cli-roadmap.md).
