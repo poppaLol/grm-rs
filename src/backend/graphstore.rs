@@ -36,7 +36,19 @@ pub struct GraphStore {
     pub nodes: BTreeMap<i64, StoredNode>,
     pub rels: BTreeMap<i64, StoredRel>,
     pub nodes_by_label: BTreeMap<String, BTreeSet<i64>>,
+    // `node_props` is a derived cache, not source-of-truth graph data.
+    //
+    // Node writes update `nodes` and `nodes_by_label` immediately, then mark this
+    // property index dirty. Property-indexed reads must go through
+    // `node_ids_by_label_property`, which rebuilds the cache first when dirty.
+    // This preserves read-your-writes and transaction isolation while avoiding
+    // high-cardinality property-index churn on insert-heavy workloads.
+    //
+    // Do not read `node_props` directly from new code; doing so can observe a
+    // stale cache. If these fields become private later, this is the first one
+    // that should be hidden behind methods.
     pub node_props: BTreeMap<(String, String, ValueKey), BTreeSet<i64>>,
+    pub node_props_dirty: bool,
     pub rels_by_type: BTreeMap<String, BTreeSet<i64>>,
     pub outgoing: BTreeMap<(i64, String), BTreeSet<i64>>,
     pub incoming: BTreeMap<(i64, String), BTreeSet<i64>>,
@@ -53,6 +65,7 @@ impl Default for GraphStore {
             rels: BTreeMap::new(),
             nodes_by_label: BTreeMap::new(),
             node_props: BTreeMap::new(),
+            node_props_dirty: false,
             rels_by_type: BTreeMap::new(),
             outgoing: BTreeMap::new(),
             incoming: BTreeMap::new(),
@@ -71,6 +84,7 @@ impl GraphStore {
             rels: self.rels.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
             node_props: self.node_props.clone(),
+            node_props_dirty: self.node_props_dirty,
             rels_by_type: self.rels_by_type.clone(),
             outgoing: self.outgoing.clone(),
             incoming: self.incoming.clone(),
@@ -89,11 +103,13 @@ impl GraphStore {
         self.incoming_any.clear();
 
         for node in self.nodes.values().cloned().collect::<Vec<_>>() {
-            self.index_node(&node);
+            self.index_node_labels(&node);
+            self.index_node_props(&node);
         }
         for rel in self.rels.values().cloned().collect::<Vec<_>>() {
             self.index_relationship(&rel);
         }
+        self.node_props_dirty = false;
     }
 
     pub fn insert_node(&mut self, id: i64, node: StoredNode) -> Option<StoredNode> {
@@ -101,8 +117,31 @@ impl GraphStore {
         if let Some(previous) = &previous {
             self.deindex_node(previous);
         }
-        self.index_node(&node);
+        self.index_node_labels(&node);
+        self.node_props_dirty = true;
         previous
+    }
+
+    pub fn insert_node_deferred_property_index(
+        &mut self,
+        id: i64,
+        node: StoredNode,
+    ) -> Option<StoredNode> {
+        let previous = self.nodes.insert(id, node.clone());
+        if let Some(previous) = &previous {
+            self.deindex_node(previous);
+        }
+        self.index_node_labels(&node);
+        self.node_props_dirty = true;
+        previous
+    }
+
+    pub fn rebuild_node_property_index(&mut self) {
+        self.node_props.clear();
+        for node in self.nodes.values().cloned().collect::<Vec<_>>() {
+            self.index_node_props(&node);
+        }
+        self.node_props_dirty = false;
     }
 
     pub fn remove_node(&mut self, id: i64) -> Option<StoredNode> {
@@ -110,6 +149,7 @@ impl GraphStore {
         if removed.is_some() {
             if let Some(node) = &removed {
                 self.deindex_node(node);
+                self.node_props_dirty = true;
             }
             let rel_ids = self
                 .rels
@@ -178,7 +218,17 @@ impl GraphStore {
             .unwrap_or_default()
     }
 
-    pub fn node_ids_by_label_property(&self, label: &str, key: &str, value: &Value) -> Vec<i64> {
+    pub fn node_ids_by_label_property(
+        &mut self,
+        label: &str,
+        key: &str,
+        value: &Value,
+    ) -> Vec<i64> {
+        // This is the only supported access path for `node_props`: it keeps the
+        // derived cache coherent before answering property-indexed reads.
+        if self.node_props_dirty {
+            self.rebuild_node_property_index();
+        }
         let Some(value_key) = ValueKey::from_value(value) else {
             return Vec::new();
         };
@@ -195,12 +245,17 @@ impl GraphStore {
             .unwrap_or_default()
     }
 
-    fn index_node(&mut self, node: &StoredNode) {
+    fn index_node_labels(&mut self, node: &StoredNode) {
         for label in &node.labels {
             self.nodes_by_label
                 .entry(label.clone())
                 .or_default()
                 .insert(node.id);
+        }
+    }
+
+    pub fn index_node_props(&mut self, node: &StoredNode) {
+        for label in &node.labels {
             for (key, value) in &node.props {
                 if let Some(value_key) = ValueKey::from_value(value) {
                     self.node_props

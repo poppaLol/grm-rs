@@ -33,6 +33,23 @@ impl GraphTx for InMemoryTx {
         Ok(node)
     }
 
+    async fn create_nodes(
+        &mut self,
+        inserts: Vec<(Vec<String>, BTreeMap<String, Value>)>,
+    ) -> Result<Vec<StoredNode>> {
+        let mut nodes = Vec::with_capacity(inserts.len());
+        for (labels, props) in inserts {
+            let id = self.working_copy.next_node_id;
+            self.working_copy.next_node_id += 1;
+
+            let node = StoredNode { id, labels, props };
+            self.working_copy
+                .insert_node_deferred_property_index(id, node.clone());
+            nodes.push(node);
+        }
+        Ok(nodes)
+    }
+
     async fn update_node(
         &mut self,
         id: i64,
