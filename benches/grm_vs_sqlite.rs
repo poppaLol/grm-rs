@@ -3,13 +3,47 @@ use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use grm_rs::{
-    GraphTx, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionState,
+    GraphTx, InMemoryBackend, NodeModel, NodeRepository, RelModel, RelRepository, RuntimeField,
+    RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionState, typed_id,
 };
 use rusqlite::{Connection, params};
 use serde_json::json;
 use tokio::runtime::Runtime;
 
-const INSERT_ROWS: usize = 250;
+const MAX_ROWS_FOR_SINGLE_INSERT_BENCHES: usize = 1_000;
+
+typed_id!(BenchUserId);
+typed_id!(BenchPostId);
+typed_id!(BenchAuthoredId);
+
+#[derive(Clone, NodeModel)]
+struct BenchUser {
+    #[grm(id)]
+    id: BenchUserId,
+    name: String,
+    age: i32,
+}
+
+#[derive(Clone, NodeModel)]
+struct BenchPost {
+    #[grm(id)]
+    id: BenchPostId,
+    title: String,
+}
+
+#[derive(Clone, RelModel)]
+#[grm(from = "BenchUser", to = "BenchPost", ty = "AUTHORED")]
+struct BenchAuthored {
+    #[grm(id)]
+    id: BenchAuthoredId,
+    year: u64,
+    #[grm(skip)]
+    #[allow(dead_code)]
+    from: BenchUserId,
+    #[grm(skip)]
+    #[allow(dead_code)]
+    to: BenchPostId,
+}
 
 #[derive(Clone)]
 struct UserInput {
@@ -207,6 +241,117 @@ fn populate_grm_bulk(rt: &Runtime, dataset: &Dataset) -> SessionState {
     state
 }
 
+fn populate_grm_repo_single(rt: &Runtime, dataset: &Dataset) -> InMemoryBackend {
+    let backend = InMemoryBackend::new();
+    let user_repo = NodeRepository::<_, BenchUser>::new(backend.clone());
+    let post_repo = NodeRepository::<_, BenchPost>::new(backend.clone());
+    let rel_repo = RelRepository::<_, BenchAuthored>::new(backend.clone());
+
+    rt.block_on(async {
+        let mut users = dataset
+            .users
+            .iter()
+            .map(|user| BenchUser {
+                id: BenchUserId(0),
+                name: user.name.clone(),
+                age: user.age as i32,
+            })
+            .collect::<Vec<_>>();
+        for user in &mut users {
+            user_repo.create(user).await.unwrap();
+        }
+
+        let mut posts = dataset
+            .posts
+            .iter()
+            .map(|post| BenchPost {
+                id: BenchPostId(0),
+                title: post.title.clone(),
+            })
+            .collect::<Vec<_>>();
+        for post in &mut posts {
+            post_repo.create(post).await.unwrap();
+        }
+
+        for authored in &dataset.authored {
+            let mut rel = BenchAuthored {
+                id: BenchAuthoredId(0),
+                year: authored.year as u64,
+                from: BenchUserId::default(),
+                to: BenchPostId::default(),
+            };
+            rel_repo
+                .create_between(
+                    &users[authored.user_id as usize - 1].id,
+                    &posts[authored.post_id as usize - 1].id,
+                    &mut rel,
+                )
+                .await
+                .unwrap();
+        }
+    });
+
+    backend
+}
+
+fn populate_grm_repo_bulk(rt: &Runtime, dataset: &Dataset) -> InMemoryBackend {
+    let backend = InMemoryBackend::new();
+    let user_repo = NodeRepository::<_, BenchUser>::new(backend.clone());
+    let post_repo = NodeRepository::<_, BenchPost>::new(backend.clone());
+    let rel_repo = RelRepository::<_, BenchAuthored>::new(backend.clone());
+
+    rt.block_on(async {
+        let mut users = dataset
+            .users
+            .iter()
+            .map(|user| BenchUser {
+                id: BenchUserId(0),
+                name: user.name.clone(),
+                age: user.age as i32,
+            })
+            .collect::<Vec<_>>();
+        user_repo.create_many(users.iter_mut()).await.unwrap();
+
+        let mut posts = dataset
+            .posts
+            .iter()
+            .map(|post| BenchPost {
+                id: BenchPostId(0),
+                title: post.title.clone(),
+            })
+            .collect::<Vec<_>>();
+        post_repo.create_many(posts.iter_mut()).await.unwrap();
+
+        let mut authored = dataset
+            .authored
+            .iter()
+            .map(|rel| {
+                (
+                    users[rel.user_id as usize - 1].id,
+                    posts[rel.post_id as usize - 1].id,
+                    BenchAuthored {
+                        id: BenchAuthoredId(0),
+                        year: rel.year as u64,
+                        from: BenchUserId::default(),
+                        to: BenchPostId::default(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        rel_repo
+            .create_many_between(
+                authored
+                    .iter_mut()
+                    .map(|(from_id, to_id, rel)| (&*from_id, &*to_id, rel)),
+            )
+            .await
+            .unwrap();
+    });
+
+    backend
+}
+
 fn sqlite_connection() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
@@ -268,29 +413,50 @@ fn populate_sqlite(dataset: &Dataset) -> Connection {
 
 fn bench_inserts(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let data = dataset(INSERT_ROWS);
-    let mut group = c.benchmark_group("insert_250");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_secs(1));
-    group.measurement_time(Duration::from_secs(3));
+    for rows in insert_rows() {
+        let data = dataset(rows);
+        let group_name = format!("insert_{}", size_label(rows));
+        let mut group = c.benchmark_group(group_name);
+        group.sample_size(10);
+        group.warm_up_time(Duration::from_secs(1));
+        group.measurement_time(Duration::from_secs(3));
 
-    group.bench_function("grm_session_state", |b| {
-        b.iter_batched(
-            || data.clone(),
-            |data| black_box(populate_grm(&rt, &data)),
-            BatchSize::SmallInput,
-        );
-    });
+        if rows <= MAX_ROWS_FOR_SINGLE_INSERT_BENCHES {
+            group.bench_function("grm_session_state", |b| {
+                b.iter_batched(
+                    || data.clone(),
+                    |data| black_box(populate_grm(&rt, &data)),
+                    BatchSize::SmallInput,
+                );
+            });
 
-    group.bench_function("sqlite_in_memory_transaction", |b| {
-        b.iter_batched(
-            || data.clone(),
-            |data| black_box(populate_sqlite(&data)),
-            BatchSize::SmallInput,
-        );
-    });
+            group.bench_function("grm_repo_single_transactions", |b| {
+                b.iter_batched(
+                    || data.clone(),
+                    |data| black_box(populate_grm_repo_single(&rt, &data)),
+                    BatchSize::SmallInput,
+                );
+            });
+        }
 
-    group.finish();
+        group.bench_function("grm_repo_bulk_transactions", |b| {
+            b.iter_batched(
+                || data.clone(),
+                |data| black_box(populate_grm_repo_bulk(&rt, &data)),
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.bench_function("sqlite_in_memory_transaction", |b| {
+            b.iter_batched(
+                || data.clone(),
+                |data| black_box(populate_sqlite(&data)),
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.finish();
+    }
 }
 
 fn bench_property_lookup(c: &mut Criterion) {
@@ -365,7 +531,9 @@ fn bench_one_hop(c: &mut Criterion) {
         group.bench_function("sqlite_edge_lookup_from_user", |b| {
             b.iter(|| {
                 let mut stmt = sqlite
-                    .prepare("SELECT id, from_user, to_post, year FROM authored WHERE from_user = ?1")
+                    .prepare(
+                        "SELECT id, from_user, to_post, year FROM authored WHERE from_user = ?1",
+                    )
                     .unwrap();
                 let rows = stmt
                     .query_map(params![sqlite_user_id], |row| {
@@ -443,6 +611,14 @@ fn read_rows() -> Vec<usize> {
     let mut rows = vec![1_000, 10_000];
     if std::env::var_os("GRM_BENCH_STRESS").is_some() {
         rows.push(100_000);
+    }
+    rows
+}
+
+fn insert_rows() -> Vec<usize> {
+    let mut rows = vec![250, 1_000];
+    if std::env::var_os("GRM_BENCH_STRESS").is_some() {
+        rows.push(10_000);
     }
     rows
 }
