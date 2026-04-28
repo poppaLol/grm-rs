@@ -77,12 +77,18 @@ impl GraphStore {
     }
 
     pub fn from_persisted(persisted: PersistedGraphStore) -> Self {
-        Self {
+        let mut store = Self {
             next_node_id: persisted.next_node_id,
             next_rel_id: persisted.next_rel_id,
             nodes: persisted.nodes,
             rels: persisted.rels,
-        }
+            outgoing: BTreeMap::new(),
+            incoming: BTreeMap::new(),
+            outgoing_any: BTreeMap::new(),
+            incoming_any: BTreeMap::new(),
+        };
+        store.rebuild_indexes();
+        store
     }
 
     pub(crate) fn to_binary_persisted(&self) -> Result<BinaryPersistedGraphStore> {
@@ -159,12 +165,18 @@ impl GraphStore {
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
 
-        Ok(Self {
+        let mut store = Self {
             next_node_id: persisted.next_node_id,
             next_rel_id: persisted.next_rel_id,
             nodes,
             rels,
-        })
+            outgoing: BTreeMap::new(),
+            incoming: BTreeMap::new(),
+            outgoing_any: BTreeMap::new(),
+            incoming_any: BTreeMap::new(),
+        };
+        store.rebuild_indexes();
+        Ok(store)
     }
 
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {

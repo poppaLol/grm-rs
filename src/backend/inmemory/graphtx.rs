@@ -48,10 +48,7 @@ impl GraphTx for InMemoryTx {
     }
 
     async fn delete_node(&mut self, id: i64) -> Result<()> {
-        self.working_copy.nodes.remove(&id);
-        self.working_copy
-            .rels
-            .retain(|_, rel| rel.from != id && rel.to != id);
+        self.working_copy.remove_node(id);
         Ok(())
     }
 
@@ -90,7 +87,7 @@ impl GraphTx for InMemoryTx {
             to,
             props,
         };
-        self.working_copy.rels.insert(id, rel.clone());
+        self.working_copy.insert_relationship(id, rel.clone());
         Ok(rel)
     }
 
@@ -109,7 +106,7 @@ impl GraphTx for InMemoryTx {
     }
 
     async fn delete_relationship(&mut self, id: i64) -> Result<()> {
-        self.working_copy.rels.remove(&id);
+        self.working_copy.remove_relationship(id);
         Ok(())
     }
 
@@ -118,16 +115,12 @@ impl GraphTx for InMemoryTx {
         from: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        let mut out = Vec::new();
-        for rel in self.working_copy.rels.values() {
-            if rel.from != from {
+        let rel_ids = self.working_copy.outgoing_relationship_ids(from, rel_type);
+        let mut out = Vec::with_capacity(rel_ids.len());
+        for rel_id in rel_ids {
+            let Some(rel) = self.working_copy.rels.get(&rel_id) else {
                 continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
+            };
             if let Some(n) = self.working_copy.nodes.get(&rel.to) {
                 out.push((rel.clone(), n.clone()));
             }
@@ -140,16 +133,12 @@ impl GraphTx for InMemoryTx {
         to: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        let mut out = Vec::new();
-        for rel in self.working_copy.rels.values() {
-            if rel.to != to {
+        let rel_ids = self.working_copy.incoming_relationship_ids(to, rel_type);
+        let mut out = Vec::with_capacity(rel_ids.len());
+        for rel_id in rel_ids {
+            let Some(rel) = self.working_copy.rels.get(&rel_id) else {
                 continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
+            };
             if let Some(n) = self.working_copy.nodes.get(&rel.from) {
                 out.push((rel.clone(), n.clone()));
             }
@@ -165,16 +154,10 @@ impl GraphTx for InMemoryTx {
         let mut out = Vec::new();
         let mut seen_rel_ids = std::collections::BTreeSet::new();
 
-        // outgoing neighbors
-        for rel in self.working_copy.rels.values() {
-            if rel.from != node {
+        for rel_id in self.working_copy.outgoing_relationship_ids(node, rel_type) {
+            let Some(rel) = self.working_copy.rels.get(&rel_id) else {
                 continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
+            };
             if let Some(n) = self.working_copy.nodes.get(&rel.to) {
                 if seen_rel_ids.insert(rel.id) {
                     out.push((rel.clone(), n.clone()));
@@ -182,16 +165,10 @@ impl GraphTx for InMemoryTx {
             }
         }
 
-        // incoming neighbors
-        for rel in self.working_copy.rels.values() {
-            if rel.to != node {
+        for rel_id in self.working_copy.incoming_relationship_ids(node, rel_type) {
+            let Some(rel) = self.working_copy.rels.get(&rel_id) else {
                 continue;
-            }
-            if let Some(t) = rel_type {
-                if rel.rel_type != t {
-                    continue;
-                }
-            }
+            };
             if let Some(n) = self.working_copy.nodes.get(&rel.from) {
                 if seen_rel_ids.insert(rel.id) {
                     out.push((rel.clone(), n.clone()));
@@ -204,7 +181,7 @@ impl GraphTx for InMemoryTx {
 
     async fn commit(mut self) -> Result<()> {
         let mut global = self.store.lock().unwrap();
-        *global = self.working_copy.clone();
+        *global = self.working_copy;
         self.committed = true;
         Ok(())
     }
