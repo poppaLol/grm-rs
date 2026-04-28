@@ -1,5 +1,5 @@
 use log::trace;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use super::returnplan::{ReturnPlan, stored_node_to_kernel, stored_rel_to_kernel};
@@ -104,14 +104,14 @@ fn emit_rows_from_bindings(tx: &InMemoryTx, bindings: Vec<Binding>) -> Vec<Query
 
         // node vars (root + hop end vars)
         for (var, id) in b.nodes {
-            if let Some(node) = tx.working_copy.nodes.get(&id) {
+            if let Some(node) = tx.materialized_store().nodes.get(&id) {
                 values.insert(var, stored_node_to_kernel(node));
             }
         }
 
         // rel vars
         for (var, id) in b.rels {
-            if let Some(rel) = tx.working_copy.rels.get(&id) {
+            if let Some(rel) = tx.materialized_store().rels.get(&id) {
                 values.insert(var, stored_rel_to_kernel(rel));
             }
         }
@@ -338,17 +338,80 @@ impl BackendIdentity for InMemoryBackend {
 
 pub struct InMemoryTx {
     pub store: Arc<Mutex<GraphStore>>,
-    pub working_copy: GraphStore,
+    pub working_copy: Option<GraphStore>,
+    pub delta: TxDelta,
     pub committed: bool,
+}
+
+#[derive(Default)]
+pub struct TxDelta {
+    pub nodes: BTreeMap<i64, StoredNode>,
+    pub deleted_nodes: BTreeSet<i64>,
+    pub rels: BTreeMap<i64, StoredRel>,
+    pub deleted_rels: BTreeSet<i64>,
 }
 
 impl InMemoryTx {
     pub fn new(store: Arc<Mutex<GraphStore>>) -> Self {
-        let snapshot = store.lock().unwrap().clone_store();
         Self {
             store,
-            working_copy: snapshot,
+            working_copy: None,
+            delta: TxDelta::default(),
             committed: false,
+        }
+    }
+
+    pub fn materialize_working_copy(&mut self) {
+        if self.working_copy.is_some() {
+            return;
+        }
+
+        let mut snapshot = self.store.lock().unwrap().clone_store();
+        self.apply_delta_to(&mut snapshot);
+        self.working_copy = Some(snapshot);
+    }
+
+    pub fn materialized_store(&self) -> &GraphStore {
+        self.working_copy
+            .as_ref()
+            .expect("in-memory transaction working copy must be materialized")
+    }
+
+    pub fn materialized_store_mut(&mut self) -> &mut GraphStore {
+        self.materialize_working_copy();
+        self.working_copy
+            .as_mut()
+            .expect("in-memory transaction working copy must be materialized")
+    }
+
+    pub fn allocate_node_id(&self) -> i64 {
+        let mut global = self.store.lock().unwrap();
+        let id = global.next_node_id;
+        global.next_node_id += 1;
+        id
+    }
+
+    pub fn allocate_rel_id(&self) -> i64 {
+        let mut global = self.store.lock().unwrap();
+        let id = global.next_rel_id;
+        global.next_rel_id += 1;
+        id
+    }
+
+    pub fn apply_delta_to(&self, store: &mut GraphStore) {
+        for id in &self.delta.deleted_nodes {
+            store.remove_node(*id);
+        }
+        for id in &self.delta.deleted_rels {
+            store.remove_relationship(*id);
+        }
+        for (id, node) in &self.delta.nodes {
+            store.next_node_id = store.next_node_id.max(id + 1);
+            store.insert_node(*id, node.clone());
+        }
+        for (id, rel) in &self.delta.rels {
+            store.next_rel_id = store.next_rel_id.max(id + 1);
+            store.insert_relationship(*id, rel.clone());
         }
     }
 
@@ -357,7 +420,7 @@ impl InMemoryTx {
         let mut bindings = Vec::new();
 
         if let Some(id) = root_nm.id_filter {
-            if let Some(node) = tx.working_copy.nodes.get(&id) {
+            if let Some(node) = tx.materialized_store().nodes.get(&id) {
                 if labels_match(&node.labels, root_nm.labels)
                     && stored_node_matches_filters(node, &root_nm.property_filters)
                 {
@@ -365,7 +428,7 @@ impl InMemoryTx {
                 }
             }
         } else {
-            for node in tx.working_copy.nodes.values() {
+            for node in tx.materialized_store().nodes.values() {
                 if labels_match(&node.labels, root_nm.labels)
                     && stored_node_matches_filters(node, &root_nm.property_filters)
                 {
@@ -487,6 +550,8 @@ impl InMemoryTx {
     }
 
     pub async fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
+        self.materialize_working_copy();
+
         // ---- 1) Build the execution context
         let ctx = ExecCtx::build(q)?;
 
