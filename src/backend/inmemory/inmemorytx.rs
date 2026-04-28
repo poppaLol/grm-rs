@@ -194,6 +194,36 @@ impl InMemoryBackend {
         self.store.lock().unwrap().nodes.values().cloned().collect()
     }
 
+    pub fn snapshot_nodes_filtered(
+        &self,
+        label: &str,
+        id: Option<i64>,
+        property: Option<(&str, &serde_json::Value)>,
+    ) -> Vec<StoredNode> {
+        let store = self.store.lock().unwrap();
+
+        if let Some(id) = id {
+            return store
+                .nodes
+                .get(&id)
+                .filter(|node| node.labels.iter().any(|node_label| node_label == label))
+                .cloned()
+                .into_iter()
+                .collect();
+        }
+
+        let node_ids = match property {
+            Some((key, value)) => store.node_ids_by_label_property(label, key, value),
+            None => store.node_ids_by_label(label),
+        };
+
+        node_ids
+            .into_iter()
+            .filter_map(|id| store.nodes.get(&id))
+            .cloned()
+            .collect()
+    }
+
     pub fn snapshot_relationships(&self) -> Vec<StoredRel> {
         self.store.lock().unwrap().rels.values().cloned().collect()
     }
@@ -233,14 +263,7 @@ impl InMemoryBackend {
             }
             (Some(from), None) => store.outgoing_relationship_ids(from, Some(rel_type)),
             (None, Some(to)) => store.incoming_relationship_ids(to, Some(rel_type)),
-            (None, None) => {
-                return store
-                    .rels
-                    .values()
-                    .filter(|rel| rel.rel_type == rel_type)
-                    .cloned()
-                    .collect();
-            }
+            (None, None) => store.relationship_ids_by_type(rel_type),
         };
 
         rel_ids
