@@ -78,6 +78,19 @@ default benchmark scope.
 - Label comparisons clearly when GRM scans are compared to SQLite indexes.
 - Keep benchmark names stable so Criterion baselines remain useful.
 
+## Insert Indexing Note
+
+The in-memory graph keeps node property indexes as a lazy derived cache. Node
+writes update the graph rows and label index immediately, mark the property
+index dirty, and rebuild that property index on the first property-indexed read.
+This preserves read-your-writes semantics while avoiding high-cardinality
+property-index churn during insert-heavy workloads.
+
+This matters for insert benchmarks: the `insert_*` cases measure write cost
+without forcing the first later property-index rebuild. The `property_lookup_*`
+cases measure steady-state indexed reads after setup has already paid any lazy
+rebuild cost during warmup.
+
 ## Planned Files
 
 - `grm_vs_sqlite.rs`: first comparison of inserts, property lookup, and one-hop traversal.

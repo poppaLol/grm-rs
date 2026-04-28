@@ -116,6 +116,32 @@ async fn node_repository_create_many_uses_one_transaction() {
 }
 
 #[tokio::test]
+async fn node_repository_create_many_preserves_property_lookup() {
+    let backend = InMemoryBackend::new();
+    let repo = NodeRepository::<_, User>::new(backend);
+
+    let mut users = vec![
+        User {
+            id: UserId(0),
+            name: "Alice".into(),
+            age: 31,
+        },
+        User {
+            id: UserId(0),
+            name: "Bob".into(),
+            age: 32,
+        },
+    ];
+
+    repo.create_many(users.iter_mut()).await.unwrap();
+
+    let results = repo.find_by("name", &json!("Bob")).await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "Bob");
+}
+
+#[tokio::test]
 async fn node_repository_single_creates_commit_per_insert() {
     let commits = Arc::new(AtomicUsize::new(0));
     let backend = CountingBackend {

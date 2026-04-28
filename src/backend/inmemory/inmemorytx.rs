@@ -200,7 +200,7 @@ impl InMemoryBackend {
         id: Option<i64>,
         property: Option<(&str, &serde_json::Value)>,
     ) -> Vec<StoredNode> {
-        let store = self.store.lock().unwrap();
+        let mut store = self.store.lock().unwrap();
 
         if let Some(id) = id {
             return store
