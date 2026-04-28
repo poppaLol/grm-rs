@@ -36,6 +36,17 @@ pub trait GraphTx {
         Err(GrmError::NotSupported("create_node"))
     }
 
+    async fn create_nodes(
+        &mut self,
+        inserts: Vec<(Vec<String>, BTreeMap<String, Value>)>,
+    ) -> Result<Vec<StoredNode>> {
+        let mut nodes = Vec::with_capacity(inserts.len());
+        for (labels, props) in inserts {
+            nodes.push(self.create_node(labels, props).await?);
+        }
+        Ok(nodes)
+    }
+
     async fn update_node(
         &mut self,
         _id: i64,

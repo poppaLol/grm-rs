@@ -143,8 +143,20 @@ where
         I: IntoIterator<Item = &'m mut M>,
         M: 'm,
     {
-        for model in models {
-            self.create(model).await?;
+        let mut models = models.into_iter().collect::<Vec<_>>();
+        if models.is_empty() {
+            return Ok(());
+        }
+
+        let labels = M::LABELS.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let inserts = models
+            .iter()
+            .map(|model| (labels.clone(), model.to_properties()))
+            .collect::<Vec<_>>();
+        let stored = self.tx.tx_mut()?.create_nodes(inserts).await?;
+
+        for (model, stored) in models.iter_mut().zip(stored) {
+            model.set_id(stored.id.into());
         }
         Ok(())
     }
