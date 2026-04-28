@@ -455,7 +455,7 @@ It is intended for:
 
 ---
 
-## Projection v1 + Typed Kernel Results  
+## Projection v1 + Typed Kernel Results
 **(GraphQuery → QueryResult)**
 
 This addendum captures the latest work: **projection / return control is now real**, and query execution now returns **typed kernel values keyed by `VarId`** — no stringly `"n"` conventions and no `var_key`.
@@ -470,10 +470,10 @@ This addendum captures the latest work: **projection / return control is now rea
 
 #### Behavior
 
-- **Default**  
+- **Default**
   Returns the **root node** of the query.
 
-- **New**  
+- **New**
   `.return_end()` returns the **end node of the traversal chain**.
 
 #### Compilation Semantics
@@ -616,7 +616,7 @@ No hidden transactions, no implicit commits
 
 ##### Backwards compatibility
 
-The original backend-owned repositories still exist as autocommit façades: 
+The original backend-owned repositories still exist as autocommit façades:
 * They begin and commit a transaction internally
 * They delegate all logic to the new tx-scoped repositories
 * They will be deprecated once users migrate to the tx-first API
@@ -651,7 +651,7 @@ This lays a solid foundation for richer projections, safer execution, and cleane
 Current priorities:
 
 * Keep insert and indexed-read performance measurable with Criterion benchmarks
-* Continue write-path work with delta transactions before any larger WAL design
+* Inspect current write hot paths for possible optimisation
 * Persistence durability and smarter autocommit behavior
 * Session-core cleanup and runtime schema refactoring
 * Python/session integration improvements
@@ -660,6 +660,7 @@ Current priorities:
 
 Recently completed:
 
+* Delta transaction work completed in line with priorities to make single node insert work better
 * Repository bulk insert helpers for typed nodes and relationships
 * In-memory entity lookup indexes for labels, properties, relationship types, and adjacency
 * Lazy node property-index rebuilds, preserving read-your-writes behavior while reducing write-time index churn
