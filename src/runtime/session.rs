@@ -937,18 +937,12 @@ impl SessionState {
             .ok_or(crate::GrmError::NotFound)?;
         let prop_filters = self.parse_rel_predicates(&query.predicates, model)?;
 
-        let mut rels = self.client.backend().snapshot_relationships();
-        rels.retain(|rel| rel.rel_type == model.rel_type);
-
-        if let Some(id) = query.id_filter {
-            rels.retain(|rel| rel.id == id);
-        }
-        if let Some(from) = query.from_filter {
-            rels.retain(|rel| rel.from == from);
-        }
-        if let Some(to) = query.to_filter {
-            rels.retain(|rel| rel.to == to);
-        }
+        let mut rels = self.client.backend().snapshot_relationships_filtered(
+            &model.rel_type,
+            query.id_filter,
+            query.from_filter,
+            query.to_filter,
+        );
 
         rels.retain(|rel| matches_predicates(&rel.props, &prop_filters));
         if !query.order.is_empty() {
@@ -1375,7 +1369,7 @@ fn build_imported_interchange(
             )));
         }
 
-        let inserted = store.rels.insert(
+        let inserted = store.insert_relationship(
             edge.id,
             StoredRel {
                 id: edge.id,
@@ -3575,15 +3569,14 @@ fn apply_session_log_entry(
             store.nodes.insert(node.id, node.clone());
         }
         SessionLogEntry::DeleteNode { id } => {
-            store.nodes.remove(id);
-            store.rels.retain(|_, rel| rel.from != *id && rel.to != *id);
+            store.remove_node(*id);
         }
         SessionLogEntry::UpsertRel { rel } => {
             store.next_rel_id = store.next_rel_id.max(rel.id + 1);
-            store.rels.insert(rel.id, rel.clone());
+            store.insert_relationship(rel.id, rel.clone());
         }
         SessionLogEntry::DeleteRel { id } => {
-            store.rels.remove(id);
+            store.remove_relationship(*id);
         }
     }
 

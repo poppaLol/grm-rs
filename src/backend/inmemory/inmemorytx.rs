@@ -198,6 +198,63 @@ impl InMemoryBackend {
         self.store.lock().unwrap().rels.values().cloned().collect()
     }
 
+    pub fn snapshot_relationships_filtered(
+        &self,
+        rel_type: &str,
+        id: Option<i64>,
+        from: Option<i64>,
+        to: Option<i64>,
+    ) -> Vec<StoredRel> {
+        let store = self.store.lock().unwrap();
+
+        if let Some(id) = id {
+            return store
+                .rels
+                .get(&id)
+                .filter(|rel| {
+                    rel.rel_type == rel_type
+                        && from.map(|from| rel.from == from).unwrap_or(true)
+                        && to.map(|to| rel.to == to).unwrap_or(true)
+                })
+                .cloned()
+                .into_iter()
+                .collect();
+        }
+
+        let rel_ids = match (from, to) {
+            (Some(from), Some(to)) => {
+                let outgoing = store.outgoing_relationship_ids(from, Some(rel_type));
+                let incoming = store.incoming_relationship_ids(to, Some(rel_type));
+                if outgoing.len() <= incoming.len() {
+                    outgoing
+                } else {
+                    incoming
+                }
+            }
+            (Some(from), None) => store.outgoing_relationship_ids(from, Some(rel_type)),
+            (None, Some(to)) => store.incoming_relationship_ids(to, Some(rel_type)),
+            (None, None) => {
+                return store
+                    .rels
+                    .values()
+                    .filter(|rel| rel.rel_type == rel_type)
+                    .cloned()
+                    .collect();
+            }
+        };
+
+        rel_ids
+            .into_iter()
+            .filter_map(|id| store.rels.get(&id))
+            .filter(|rel| {
+                rel.rel_type == rel_type
+                    && from.map(|from| rel.from == from).unwrap_or(true)
+                    && to.map(|to| rel.to == to).unwrap_or(true)
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn snapshot_store(&self) -> GraphStore {
         self.store.lock().unwrap().clone_store()
     }
