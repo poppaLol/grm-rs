@@ -25,6 +25,7 @@ log = "0.4.29"
 
 [dev-dependencies]
 criterion = "0.5"
+neo4rs = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
