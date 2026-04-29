@@ -85,9 +85,11 @@ async fn repository_find_by_property() {
 #[tokio::test]
 async fn node_repository_create_many_uses_one_transaction() {
     let commits = Arc::new(AtomicUsize::new(0));
+    let rollbacks = Arc::new(AtomicUsize::new(0));
     let backend = CountingBackend {
         inner: InMemoryBackend::new(),
         commits: commits.clone(),
+        rollbacks: rollbacks.clone(),
     };
     let repo = NodeRepository::<_, User>::new(backend);
 
@@ -144,9 +146,11 @@ async fn node_repository_create_many_preserves_property_lookup() {
 #[tokio::test]
 async fn node_repository_single_creates_commit_per_insert() {
     let commits = Arc::new(AtomicUsize::new(0));
+    let rollbacks = Arc::new(AtomicUsize::new(0));
     let backend = CountingBackend {
         inner: InMemoryBackend::new(),
         commits: commits.clone(),
+        rollbacks: rollbacks.clone(),
     };
     let repo = NodeRepository::<_, User>::new(backend);
 

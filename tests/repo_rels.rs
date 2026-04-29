@@ -91,9 +91,11 @@ async fn deleting_node_removes_outgoing_relationships() {
 #[tokio::test]
 async fn rel_repository_create_many_between_uses_one_transaction() {
     let commits = Arc::new(AtomicUsize::new(0));
+    let rollbacks = Arc::new(AtomicUsize::new(0));
     let backend = CountingBackend {
         inner: InMemoryBackend::new(),
         commits: commits.clone(),
+        rollbacks: rollbacks.clone(),
     };
 
     let user_repo = NodeRepository::<_, User>::new(backend.clone());
