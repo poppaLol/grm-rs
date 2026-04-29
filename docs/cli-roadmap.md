@@ -52,7 +52,7 @@ The current CLI is useful, but there are several major limitations:
 - autocommit appends change-log entries and checkpoints them into the session file
 - `session.compact` manually checkpoints the current autocommit target and clears the replay log
 - persistence still relies on snapshots plus a replay log rather than a backend-level WAL
-- individual transactions still use whole-store working copies in the in-memory backend
+- some in-memory transaction paths still materialize a whole-store working copy, especially graph execution, traversal, deletes, and property scans
 - lazy property indexes move some work from writes to the first later property-indexed read
 - runtime schema is primarily a CLI-layer concept, not yet a deeper core abstraction
 - backend identity is only partially abstracted and still effectively `i64`-centric
@@ -76,7 +76,7 @@ The current CLI is useful, but there are several major limitations:
 
 ### Now
 
-1. Delta-style transaction design for the in-memory backend
+1. Extend the delta-style in-memory transaction design beyond the current simple write paths
 2. Persistence durability improvements
 3. Smarter autocommit strategy and WAL evaluation
 4. Python integration surface improvements
@@ -204,7 +204,7 @@ Measured direction:
 
 Next work:
 
-- design delta-style transactions for the in-memory backend so individual transactions do not require whole-store working copies
+- extend delta-style transactions so graph execution, traversal, deletes, and property-indexed reads do not always require whole-store working copies
 - keep property indexes private or method-gated so future code cannot bypass dirty-cache checks
 - evaluate whether bulk import can use lower-level batch validation and creation paths rather than replaying CLI commands
 - evaluate WAL after the delta transaction shape is clearer, so durability logging records compact operation deltas instead of whole snapshots

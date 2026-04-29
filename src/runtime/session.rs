@@ -1791,7 +1791,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  node.create <ModelName> [field=value ...]")?;
         writeln!(
             self.writer,
-            "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table|graph]"
+            "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [via=<out|in|both>:<LinkName|*>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end|edge] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table|graph]"
         )?;
         writeln!(
             self.writer,
@@ -1804,7 +1804,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         writeln!(
             self.writer,
-            "  edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table|graph]"
+            "  edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table]"
         )?;
         writeln!(
             self.writer,

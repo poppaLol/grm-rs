@@ -8,7 +8,6 @@ It provides:
 * 🪪 **Typed ID newtypes (`UserId`, `PostId`, …)**
 * 🔧 **Derive macros (`#[derive(NodeModel)]`, `#[derive(RelModel)]`)**
 * 🗄️ **Repository layer for CRUD + traversal**
-* 🔍 **Typed graph traversal DSL**
 * 🧠 **Backend-agnostic kernel IR (`GraphQuery`)**
 * 🧪 **In-memory graph backend for testing**
 * 🔁 **Transaction support (commit + rollback)**
@@ -136,12 +135,12 @@ Data commands:
 node.create <ModelName> [field=value ...]
 node.update <ModelName> <id> [field=value ...]
 node.delete <ModelName> <id>
-node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [via=<out|in|both>:<LinkName|*>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end|edge] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
+node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [via=<out|in|both>:<LinkName|*>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end|edge] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table|graph]
 
 edge.create <LinkName> from=<id> to=<id> [field=value ...]
 edge.update <LinkName> <id> [field=value ...]
 edge.delete <LinkName> <id>
-edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>]
+edge.find <LinkName> [from=<id>] [to=<id>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc[,<field>:desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table]
 ```
 
 Query examples:
@@ -433,7 +432,9 @@ tx.create_node(...).await?;
 tx.commit().await?;
 ```
 
-If decoding or validation fails, transactions are rolled back automatically.
+Repository convenience methods roll back their internally managed transaction when
+decoding or validation fails. When you open a transaction manually, you own the
+choice to `commit()` or `rollback()`.
 
 ---
 
@@ -560,9 +561,11 @@ By standardising on these kernel types, grm-rs avoids loosely-typed JSON blobs a
 
 ---
 
-#### Recent work (2025/12/26) Transaction-oriented repositories (new common use of repo)
+#### Recent work: transaction-oriented repositories
 
-grm-rs now uses a transaction-first execution model. A transaction is the unit of work; repositories are lightweight, typed façades over an active transaction.
+grm-rs has been moving toward a transaction-first execution model. A transaction
+can be the unit of work when you use `GraphClient`, while repository facades
+remain available for shorter convenience flows.
 
 ##### What changed:
 
@@ -572,54 +575,62 @@ Previously, repositories owned a backend and implicitly managed transaction life
 
 This made composition awkward and hid atomicity.
 
-We have now refactored the system so that:
+The current public surface supports two styles:
 
-* Transactions own lifecycle (begin / commit / rollback)
-* Repositories are tx-scoped and never manage lifecycle
+* `GraphClient::transaction()` when the caller wants to own the unit of work
+* backend-owned `NodeRepository` / `RelRepository` facades for convenience methods
+  that manage a transaction internally
 
-All graph operations (node + relationship CRUD, traversal, queries) execute within a single explicit transaction
+Transaction-scoped helpers are available as explicit `NodeRepositoryTx` and
+`RelRepositoryTx` values over an active transaction.
 
-The new mental model
+Example:
 
 ```rust
 let mut tx = client.transaction().await?;
 
 {
-    let mut repo = tx.repo();
-
-    repo.nodes::<User>().create(&mut user).await?;
-    repo.nodes::<Post>().create(&mut post).await?;
-
-    repo.rels::<Authored>()
-        .create_between(&user.id(), &post.id(), &mut authored)
-        .await?;
-
-    let q = Query::<User>::matching(
-        NodePattern::<User>::new()
-            .out::<Authored>()
-            .to::<Post>()
-    );
-
-    let users: Vec<User> = repo.query(q).await?;
+    let mut users = NodeRepositoryTx::<_, User>::new(&mut tx);
+    users.create(&mut user).await?;
 }
+
+{
+    let mut posts = NodeRepositoryTx::<_, Post>::new(&mut tx);
+    posts.create(&mut post).await?;
+}
+
+{
+    let mut authored_rels = RelRepositoryTx::<_, Authored>::new(&mut tx);
+    authored_rels
+        .create_between(user.id(), post.id(), &mut authored)
+        .await?;
+}
+
+let q = Query::<User>::matching(
+    NodePattern::<User>::new()
+        .out::<Authored>()
+        .to::<Post>()
+);
+
+let users: Vec<User> = tx.query(q).await?;
 
 tx.commit().await?;
 ```
 
 Transaction is the unit of work
 
-`tx.repo()` returns a single graph handle
+`NodeRepositoryTx::<_, M>::new(&mut tx)` and
+`RelRepositoryTx::<_, R>::new(&mut tx)` are typed, tx-scoped helpers
 
-`repo.nodes::<M>()` and `repo.rels::<R>()` are typed, tx-scoped repos
+Within the transaction-scoped helpers, there are no hidden commits; the caller
+chooses when to commit or roll back the transaction.
 
-No hidden transactions, no implicit commits
+##### Current compatibility shape
 
-##### Backwards compatibility
-
-The original backend-owned repositories still exist as autocommit façades:
+The backend-owned repositories still exist as autocommit facades:
 * They begin and commit a transaction internally
-* They delegate all logic to the new tx-scoped repositories
-* They will be deprecated once users migrate to the tx-first API
+* They delegate work to transaction-scoped repository helpers
+* They remain the stable convenience API while the transaction-first surface matures
 
 This refactor unlocks:
 * True atomic multi-step graph operations
@@ -660,7 +671,7 @@ Current priorities:
 
 Recently completed:
 
-* Delta transaction work completed in line with priorities to make single node insert work better
+* Delta transaction work landed for simple in-memory write paths, reducing full-store copies for common inserts and updates
 * Repository bulk insert helpers for typed nodes and relationships
 * In-memory entity lookup indexes for labels, properties, relationship types, and adjacency
 * Lazy node property-index rebuilds, preserving read-your-writes behavior while reducing write-time index churn
