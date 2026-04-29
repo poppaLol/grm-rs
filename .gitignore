@@ -25,6 +25,14 @@ target
 .claude
 .codex
 
+# Python virtual environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.so
+
 # local persistence and scratch databases
 test-dbs/
 
