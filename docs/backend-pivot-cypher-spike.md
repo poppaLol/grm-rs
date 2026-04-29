@@ -1,7 +1,7 @@
 # Backend Pivot: Cypher Spike Before Deeper In-Memory Storage Work
 
-Status: accepted  
-Branch: `cypher_spike`  
+Status: accepted and initially validated
+Branch: `cypher_spike`
 Decision point: before extending in-memory transaction internals further
 
 ## Context
@@ -34,17 +34,47 @@ physical adjacency redesign.
 The immediate goal is to check whether the current `GraphQuery` contract is
 portable enough to map cleanly onto Neo4j-style execution.
 
-The first spike should be small and non-networked:
+The first spike started small and non-networked:
 
 1. Add an isolated `GraphQuery` to Cypher translation path.
 2. Cover root node matches, one-hop traversal, direction, relationship type,
    property filters, return node/relationship, limit, and offset.
 3. Use tests or snapshots that compare `GraphQuery` inputs to expected Cypher
    strings and parameters.
-4. Do not require a live Neo4j server yet.
+4. Keep normal tests independent of a live Neo4j server.
+
+That spike has now been extended with an ignored live Bolt smoke test. The smoke
+test has successfully connected to a local Neo4j instance at
+`host.docker.internal:7687`, seeded a small `User -[:AUTHORED]-> Post` graph,
+executed Cypher generated from `GraphQuery`, verified the returned node, and
+cleaned up the inserted data.
+
+The live check is intentionally opt-in. It is not part of normal `cargo test`.
 
 After that check, continue the in-memory work as an **indexed transaction
 overlay**, not as index-free adjacency.
+
+## Current Validation State
+
+Implemented:
+
+- `graph_query_to_cypher(&GraphQuery) -> Result<CypherQuery>`
+- `CypherQuery { text, params }`
+- named parameters as `BTreeMap<String, serde_json::Value>`
+- offline translation tests for:
+  - root node matches
+  - one-hop traversal
+  - incoming any-relationship traversal
+  - return node and return relationship
+  - limit and offset
+  - escaped Cypher names
+- ignored Neo4j Bolt smoke test using `neo4rs`
+
+Verified:
+
+- normal Rust test suite passes without Neo4j
+- ignored live smoke test has passed against local Neo4j through
+  `host.docker.internal:7687`
 
 ## Updated Technical Direction
 
@@ -90,11 +120,10 @@ engine, then a deeper adjacency redesign can be evaluated with evidence.
 
 ## Priority Order From Here
 
-1. Cypher translator spike.
+1. Cypher translator spike. (done)
 2. Indexed in-memory transaction overlay.
 3. Minimal live Neo4j prototype that can run shared query/repository tests.
 4. Backend contract cleanup around result rows, errors, transactions, and IDs.
 5. Backend-neutral identity work.
 6. Durability/WAL decisions using compact operation deltas.
 7. Benchmark-driven adjacency redesign only if the evidence points there.
-
