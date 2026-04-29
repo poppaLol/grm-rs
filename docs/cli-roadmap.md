@@ -76,11 +76,12 @@ The current CLI is useful, but there are several major limitations:
 
 ### Now
 
-1. Extend the delta-style in-memory transaction design beyond the current simple write paths
-2. Persistence durability improvements
-3. Smarter autocommit strategy and WAL evaluation
-4. Python integration surface improvements
-5. Session-core cleanup and runtime/schema refactor prep
+1. Cypher translator spike to validate `GraphQuery` portability before deeper backend work
+2. Indexed in-memory transaction overlay beyond the current simple write paths
+3. Persistence durability improvements
+4. Smarter autocommit strategy and WAL evaluation
+5. Python integration surface improvements
+6. Session-core cleanup and runtime/schema refactor prep
 
 ### Next
 
@@ -182,6 +183,9 @@ Target areas:
 
 Status:
 partially completed, with bulk insert helpers, entity lookup indexes, lazy node property indexing, and benchmark/profiling support in place.
+
+Backend pivot note:
+see [Backend Pivot: Cypher Spike Before Deeper In-Memory Storage Work](backend-pivot-cypher-spike.md). The next in-memory work should be treated as an indexed transaction overlay, not a move toward true index-free adjacency.
 
 Current state:
 

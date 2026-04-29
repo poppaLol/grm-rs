@@ -18,6 +18,18 @@ The goal is to give Rust developers a **type-safe, ergonomic OGM-style interface
 
 Over time, the project aims to support additional backends and a CLI for both humans and agentic systems, enabling graph-structured analysis either in-memory or persisted.
 
+## Current Backend Direction
+
+The current backend roadmap has pivoted toward a small Cypher translation spike
+before deeper in-memory transaction work.
+
+The important decision: `grm-rs` is **not** currently moving directly toward
+index-free adjacency. The in-memory backend remains an indexed local graph store
+for now, while the project checks whether the backend-agnostic `GraphQuery` IR
+maps cleanly to Neo4j/Cypher.
+
+See [Backend Pivot: Cypher Spike Before Deeper In-Memory Storage Work](docs/backend-pivot-cypher-spike.md).
+
 ## Python bindings
 
 A first-pass Python extension crate now lives in [`grm-python`](grm-python).
