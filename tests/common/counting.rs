@@ -14,11 +14,13 @@ use std::{
 pub struct CountingBackend {
     pub(crate) inner: InMemoryBackend,
     pub(crate) commits: Arc<AtomicUsize>,
+    pub(crate) rollbacks: Arc<AtomicUsize>,
 }
 
 pub struct CountingTx<T> {
     pub(crate) inner: T,
     pub(crate) commits: Arc<AtomicUsize>,
+    pub(crate) rollbacks: Arc<AtomicUsize>,
 }
 
 #[async_trait::async_trait]
@@ -30,6 +32,7 @@ impl GraphBackend for CountingBackend {
         Ok(CountingTx {
             inner: tx,
             commits: self.commits.clone(),
+            rollbacks: self.rollbacks.clone(),
         })
     }
 
@@ -48,6 +51,7 @@ impl<T: GraphTx + Send> GraphTx for CountingTx<T> {
     }
 
     async fn rollback(self) -> Result<()> {
+        self.rollbacks.fetch_add(1, Ordering::SeqCst);
         self.inner.rollback().await
     }
 
@@ -69,6 +73,10 @@ impl<T: GraphTx + Send> GraphTx for CountingTx<T> {
         self.inner
             .create_relationship(from, to, rel_type, props)
             .await
+    }
+
+    async fn find_node_by_id(&mut self, id: i64) -> Result<Option<StoredNode>> {
+        self.inner.find_node_by_id(id).await
     }
 
     async fn outgoing(

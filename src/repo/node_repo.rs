@@ -58,8 +58,10 @@ where
     where
         M: DecodeFromRow,
     {
-        let exec = self.execute(q).await?;
-        exec.decode_all::<M>()
+        autocommit!(self.backend, |tx| {
+            let mut repo_tx = NodeRepositoryTx::<B::Tx, M>::new(&mut tx);
+            repo_tx.fetch(q).await
+        })
     }
 
     /// Create a node using typed tx CRUD.
