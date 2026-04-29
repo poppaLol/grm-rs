@@ -20,13 +20,25 @@ Over time, the project aims to support additional backends and a CLI for both hu
 
 ## Current Backend Direction
 
-The current backend roadmap has pivoted toward a small Cypher translation spike
-before deeper in-memory transaction work.
+The current backend roadmap has pivoted toward validating the backend-agnostic
+`GraphQuery` IR against Neo4j/Cypher before deeper in-memory transaction work.
 
 The important decision: `grm-rs` is **not** currently moving directly toward
 index-free adjacency. The in-memory backend remains an indexed local graph store
 for now, while the project checks whether the backend-agnostic `GraphQuery` IR
 maps cleanly to Neo4j/Cypher.
+
+This branch now includes:
+
+- an offline `GraphQuery` to Cypher translator
+- named Cypher parameters as `BTreeMap<String, serde_json::Value>`
+- translation tests for node matching, traversal, return shape, paging, and escaped names
+- an ignored live Neo4j Bolt smoke test using `neo4rs`
+
+The live smoke test has successfully connected to a local Neo4j instance through
+`host.docker.internal:7687`. It seeds a small `User -[:AUTHORED]-> Post` graph,
+executes Cypher generated from `GraphQuery`, verifies the returned node, and
+cleans up the inserted data.
 
 See [Backend Pivot: Cypher Spike Before Deeper In-Memory Storage Work](docs/backend-pivot-cypher-spike.md).
 
