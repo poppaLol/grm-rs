@@ -1,6 +1,7 @@
 # Query Language Design
 
-This document sketches the next expansion of the `grm session` query language.
+This document describes the current `grm session` query language and keeps a few
+design notes for the next round of expansion.
 
 The goal is to increase query power while preserving the current dotted command style.
 
@@ -10,19 +11,19 @@ The goal is to increase query power while preserving the current dotted command 
 - support quoted values with whitespace
 - keep field names identifier-like and whitespace-free
 - add comparison and string matching operators without jumping straight to a whole new DSL
-- make the intended CLI shape concrete before implementation
+- keep the implemented CLI shape concrete as the surface evolves
 - pair the design with acceptance-style tests in `tests/runtime_session.rs`
 
 ## Guiding Rules
 
 - field names do not allow whitespace
 - values may allow whitespace when quoted
-- parser work should land before rich query syntax is treated as stable
+- parser behavior should stay covered before new query syntax is treated as stable
 - query controls such as ordering and paging should remain explicit and readable
 - query results should render through an explicit output format layer
 - the current human-readable output should remain the default for now
 
-## Proposed Grammar
+## Current Grammar
 
 High-level command shape:
 
@@ -228,15 +229,15 @@ Default behavior:
 - the current human-readable node/edge output remains the default for `find` queries
 - `format=default` is explicit but optional
 - `format=jsonl` and `format=table` are available now
-- `format=` remains available so the CLI can grow toward later `graph` output without changing query syntax
-- `graph` should remain reserved for graph-shaped or traversal-shaped results
+- `format=graph` is available for graph-shaped or traversal-shaped results
+- flat `find` results intentionally reject `format=graph`
 - coloured output should be layered onto the default and table renderers without changing query semantics
 
 Renderer model:
 
 - query execution should return a structured result value first
 - rendering should happen as a separate step based on `format=...`
-- that split should let default, `jsonl`, `table`, and later `graph` share the same execution path
+- that split lets default, `jsonl`, `table`, and `graph` share the same execution path where their result shapes overlap
 
 ## Output Mockups
 
