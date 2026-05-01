@@ -35,6 +35,7 @@ __pycache__/
 
 # local persistence and scratch databases
 test-dbs/
+tmp/
 
 # local profiler output
 perf.data
