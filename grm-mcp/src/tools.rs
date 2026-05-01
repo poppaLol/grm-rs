@@ -13,11 +13,12 @@ use rmcp::{
 };
 use serde_json::json;
 
+use crate::help::{AGENT_GUIDE, help_index, known_tools, tool_help, tool_help_index};
 use crate::schema::{
     DefineEdgeParams, DefineNodeParams, EdgeCreateParams, EdgeDeleteParams, EdgeFindParams,
     EdgeUpdateParams, ExportParams, FileFormat, FileFormatParams, NodeCreateParams,
-    NodeDeleteParams, NodeFindParams, NodeUpdateParams, PathParams, QueryParams, json_error,
-    parse_fields, to_object, value_map_to_raw,
+    NodeDeleteParams, NodeFindParams, NodeUpdateParams, PathParams, QueryParams, ToolHelpParams,
+    json_error, parse_fields, to_object, value_map_to_raw,
 };
 use crate::server::GrmMcpServer;
 
@@ -25,12 +26,40 @@ const QUERY_LANGUAGE_DOC: &str = include_str!("../../docs/query-language-design.
 
 #[tool_router(vis = "pub(crate)")]
 impl GrmMcpServer {
-    #[tool(description = "Return the current GRM runtime schema and backend identity types.")]
+    #[tool(description = "Return GRM agent guidance, value rules, resources, and common workflow.")]
+    async fn grm_help(&self) -> Result<Json<JsonObject>, McpError> {
+        Ok(Json(to_object(help_index())?))
+    }
+
+    #[tool(
+        description = "Return examples and error-recovery hints for one GRM tool, e.g. {\"tool\":\"grm_node_create\"}."
+    )]
+    async fn grm_tool_help(
+        &self,
+        Parameters(params): Parameters<ToolHelpParams>,
+    ) -> Result<Json<JsonObject>, McpError> {
+        let Some(help) = tool_help(&params.tool) else {
+            return Err(McpError::invalid_params(
+                "unknown GRM tool",
+                Some(json!({
+                    "tool": params.tool,
+                    "known_tools": known_tools(),
+                })),
+            ));
+        };
+        Ok(Json(to_object(help)?))
+    }
+
+    #[tool(
+        description = "Return the current GRM runtime schema and backend identity types. Call before graph reads/writes when model fields are unknown."
+    )]
     async fn grm_schema_list(&self) -> Result<Json<JsonObject>, McpError> {
         Ok(Json(to_object(self.schema_json().await)?))
     }
 
-    #[tool(description = "Define a runtime node model in the current GRM session.")]
+    #[tool(
+        description = "Define a runtime node model. Use PascalCase model names and field types string, int, float, or bool."
+    )]
     async fn grm_schema_define_node(
         &self,
         Parameters(params): Parameters<DefineNodeParams>,
@@ -49,7 +78,9 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Define a runtime edge/link model in the current GRM session.")]
+    #[tool(
+        description = "Define a runtime edge/link model between existing node models. Call grm_schema_list if endpoints are uncertain."
+    )]
     async fn grm_schema_define_edge(
         &self,
         Parameters(params): Parameters<DefineEdgeParams>,
@@ -70,7 +101,9 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Create a node instance for a runtime model.")]
+    #[tool(
+        description = "Create a node for an existing runtime model. Call grm_schema_list first if required fields are unknown."
+    )]
     async fn grm_node_create(
         &self,
         Parameters(params): Parameters<NodeCreateParams>,
@@ -84,7 +117,9 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Update an existing node instance.")]
+    #[tool(
+        description = "Update an existing node by model and id. Use grm_node_find first if the id is unknown."
+    )]
     async fn grm_node_update(
         &self,
         Parameters(params): Parameters<NodeUpdateParams>,
@@ -100,7 +135,7 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Delete an existing node instance.")]
+    #[tool(description = "Delete an existing node by model and id. Use grm_node_find first.")]
     async fn grm_node_delete(
         &self,
         Parameters(params): Parameters<NodeDeleteParams>,
@@ -115,7 +150,9 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Find node instances using GRM query filter terms.")]
+    #[tool(
+        description = "Find nodes using model filters. Supports equality, comparison suffixes, limit, offset, and order."
+    )]
     async fn grm_node_find(
         &self,
         Parameters(params): Parameters<NodeFindParams>,
@@ -129,7 +166,9 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Create an edge instance between two node ids.")]
+    #[tool(
+        description = "Create an edge between two existing node ids. Call grm_schema_list and grm_node_find if endpoints are uncertain."
+    )]
     async fn grm_edge_create(
         &self,
         Parameters(params): Parameters<EdgeCreateParams>,
@@ -150,7 +189,7 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Update an existing edge instance.")]
+    #[tool(description = "Update an existing edge by model and id. Use grm_edge_find first.")]
     async fn grm_edge_update(
         &self,
         Parameters(params): Parameters<EdgeUpdateParams>,
@@ -166,7 +205,7 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Delete an existing edge instance.")]
+    #[tool(description = "Delete an existing edge by model and id. Use grm_edge_find first.")]
     async fn grm_edge_delete(
         &self,
         Parameters(params): Parameters<EdgeDeleteParams>,
@@ -181,7 +220,9 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Find edge instances using GRM query filter terms.")]
+    #[tool(
+        description = "Find edges using endpoint and property filters. Special filters id, from, and to only support equality."
+    )]
     async fn grm_edge_find(
         &self,
         Parameters(params): Parameters<EdgeFindParams>,
@@ -196,7 +237,7 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Run one CLI-compatible GRM session command and return its rendered output."
+        description = "Run one CLI-compatible GRM session command. Best for traversal queries; read grm://docs/query-language for syntax."
     )]
     async fn grm_query(
         &self,
@@ -222,7 +263,7 @@ impl GrmMcpServer {
         }))?))
     }
 
-    #[tool(description = "Save the current GRM session to a JSON or binary session file.")]
+    #[tool(description = "Save the current GRM session snapshot to a JSON or binary session file.")]
     async fn grm_save(
         &self,
         Parameters(params): Parameters<FileFormatParams>,
@@ -238,7 +279,7 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Load a GRM session from a JSON or binary session file.")]
+    #[tool(description = "Load a GRM session snapshot from a JSON or binary session file.")]
     async fn grm_load(
         &self,
         Parameters(params): Parameters<FileFormatParams>,
@@ -254,7 +295,9 @@ impl GrmMcpServer {
         .and_then(|value| Ok(Json(to_object(value)?)))
     }
 
-    #[tool(description = "Import a GRM interchange JSON document into an empty session.")]
+    #[tool(
+        description = "Import a GRM interchange JSON document into an empty session. Use a fresh server if import says the session is not empty."
+    )]
     async fn grm_import(
         &self,
         Parameters(params): Parameters<PathParams>,
@@ -268,7 +311,7 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Export the current graph as GRM interchange JSON, optionally writing it to a path."
+        description = "Export the current graph as GRM interchange JSON, optionally writing it to a path. Use to verify writes."
     )]
     async fn grm_export(
         &self,
@@ -309,7 +352,9 @@ impl ServerHandler for GrmMcpServer {
                 RawResource::new("grm://schema", "schema").no_annotation(),
                 RawResource::new("grm://graph/export", "graph export").no_annotation(),
                 RawResource::new("grm://graph/summary", "graph summary").no_annotation(),
+                RawResource::new("grm://docs/agent-guide", "agent guide").no_annotation(),
                 RawResource::new("grm://docs/query-language", "query language").no_annotation(),
+                RawResource::new("grm://docs/tool-help", "tool help").no_annotation(),
             ],
             next_cursor: None,
             meta: None,
@@ -330,7 +375,10 @@ impl ServerHandler for GrmMcpServer {
             }
             "grm://graph/summary" => serde_json::to_string_pretty(&self.summary_json().await)
                 .map_err(|err| McpError::internal_error(err.to_string(), None))?,
+            "grm://docs/agent-guide" => AGENT_GUIDE.to_string(),
             "grm://docs/query-language" => compact_query_doc(),
+            "grm://docs/tool-help" => serde_json::to_string_pretty(&tool_help_index())
+                .map_err(|err| McpError::internal_error(err.to_string(), None))?,
             _ => {
                 return Err(McpError::resource_not_found(
                     "resource not found",

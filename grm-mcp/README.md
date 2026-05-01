@@ -45,6 +45,25 @@ want a readable interchange graph file updated after successful mutations.
 
 ## Example Tool Calls
 
+Agents should start with `grm_help`, then inspect `grm://schema` or call
+`grm_schema_list` before graph operations. If a GRM tool fails in a way the
+agent cannot immediately fix, call `grm_tool_help` with the failed tool name
+before retrying.
+
+Get server guidance:
+
+```json
+{}
+```
+
+Get operation-specific recovery help:
+
+```json
+{
+  "tool": "grm_node_create"
+}
+```
+
 Find a user:
 
 ```json
@@ -75,6 +94,8 @@ Export the current graph without writing a file:
 ## Resources
 
 ```text
+grm://docs/agent-guide
+grm://docs/tool-help
 grm://schema
 grm://graph/export
 grm://graph/summary
