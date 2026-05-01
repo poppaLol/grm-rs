@@ -119,6 +119,11 @@ pub struct ExportParams {
     pub path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ToolHelpParams {
+    pub tool: String,
+}
+
 pub(crate) fn parse_fields(fields: Vec<FieldParam>) -> GrmResult<Vec<RuntimeField>> {
     fields
         .into_iter()

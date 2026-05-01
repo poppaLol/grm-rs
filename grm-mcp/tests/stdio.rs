@@ -48,6 +48,35 @@ async fn schema_list_on_empty_stdio_session() {
 }
 
 #[tokio::test]
+async fn help_tools_teach_recovery_workflow() {
+    let client = client(&[]).await;
+
+    let help = call(&client, "grm_help", json!({})).await;
+    assert!(
+        help["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource == "grm://docs/agent-guide")
+    );
+
+    let node_create_help = call(
+        &client,
+        "grm_tool_help",
+        json!({ "tool": "grm_node_create" }),
+    )
+    .await;
+    assert!(node_create_help.to_string().contains("grm_schema_list"));
+    assert!(
+        node_create_help
+            .to_string()
+            .contains("missing required field")
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn export_json_flag_writes_readable_graph_after_mutation() {
     let temp = tempdir().unwrap();
     let export_path = temp.path().join("graph.export.json");
