@@ -48,6 +48,36 @@ async fn schema_list_on_empty_stdio_session() {
 }
 
 #[tokio::test]
+async fn schema_define_tools_expose_structured_field_objects() {
+    let client = client(&[]).await;
+    let tools = client.list_tools(None).await.expect("list tools");
+
+    for tool_name in ["grm_schema_define_node", "grm_schema_define_edge"] {
+        let tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap_or_else(|| panic!("missing tool {tool_name}"));
+        let fields_schema = tool
+            .input_schema
+            .get("properties")
+            .and_then(|properties| properties.get("fields"))
+            .expect("fields schema should be exposed");
+        let items = fields_schema
+            .get("items")
+            .expect("fields should describe array items");
+
+        assert_eq!(fields_schema["type"], json!("array"));
+        assert_eq!(items["type"], json!("object"));
+        assert_eq!(items["properties"]["name"]["type"], json!("string"));
+        assert_eq!(items["properties"]["type"]["type"], json!("string"));
+        assert_eq!(items["properties"]["required"]["type"], json!("boolean"));
+    }
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn help_tools_teach_recovery_workflow() {
     let client = client(&[]).await;
 
