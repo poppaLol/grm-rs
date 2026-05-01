@@ -20,7 +20,7 @@ For an MCP client such as Ollmcp, run the compiled binary over stdio:
       "command": "/workspaces/grm-rs/target/debug/grm-mcp",
       "args": [
         "--import-json",
-        "/workspaces/grm-rs/test-dbs/query-playground.export.json"
+        "/path/to/graph.export.json"
       ]
     }
   }

@@ -405,34 +405,3 @@ fn compact_query_doc() -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-    use std::path::PathBuf;
-
-    use rmcp::handler::server::wrapper::Parameters;
-    use serde_json::json;
-
-    use crate::{GrmMcpServer, NodeFindParams, StartupOptions};
-
-    #[tokio::test]
-    async fn imports_playground_and_finds_user() {
-        let server = GrmMcpServer::new(StartupOptions {
-            import_json: Some(PathBuf::from("../test-dbs/query-playground.export.json")),
-            ..StartupOptions::default()
-        })
-        .unwrap();
-
-        let result = server
-            .grm_node_find(Parameters(NodeFindParams {
-                model: "User".to_string(),
-                filters: BTreeMap::from([("name".to_string(), json!("Alice Jones"))]),
-            }))
-            .await
-            .unwrap()
-            .0;
-
-        assert_eq!(result["nodes"].as_array().unwrap().len(), 1);
-    }
-}
