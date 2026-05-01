@@ -407,6 +407,50 @@ impl SessionState {
         Ok(())
     }
 
+    pub fn export_value(&self) -> Result<Value> {
+        serde_json::to_value(self.interchange_document()).map_err(|_| {
+            crate::error::GrmError::SaveAborted("failed to serialize graph export as JSON")
+        })
+    }
+
+    pub fn schema_value(&self) -> Value {
+        json!({
+            "identity": {
+                "node": self.node_id_type().keyword(),
+                "edge": self.rel_id_type().keyword(),
+            },
+            "nodes": self.catalog.list_node_models(),
+            "edges": self.catalog.list_rel_models(),
+        })
+    }
+
+    pub fn summary_value(&self) -> Value {
+        let store = self.client.backend().snapshot_store();
+        let mut nodes_by_model = BTreeMap::<String, usize>::new();
+        let mut edges_by_model = BTreeMap::<String, usize>::new();
+
+        for node in store.nodes.values() {
+            let model = self.interchange_node_model_name(node);
+            *nodes_by_model.entry(model).or_default() += 1;
+        }
+
+        for rel in store.rels.values() {
+            let model = self.interchange_edge_model_name(rel);
+            *edges_by_model.entry(model).or_default() += 1;
+        }
+
+        json!({
+            "nodes": {
+                "total": store.nodes.len(),
+                "by_model": nodes_by_model,
+            },
+            "edges": {
+                "total": store.rels.len(),
+                "by_model": edges_by_model,
+            },
+        })
+    }
+
     pub fn import_from_json(&mut self, path: impl AsRef<Path>) -> Result<()> {
         if !self.is_empty_for_import() {
             return Err(crate::GrmError::Constraint(
