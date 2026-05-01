@@ -1,4 +1,5 @@
 mod config;
+mod help;
 mod schema;
 mod server;
 mod tools;
@@ -9,6 +10,6 @@ pub use config::{
 pub use schema::{
     DefineEdgeParams, DefineNodeParams, EdgeCreateParams, EdgeDeleteParams, EdgeFindParams,
     EdgeUpdateParams, ExportParams, FieldParam, FileFormat, FileFormatParams, NodeCreateParams,
-    NodeDeleteParams, NodeFindParams, NodeUpdateParams, PathParams, QueryParams,
+    NodeDeleteParams, NodeFindParams, NodeUpdateParams, PathParams, QueryParams, ToolHelpParams,
 };
 pub use server::GrmMcpServer;
