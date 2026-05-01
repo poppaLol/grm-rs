@@ -2,6 +2,7 @@ use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, JsonObject};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use tempfile::tempdir;
 use tokio::process::Command;
 
@@ -34,6 +35,16 @@ async fn call(
     result
         .structured_content
         .expect("structured content from tool")
+}
+
+fn fixture_path(name: &str) -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[tokio::test]
@@ -147,15 +158,16 @@ async fn export_json_flag_writes_readable_graph_after_mutation() {
 }
 
 #[tokio::test]
-async fn import_find_traverse_and_export_playground() {
-    let client = client(&["--import-json", "../test-dbs/query-playground.export.json"]).await;
+async fn import_find_traverse_and_export_basic_interchange() {
+    let import_path = fixture_path("interchange_v1_basic.json");
+    let client = client(&["--import-json", &import_path]).await;
 
     let found = call(
         &client,
         "grm_node_find",
         json!({
             "model": "User",
-            "filters": { "name": "Alice Jones" }
+            "filters": { "name": "Alice" }
         }),
     )
     .await;
@@ -165,7 +177,7 @@ async fn import_find_traverse_and_export_playground() {
         &client,
         "grm_query",
         json!({
-            "command": "node.find User name=\"Alice Jones\" via=out:Authored:Post"
+            "command": "node.find User name=\"Alice\" via=out:Authored:Post"
         }),
     )
     .await;
@@ -177,8 +189,7 @@ async fn import_find_traverse_and_export_playground() {
         json!({
             "model": "Post",
             "props": {
-                "title": "MCP Note",
-                "published": false
+                "title": "MCP Note"
             }
         }),
     )
@@ -187,7 +198,7 @@ async fn import_find_traverse_and_export_playground() {
 
     let exported = call(&client, "grm_export", json!({ "path": null })).await;
     assert_eq!(exported["format"], "grm.interchange");
-    assert!(exported["data"]["nodes"].as_array().unwrap().len() >= 8);
+    assert_eq!(exported["data"]["nodes"].as_array().unwrap().len(), 3);
 
     client.cancel().await.unwrap();
 }
