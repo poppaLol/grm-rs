@@ -4,10 +4,11 @@ use grm_rs::{GrmError, Result as GrmResult, RuntimeField, RuntimeValueType};
 use rmcp::ErrorData as McpError;
 use rmcp::model::JsonObject;
 use rmcp::schemars;
+use rmcp::schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldParam {
     pub name: String,
     #[serde(rename = "type")]
@@ -15,7 +16,50 @@ pub struct FieldParam {
     pub required: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+impl JsonSchema for FieldParam {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "FieldParam".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        field_schema_value()
+            .try_into()
+            .expect("valid FieldParam schema")
+    }
+}
+
+fn field_schema_value() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Runtime property field name."
+            },
+            "type": {
+                "type": "string",
+                "enum": ["string", "int", "float", "bool"],
+                "description": "Runtime property value type."
+            },
+            "required": {
+                "type": "boolean",
+                "description": "Whether this field must be present when creating an instance."
+            }
+        },
+        "required": ["name", "type", "required"],
+        "additionalProperties": false
+    })
+}
+
+fn fields_schema() -> Value {
+    json!({
+        "type": "array",
+        "default": [],
+        "items": field_schema_value()
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefineNodeParams {
     pub name: String,
     pub id_field: String,
@@ -23,7 +67,28 @@ pub struct DefineNodeParams {
     pub fields: Vec<FieldParam>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+impl JsonSchema for DefineNodeParams {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DefineNodeParams".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "id_field": { "type": "string" },
+                "fields": fields_schema()
+            },
+            "required": ["name", "id_field"],
+            "additionalProperties": false
+        })
+        .try_into()
+        .expect("valid DefineNodeParams schema")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefineEdgeParams {
     pub name: String,
     pub from_model: String,
@@ -31,6 +96,29 @@ pub struct DefineEdgeParams {
     pub id_field: String,
     #[serde(default)]
     pub fields: Vec<FieldParam>,
+}
+
+impl JsonSchema for DefineEdgeParams {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "DefineEdgeParams".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "from_model": { "type": "string" },
+                "to_model": { "type": "string" },
+                "id_field": { "type": "string" },
+                "fields": fields_schema()
+            },
+            "required": ["name", "from_model", "to_model", "id_field"],
+            "additionalProperties": false
+        })
+        .try_into()
+        .expect("valid DefineEdgeParams schema")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
