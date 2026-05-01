@@ -254,7 +254,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_save" => json!({
             "tool": "grm_save",
             "purpose": "Save the current runtime session snapshot to JSON or binary.",
-            "example": { "format": "json", "path": "test-dbs/session.json" },
+            "example": { "format": "json", "path": "session.json" },
             "common_errors": [
                 recovery("failed to write", "Check that the target directory exists and is writable.")
             ],
@@ -263,7 +263,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_load" => json!({
             "tool": "grm_load",
             "purpose": "Load a GRM runtime session snapshot from JSON or binary.",
-            "example": { "format": "json", "path": "test-dbs/session.json" },
+            "example": { "format": "json", "path": "session.json" },
             "common_errors": [
                 recovery("failed to read", "Check the path and format."),
                 recovery("failed to deserialize", "Use grm_import for interchange exports; grm_load expects session snapshots.")
@@ -273,7 +273,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_import" => json!({
             "tool": "grm_import",
             "purpose": "Import a GRM interchange JSON document into an empty session.",
-            "example": { "path": "test-dbs/query-playground.export.json" },
+            "example": { "path": "graph.export.json" },
             "common_errors": [
                 recovery("requires an empty session", "Start a fresh server process or avoid importing into an existing session."),
                 recovery("unsupported import", "Confirm the document has format grm.interchange, version 1, and kind graph.")
