@@ -101,3 +101,14 @@ grm://graph/export
 grm://graph/summary
 grm://docs/query-language
 ```
+
+## Future Bulk Writes
+
+Agents often create extracted graphs one entity at a time when only
+single-operation tools are visible. The planned MCP direction is to add
+batch-oriented write affordances alongside the current tools:
+
+- `grm_batch` for ordered structured operation lists
+- `grm_graph_patch` for declarative graph-shaped deltas
+
+See [MCP Batch And Graph Patch Requirements](../docs/mcp-batch-graph-patch-requirements.md).

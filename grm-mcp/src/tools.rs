@@ -247,15 +247,11 @@ impl GrmMcpServer {
         let current = std::mem::take(&mut *state);
         let mut session =
             CliSession::with_state(current, Cursor::new(Vec::<u8>::new()), Vec::new());
-        let should_exit = session
-            .handle_command(&params.command)
-            .await
-            .map_err(to_mcp_error)?;
+        let result = session.handle_command(&params.command).await;
         let (next_state, _, output) = session.into_parts();
-        self.persist_autocommit(&next_state)
-            .await
-            .map_err(to_mcp_error)?;
         *state = next_state;
+        let should_exit = result.map_err(to_mcp_error)?;
+        self.persist_autocommit(&state).await.map_err(to_mcp_error)?;
         Ok(Json(to_object(json!({
             "command": params.command,
             "should_exit": should_exit,
