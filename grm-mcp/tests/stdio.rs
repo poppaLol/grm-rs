@@ -37,6 +37,19 @@ async fn call(
         .expect("structured content from tool")
 }
 
+async fn call_error(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    name: &str,
+    args: Value,
+) -> String {
+    let arguments: JsonObject = args.as_object().cloned().unwrap_or_default();
+    client
+        .call_tool(CallToolRequestParams::new(name.to_string()).with_arguments(arguments))
+        .await
+        .expect_err("tool should fail")
+        .to_string()
+}
+
 fn fixture_path(name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -153,6 +166,139 @@ async fn export_json_flag_writes_readable_graph_after_mutation() {
         exported["data"]["nodes"][0]["props"]["title"],
         "export smoke"
     );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_grm_query_preserves_stdio_session_state() {
+    let import_path = fixture_path("interchange_v1_basic.json");
+    let client = client(&["--import-json", &import_path]).await;
+
+    let error = call_error(
+        &client,
+        "grm_query",
+        json!({
+            "command": "node.find MissingModel name=\"Alice\""
+        }),
+    )
+    .await;
+    assert!(!error.is_empty());
+
+    let found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "User",
+            "filters": { "name": "Alice" }
+        }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_structured_mutation_preserves_stdio_session_state() {
+    let client = client(&[]).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Note",
+            "id_field": "noteId",
+            "fields": [
+                { "name": "title", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+
+    let error = call_error(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "Note",
+            "props": {}
+        }),
+    )
+    .await;
+    assert!(!error.is_empty());
+
+    let created = call(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "Note",
+            "props": { "title": "After failed create" }
+        }),
+    )
+    .await;
+    assert_eq!(created["props"]["title"], "After failed create");
+
+    let found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "Note",
+            "filters": { "title": "After failed create" }
+        }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_import_into_non_empty_session_preserves_existing_graph() {
+    let import_path = fixture_path("interchange_v1_basic.json");
+    let client = client(&[]).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Note",
+            "id_field": "noteId",
+            "fields": [
+                { "name": "title", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+    call(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "Note",
+            "props": { "title": "Keep me" }
+        }),
+    )
+    .await;
+
+    let error = call_error(
+        &client,
+        "grm_import",
+        json!({
+            "path": import_path
+        }),
+    )
+    .await;
+    assert!(!error.is_empty());
+
+    let found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "Note",
+            "filters": { "title": "Keep me" }
+        }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 1);
 
     client.cancel().await.unwrap();
 }
