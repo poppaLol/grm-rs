@@ -129,6 +129,15 @@ pub struct NodeCreateParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BatchNodeCreateParams {
+    pub model: String,
+    #[serde(default)]
+    pub props: BTreeMap<String, Value>,
+    #[serde(default, rename = "ref")]
+    pub local_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NodeUpdateParams {
     pub model: String,
     pub id: i64,
@@ -154,6 +163,22 @@ pub struct EdgeCreateParams {
     pub model: String,
     pub from: i64,
     pub to: i64,
+    #[serde(default)]
+    pub props: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum BatchEndpoint {
+    Id(i64),
+    Ref(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BatchEdgeCreateParams {
+    pub model: String,
+    pub from: BatchEndpoint,
+    pub to: BatchEndpoint,
     #[serde(default)]
     pub props: BTreeMap<String, Value>,
 }
@@ -210,6 +235,58 @@ pub struct ExportParams {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolHelpParams {
     pub tool: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchResponse {
+    Summary,
+    Detailed,
+}
+
+fn default_atomic() -> bool {
+    true
+}
+
+fn default_batch_response() -> BatchResponse {
+    BatchResponse::Summary
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "op", content = "args", rename_all = "snake_case")]
+pub enum BatchOp {
+    SchemaDefineNode(DefineNodeParams),
+    SchemaDefineEdge(DefineEdgeParams),
+    NodeCreate(BatchNodeCreateParams),
+    NodeUpdate(NodeUpdateParams),
+    NodeDelete(NodeDeleteParams),
+    EdgeCreate(BatchEdgeCreateParams),
+    EdgeUpdate(EdgeUpdateParams),
+    EdgeDelete(EdgeDeleteParams),
+}
+
+impl BatchOp {
+    pub fn op_name(&self) -> &'static str {
+        match self {
+            Self::SchemaDefineNode(_) => "schema_define_node",
+            Self::SchemaDefineEdge(_) => "schema_define_edge",
+            Self::NodeCreate(_) => "node_create",
+            Self::NodeUpdate(_) => "node_update",
+            Self::NodeDelete(_) => "node_delete",
+            Self::EdgeCreate(_) => "edge_create",
+            Self::EdgeUpdate(_) => "edge_update",
+            Self::EdgeDelete(_) => "edge_delete",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BatchParams {
+    #[serde(default = "default_atomic")]
+    pub atomic: bool,
+    #[serde(default = "default_batch_response")]
+    pub response: BatchResponse,
+    pub ops: Vec<BatchOp>,
 }
 
 pub(crate) fn parse_fields(fields: Vec<FieldParam>) -> GrmResult<Vec<RuntimeField>> {
