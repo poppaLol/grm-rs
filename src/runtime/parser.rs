@@ -38,6 +38,7 @@ pub enum SessionCommand {
         name: String,
     },
     NodeCreate {
+        binding: Option<String>,
         model_name: String,
         assignments: Vec<KeyValueArg>,
     },
@@ -120,10 +121,8 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
         "link.show" => Ok(SessionCommand::LinkShow {
             name: expect_single_arg(command, args)?.to_string(),
         }),
-        "node.create" => Ok(SessionCommand::NodeCreate {
-            model_name: required_positional(command, args, 0)?.to_string(),
-            assignments: parse_assignments(&args[1..], trimmed)?,
-        }),
+        "let" => parse_let_command(args, trimmed),
+        "node.create" => parse_node_create(command, args, trimmed, None),
         "node.find" => Ok(SessionCommand::NodeFind {
             model_name: required_positional(command, args, 0)?.to_string(),
             terms: parse_query_terms(&args[1..], trimmed)?,
@@ -179,6 +178,77 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
             raw: trimmed.to_string(),
         }),
     }
+}
+
+fn parse_let_command(args: &[ParsedToken], input: &str) -> Result<SessionCommand> {
+    let binding = required_positional("let", args, 0)?;
+    validate_binding_name(binding, input, args[0].start)?;
+
+    let equals = required_positional("let", args, 1)?;
+    if equals != "=" {
+        return Err(constraint_at(
+            input,
+            args.get(1).map(|token| token.start).unwrap_or(input.len()),
+            "usage: let <name> = node.create <ModelName> [field=value ...]",
+        ));
+    }
+
+    let nested_command = required_positional("let", args, 2)?;
+    match nested_command {
+        "node.create" => {
+            parse_node_create(nested_command, &args[3..], input, Some(binding.to_string()))
+        }
+        _ => Err(constraint_at(
+            input,
+            args.get(2).map(|token| token.start).unwrap_or(input.len()),
+            "let currently supports node.create only",
+        )),
+    }
+}
+
+fn parse_node_create(
+    command: &str,
+    args: &[ParsedToken],
+    input: &str,
+    binding: Option<String>,
+) -> Result<SessionCommand> {
+    Ok(SessionCommand::NodeCreate {
+        binding,
+        model_name: required_positional(command, args, 0)?.to_string(),
+        assignments: parse_assignments(&args[1..], input)?,
+    })
+}
+
+fn validate_binding_name(name: &str, input: &str, start: usize) -> Result<()> {
+    if name.is_empty() {
+        return Err(constraint_at(input, start, "binding name cannot be empty"));
+    }
+
+    let mut chars = name.chars();
+    let first = chars
+        .next()
+        .ok_or_else(|| constraint_at(input, start, "binding name cannot be empty"))?;
+
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(constraint_at(
+            input,
+            start,
+            "binding name must start with a letter or underscore",
+        ));
+    }
+
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Err(constraint_at(
+            input,
+            start,
+            "binding name must contain only ASCII letters, digits, or underscores",
+        ));
+    }
+
+    Ok(())
 }
 
 fn tokenize_command_line_internal(input: &str) -> Result<Vec<ParsedToken>> {

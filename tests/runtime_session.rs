@@ -550,6 +550,69 @@ async fn script_mode_outputs_colored_summary() {
 }
 
 #[tokio::test]
+async fn script_mode_supports_let_bound_node_refs_for_edges() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nlet alice = node.create User name=Alice\nlet hello = node.create Post title=Hello\nedge.create Authored from=alice to=hello year=2026\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run_script().await.unwrap();
+
+    let (state, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+    let edges = state
+        .find_relationships(
+            "Authored",
+            &BTreeMap::from([("year".to_string(), "2026".to_string())]),
+        )
+        .unwrap();
+
+    assert_eq!(edges.len(), 1);
+    assert!(output.contains("| edge |"));
+}
+
+#[tokio::test]
+async fn script_mode_reports_unknown_edge_binding() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nlet alice = node.create User name=Alice\nedge.create Authored from=alice to=missing year=2026\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    let err = session.run_script().await.unwrap_err();
+
+    assert!(err.to_string().contains("unknown binding 'missing'"));
+}
+
+#[tokio::test]
+async fn script_mode_rejects_duplicate_binding_before_create() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nlet alice = node.create User name=Alice\nlet alice = node.create User name=Bob\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    let err = session.run_script().await.unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("binding 'alice' is already defined")
+    );
+    assert_eq!(
+        session
+            .state()
+            .find_nodes(
+                "User",
+                &BTreeMap::from([("name".to_string(), "Bob".to_string())]),
+            )
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn script_mode_rejects_bad_field_specs() {
     let input = Cursor::new("model.define User userId name:string:maybe\n");
     let output = Vec::new();

@@ -1586,6 +1586,7 @@ pub struct CliSession<R: BufRead, W: Write> {
     colors: SessionColors,
     output_mode: SessionOutputMode,
     script_summary: ScriptSummary,
+    bindings: BTreeMap<String, i64>,
 }
 
 impl<R: BufRead, W: Write> CliSession<R, W> {
@@ -1620,6 +1621,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             colors,
             output_mode: SessionOutputMode::Interactive,
             script_summary: ScriptSummary::default(),
+            bindings: BTreeMap::new(),
         }
     }
 
@@ -1676,6 +1678,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.prompt_name = "script";
         self.output_mode = SessionOutputMode::Script;
         self.script_summary = ScriptSummary::default();
+        self.bindings.clear();
 
         writeln!(self.writer, "Welcome to GRM-RS CLI.")?;
         writeln!(self.writer, "Running setup script...")?;
@@ -1761,11 +1764,19 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionCommand::LinkList => self.write_rel_model_list()?,
             SessionCommand::LinkShow { name } => self.write_rel_model_show(&name)?,
             SessionCommand::NodeCreate {
+                binding,
                 model_name,
                 assignments,
             } => {
-                self.handle_node_create_parsed(&model_name, &assignments)
-                    .await?
+                if let Some(binding) = &binding {
+                    self.ensure_binding_available(binding)?;
+                }
+                let created = self
+                    .handle_node_create_parsed(&model_name, &assignments)
+                    .await?;
+                if let Some(binding) = binding {
+                    self.bindings.insert(binding, created.id);
+                }
             }
             SessionCommand::NodeFind { model_name, terms } => {
                 self.handle_node_find_parsed(&model_name, &terms).await?
@@ -1852,6 +1863,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  node.create <ModelName> [field=value ...]")?;
         writeln!(
             self.writer,
+            "  let <name> = node.create <ModelName> [field=value ...]"
+        )?;
+        writeln!(
+            self.writer,
             "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [via=<out|in|both>:<LinkName|*>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end|edge] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table|graph]"
         )?;
         writeln!(
@@ -1861,7 +1876,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         writeln!(self.writer, "  node.delete <ModelName> <id>")?;
         writeln!(
             self.writer,
-            "  edge.create <LinkName> from=<id> to=<id> [field=value ...]"
+            "  edge.create <LinkName> from=<id|binding> to=<id|binding> [field=value ...]"
         )?;
         writeln!(
             self.writer,
@@ -1892,6 +1907,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         writeln!(self.writer, "  node.find User age>=21 format=jsonl")?;
         writeln!(self.writer, "  node.find User age>=21 format=table")?;
+        writeln!(self.writer, "  let alice = node.create User name=Alice")?;
+        writeln!(
+            self.writer,
+            "  edge.create Authored from=alice to=1 year=2026"
+        )?;
         writeln!(
             self.writer,
             "  edge.update Authored 1 authoredOn=2026-04-12"
@@ -2213,7 +2233,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         &mut self,
         model_name: &str,
         assignments: &[KeyValueArg],
-    ) -> Result<()> {
+    ) -> Result<StoredNode> {
         let values = collect_assignments(assignments);
         let created = self.state.create_instance(model_name, &values).await?;
         let (model_name, model_id_field_name) = {
@@ -2238,7 +2258,36 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 model_name, created.id, model_id_field_name, created.id
             )?;
         }
+        Ok(created)
+    }
+
+    fn ensure_binding_available(&self, binding: &str) -> Result<()> {
+        if self.bindings.contains_key(binding) {
+            return Err(crate::GrmError::Constraint(format!(
+                "binding '{}' is already defined",
+                binding
+            )));
+        }
         Ok(())
+    }
+
+    fn resolve_binding_or_id(&self, raw: &str, field: &str) -> Result<String> {
+        if let Some(id) = self.bindings.get(raw) {
+            return Ok(id.to_string());
+        }
+
+        if raw.parse::<i64>().is_ok() {
+            return Ok(raw.to_string());
+        }
+
+        if is_binding_name_like(raw) {
+            return Err(crate::GrmError::Constraint(format!(
+                "unknown binding '{}' for edge.create {}",
+                raw, field
+            )));
+        }
+
+        Ok(raw.to_string())
     }
 
     async fn handle_node_update_parsed(
@@ -2304,6 +2353,8 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let to_id = values
             .remove("to")
             .ok_or_else(|| crate::GrmError::Constraint("edge.create requires to=<id>".into()))?;
+        let from_id = self.resolve_binding_or_id(&from_id, "from")?;
+        let to_id = self.resolve_binding_or_id(&to_id, "to")?;
         let created = self
             .state
             .create_relationship_instance(model_name, &from_id, &to_id, &values)
@@ -4559,6 +4610,16 @@ fn collect_assignments(assignments: &[KeyValueArg]) -> BTreeMap<String, String> 
         .iter()
         .map(|arg| (arg.key.clone(), arg.value.clone()))
         .collect()
+}
+
+fn is_binding_name_like(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn collect_query_terms(terms: &[QueryTerm]) -> BTreeMap<String, String> {
