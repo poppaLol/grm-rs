@@ -111,6 +111,7 @@ few ordered schema, node, or edge mutations:
 ```json
 {
   "atomic": true,
+  "allow_deletes": false,
   "response": "summary",
   "ops": [
     {
@@ -150,7 +151,9 @@ few ordered schema, node, or edge mutations:
 return a compact summary grouped by operation and model. Use
 `"response": "detailed"` when you need created or updated ids back. Node create
 operations may provide a batch-local `ref`, and later edge create operations may
-use either numeric ids or those earlier refs as endpoints.
+use either numeric ids or those earlier refs as endpoints. Refs must be unique
+within a batch. Delete operations are rejected unless `allow_deletes` is set to
+`true`.
 
 `grm_graph_patch` remains the planned declarative graph-shaped bulk write
 surface.
