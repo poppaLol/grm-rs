@@ -4,22 +4,22 @@ link.define Authored User Post authoredId authoredOn:string:required
 link.define Accessed User Post accessedId accessedOn:string:required
 link.define Knows User User knowsId
 
-node.create User name="Alice Jones" age=42
-node.create User name="Bob Smith" age=35
-node.create User name="Eve Turner" age=29
+let alice_jones = node.create User name="Alice Jones" age=42
+let bob_smith = node.create User name="Bob Smith" age=35
+let eve_turner = node.create User name="Eve Turner" age=29
 
-node.create Post title="Hello World" text="A short welcome post about graphs." published=true
-node.create Post title="Draft Notes" text="A quick draft about traversal ideas." published=false
-node.create Post title="Traversal Tips" text="Short notes on paths hops and filtering." published=true
-node.create User name=Alice age=31
+let hello_world = node.create Post title="Hello World" text="A short welcome post about graphs." published=true
+let draft_notes = node.create Post title="Draft Notes" text="A quick draft about traversal ideas." published=false
+let traversal_tips = node.create Post title="Traversal Tips" text="Short notes on paths hops and filtering." published=true
+let alice = node.create User name=Alice age=31
 
-edge.create Authored from=1 to=4 authoredOn=2026-04-10
-edge.create Authored from=2 to=5 authoredOn=2026-04-12
-edge.create Authored from=1 to=6 authoredOn=2026-04-15
+edge.create Authored from=alice_jones to=hello_world authoredOn=2026-04-10
+edge.create Authored from=bob_smith to=draft_notes authoredOn=2026-04-12
+edge.create Authored from=alice_jones to=traversal_tips authoredOn=2026-04-15
 
-edge.create Accessed from=1 to=5 accessedOn=2026-04-20
-edge.create Accessed from=2 to=4 accessedOn=2026-04-21
-edge.create Accessed from=3 to=6 accessedOn=2026-04-22
+edge.create Accessed from=alice_jones to=draft_notes accessedOn=2026-04-20
+edge.create Accessed from=bob_smith to=hello_world accessedOn=2026-04-21
+edge.create Accessed from=eve_turner to=traversal_tips accessedOn=2026-04-22
 
-edge.create Knows from=7 to=2
-edge.create Knows from=2 to=3
+edge.create Knows from=alice to=bob_smith
+edge.create Knows from=bob_smith to=eve_turner
