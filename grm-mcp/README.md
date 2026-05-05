@@ -102,13 +102,57 @@ grm://graph/summary
 grm://docs/query-language
 ```
 
-## Future Bulk Writes
+## Bulk Writes
 
 Agents often create extracted graphs one entity at a time when only
-single-operation tools are visible. The planned MCP direction is to add
-batch-oriented write affordances alongside the current tools:
+single-operation tools are visible. Use `grm_batch` when applying more than a
+few ordered schema, node, or edge mutations:
 
-- `grm_batch` for ordered structured operation lists
-- `grm_graph_patch` for declarative graph-shaped deltas
+```json
+{
+  "atomic": true,
+  "response": "summary",
+  "ops": [
+    {
+      "op": "node_create",
+      "args": {
+        "ref": "user:alice",
+        "model": "User",
+        "props": {
+          "name": "Alice Jones"
+        }
+      }
+    },
+    {
+      "op": "node_create",
+      "args": {
+        "ref": "post:hello",
+        "model": "Post",
+        "props": {
+          "title": "Hello World"
+        }
+      }
+    },
+    {
+      "op": "edge_create",
+      "args": {
+        "model": "Authored",
+        "from": "user:alice",
+        "to": "post:hello",
+        "props": {}
+      }
+    }
+  ]
+}
+```
+
+`grm_batch` applies operations in order. By default, batches are atomic and
+return a compact summary grouped by operation and model. Use
+`"response": "detailed"` when you need created or updated ids back. Node create
+operations may provide a patch-local `ref`, and later edge create operations may
+use either numeric ids or those earlier refs as endpoints.
+
+`grm_graph_patch` remains the planned declarative graph-shaped bulk write
+surface.
 
 See [MCP Batch And Graph Patch Requirements](../docs/mcp-batch-graph-patch-requirements.md).
