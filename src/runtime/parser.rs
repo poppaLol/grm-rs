@@ -23,6 +23,8 @@ pub enum SessionCommand {
     Help,
     Exit,
     SessionDescribe,
+    TxBegin,
+    TxCommit,
     ModelDefine {
         args: Vec<String>,
     },
@@ -107,6 +109,18 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
         "?" | "help" | "session.help" => Ok(SessionCommand::Help),
         "exit" | "session.exit" => Ok(SessionCommand::Exit),
         "session.describe" => Ok(SessionCommand::SessionDescribe),
+        "tx.begin" | "transaction.begin" => {
+            if !args.is_empty() {
+                return Err(GrmError::Constraint("usage: tx.begin".to_string()));
+            }
+            Ok(SessionCommand::TxBegin)
+        }
+        "tx.commit" | "transaction.commit" => {
+            if !args.is_empty() {
+                return Err(GrmError::Constraint("usage: tx.commit".to_string()));
+            }
+            Ok(SessionCommand::TxCommit)
+        }
         "model.define" => Ok(SessionCommand::ModelDefine {
             args: args.iter().map(|token| token.text.clone()).collect(),
         }),

@@ -260,6 +260,12 @@ struct ScriptSummary {
     inserted_edges: BTreeMap<String, usize>,
 }
 
+struct ScriptTransaction {
+    state_snapshot: SessionState,
+    bindings_snapshot: BTreeMap<String, i64>,
+    script_summary_snapshot: ScriptSummary,
+}
+
 impl Default for SessionState {
     fn default() -> Self {
         Self::new()
@@ -1587,6 +1593,7 @@ pub struct CliSession<R: BufRead, W: Write> {
     output_mode: SessionOutputMode,
     script_summary: ScriptSummary,
     bindings: BTreeMap<String, i64>,
+    script_tx: Option<ScriptTransaction>,
 }
 
 impl<R: BufRead, W: Write> CliSession<R, W> {
@@ -1622,6 +1629,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             output_mode: SessionOutputMode::Interactive,
             script_summary: ScriptSummary::default(),
             bindings: BTreeMap::new(),
+            script_tx: None,
         }
     }
 
@@ -1679,6 +1687,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.output_mode = SessionOutputMode::Script;
         self.script_summary = ScriptSummary::default();
         self.bindings.clear();
+        self.script_tx = None;
 
         writeln!(self.writer, "Welcome to GRM-RS CLI.")?;
         writeln!(self.writer, "Running setup script...")?;
@@ -1694,10 +1703,23 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 continue;
             }
 
-            let should_exit = self.handle_command(trimmed).await?;
+            let should_exit = match self.handle_command(trimmed).await {
+                Ok(should_exit) => should_exit,
+                Err(err) => {
+                    self.rollback_script_tx_after_error();
+                    return Err(err);
+                }
+            };
             if should_exit {
                 break;
             }
+        }
+
+        if self.script_tx.is_some() {
+            self.rollback_script_tx_after_error();
+            return Err(crate::GrmError::Constraint(
+                "script ended with an open transaction".into(),
+            ));
         }
 
         self.write_script_summary()?;
@@ -1743,6 +1765,8 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionCommand::Help => self.write_help()?,
             SessionCommand::Exit => return Ok(true),
             SessionCommand::SessionDescribe => self.write_session_summary()?,
+            SessionCommand::TxBegin => self.handle_tx_begin()?,
+            SessionCommand::TxCommit => self.handle_tx_commit()?,
             SessionCommand::ModelDefine { args } => {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 if args.is_empty() {
@@ -1854,6 +1878,8 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         writeln!(self.writer, "  model.list")?;
         writeln!(self.writer, "  model.show <name>")?;
+        writeln!(self.writer, "  tx.begin")?;
+        writeln!(self.writer, "  tx.commit")?;
         writeln!(
             self.writer,
             "  link.define [<Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]]"
@@ -1912,6 +1938,8 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             self.writer,
             "  edge.create Authored from=alice to=1 year=2026"
         )?;
+        writeln!(self.writer, "  tx.begin")?;
+        writeln!(self.writer, "  tx.commit")?;
         writeln!(
             self.writer,
             "  edge.update Authored 1 authoredOn=2026-04-12"
@@ -3301,6 +3329,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     fn persist_autocommit_entry(&mut self, entry: SessionLogEntry) -> Result<()> {
+        if self.script_tx.is_some() {
+            return Ok(());
+        }
+
         let Some(target) = &mut self.autocommit else {
             return Ok(());
         };
@@ -3395,6 +3427,52 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             }
         }
         Ok(())
+    }
+
+    fn handle_tx_begin(&mut self) -> Result<()> {
+        if self.script_tx.is_some() {
+            return Err(crate::GrmError::Constraint(
+                "transaction is already open".into(),
+            ));
+        }
+
+        self.script_tx = Some(ScriptTransaction {
+            state_snapshot: self.state.snapshot(),
+            bindings_snapshot: self.bindings.clone(),
+            script_summary_snapshot: self.script_summary.clone(),
+        });
+
+        if self.output_mode != SessionOutputMode::Script {
+            writeln!(self.writer, "Transaction started.")?;
+        }
+        Ok(())
+    }
+
+    fn handle_tx_commit(&mut self) -> Result<()> {
+        if self.script_tx.take().is_none() {
+            return Err(crate::GrmError::Constraint(
+                "no open transaction to commit".into(),
+            ));
+        }
+
+        self.checkpoint_autocommit()?;
+
+        if self.output_mode != SessionOutputMode::Script {
+            writeln!(self.writer, "Transaction committed.")?;
+        }
+        Ok(())
+    }
+
+    fn rollback_script_tx_after_error(&mut self) {
+        if let Some(tx) = self.script_tx.take() {
+            self.restore_script_transaction(tx);
+        }
+    }
+
+    fn restore_script_transaction(&mut self, tx: ScriptTransaction) {
+        self.state.restore(tx.state_snapshot);
+        self.bindings = tx.bindings_snapshot;
+        self.script_summary = tx.script_summary_snapshot;
     }
 
     async fn run_create_instance_wizard(&mut self, model_name: &str) -> Result<()> {

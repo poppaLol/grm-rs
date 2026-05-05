@@ -613,6 +613,78 @@ async fn script_mode_rejects_duplicate_binding_before_create() {
 }
 
 #[tokio::test]
+async fn script_transaction_commit_keeps_changes() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\ntx.begin\nlet alice = node.create User name=Alice\nlet hello = node.create Post title=Hello\nedge.create Authored from=alice to=hello year=2026\ntx.commit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run_script().await.unwrap();
+
+    assert_eq!(
+        session
+            .state()
+            .find_relationships(
+                "Authored",
+                &BTreeMap::from([("year".to_string(), "2026".to_string())]),
+            )
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn script_transaction_error_rolls_back_changes() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\ntx.begin\nlet alice = node.create User name=Alice\nnode.create User\ntx.commit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    let err = session.run_script().await.unwrap_err();
+
+    assert!(err.to_string().contains("missing required field"));
+    assert_eq!(
+        session
+            .state()
+            .find_nodes(
+                "User",
+                &BTreeMap::from([("name".to_string(), "Alice".to_string())]),
+            )
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn script_transaction_rejects_nested_begin() {
+    let input = Cursor::new("tx.begin\ntx.begin\n");
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    let err = session.run_script().await.unwrap_err();
+
+    assert!(err.to_string().contains("transaction is already open"));
+}
+
+#[tokio::test]
+async fn script_transaction_rejects_unclosed_transaction() {
+    let input = Cursor::new("tx.begin\n");
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    let err = session.run_script().await.unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("script ended with an open transaction")
+    );
+}
+
+#[tokio::test]
 async fn script_mode_rejects_bad_field_specs() {
     let input = Cursor::new("model.define User userId name:string:maybe\n");
     let output = Vec::new();

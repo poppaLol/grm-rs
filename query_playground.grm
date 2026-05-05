@@ -4,6 +4,8 @@ link.define Authored User Post authoredId authoredOn:string:required
 link.define Accessed User Post accessedId accessedOn:string:required
 link.define Knows User User knowsId
 
+tx.begin
+
 let alice_jones = node.create User name="Alice Jones" age=42
 let bob_smith = node.create User name="Bob Smith" age=35
 let eve_turner = node.create User name="Eve Turner" age=29
@@ -23,3 +25,5 @@ edge.create Accessed from=eve_turner to=traversal_tips accessedOn=2026-04-22
 
 edge.create Knows from=alice to=bob_smith
 edge.create Knows from=bob_smith to=eve_turner
+
+tx.commit
