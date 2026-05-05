@@ -285,9 +285,7 @@ impl JsonSchema for BatchOp {
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        batch_op_schema()
-            .try_into()
-            .expect("valid BatchOp schema")
+        batch_op_schema().try_into().expect("valid BatchOp schema")
     }
 }
 
@@ -304,12 +302,18 @@ impl BatchOp {
             Self::EdgeDelete(_) => "edge_delete",
         }
     }
+
+    pub fn is_delete(&self) -> bool {
+        matches!(self, Self::NodeDelete(_) | Self::EdgeDelete(_))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchParams {
     #[serde(default = "default_atomic")]
     pub atomic: bool,
+    #[serde(default)]
+    pub allow_deletes: bool,
     #[serde(default = "default_batch_response")]
     pub response: BatchResponse,
     pub ops: Vec<BatchOp>,
@@ -328,6 +332,11 @@ impl JsonSchema for BatchParams {
                     "type": "boolean",
                     "default": true,
                     "description": "Whether the batch should apply all operations or roll back all successful operations after the first failure."
+                },
+                "allow_deletes": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Must be true for node_delete or edge_delete operations to run."
                 },
                 "response": {
                     "type": "string",

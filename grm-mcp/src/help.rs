@@ -105,6 +105,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "purpose": "Apply an ordered list of structured schema, node, and edge mutations in one MCP call.",
             "defaults": {
                 "atomic": true,
+                "allow_deletes": false,
                 "response": "summary"
             },
             "supported_ops": [
@@ -120,12 +121,13 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "before_calling": [
                 "Use this for more than 3 creates or updates.",
                 "Define referenced models before creating nodes or edges.",
-                "Use ref on node_create operations when later edge_create operations should refer to those new nodes."
+                "Use ref on node_create operations when later edge_create operations should refer to those new nodes.",
+                "Set allow_deletes=true only when the batch intentionally includes node_delete or edge_delete operations."
             ],
             "endpoint_rules": [
                 "edge_create from and to may be numeric node ids already known to the caller.",
                 "edge_create from and to may be refs from earlier node_create operations in the same batch.",
-                "Refs are batch-local and are only produced by node_create operations."
+                "Refs are batch-local, are only produced by node_create operations, and must be unique within the batch."
             ],
             "example": {
                 "atomic": true,
@@ -150,6 +152,8 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "common_errors": [
                 recovery("unknown field", "Call grm_schema_list and use only declared fields."),
                 recovery("was not created earlier in this batch", "Create the referenced node earlier in ops or use a numeric id."),
+                recovery("duplicate batch ref", "Use a unique ref for each node_create operation in the batch."),
+                recovery("requires allow_deletes=true", "Set allow_deletes=true when the batch intentionally includes delete operations."),
                 recovery("missing required field", "Provide all required fields from the schema.")
             ],
             "related": ["grm_schema_list", "grm_node_create", "grm_edge_create"]
