@@ -103,7 +103,30 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_batch" => json!({
             "tool": "grm_batch",
             "purpose": "Apply an ordered list of structured schema, node, and edge mutations in one MCP call.",
-            "before_calling": ["Use this for more than 3 creates or updates.", "Use ref on node_create operations when later edge_create operations should refer to created nodes."],
+            "defaults": {
+                "atomic": true,
+                "response": "summary"
+            },
+            "supported_ops": [
+                "schema_define_node",
+                "schema_define_edge",
+                "node_create",
+                "node_update",
+                "node_delete",
+                "edge_create",
+                "edge_update",
+                "edge_delete"
+            ],
+            "before_calling": [
+                "Use this for more than 3 creates or updates.",
+                "Define referenced models before creating nodes or edges.",
+                "Use ref on node_create operations when later edge_create operations should refer to those new nodes."
+            ],
+            "endpoint_rules": [
+                "edge_create from and to may be numeric node ids already known to the caller.",
+                "edge_create from and to may be refs from earlier node_create operations in the same batch.",
+                "Refs are batch-local and are only produced by node_create operations."
+            ],
             "example": {
                 "atomic": true,
                 "response": "detailed",
@@ -117,6 +140,12 @@ pub fn tool_help(name: &str) -> Option<Value> {
                         }
                     }
                 ]
+            },
+            "result_shape": {
+                "summary": ["applied", "atomic", "operation_count", "counts", "errors"],
+                "detailed_adds": ["ids"],
+                "counts": "Grouped by operation and model.",
+                "errors": "Each error includes the failing operation index, message, and recovery hint."
             },
             "common_errors": [
                 recovery("unknown field", "Call grm_schema_list and use only declared fields."),
