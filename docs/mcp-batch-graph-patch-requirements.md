@@ -80,6 +80,8 @@ Expected behavior:
 - validation errors include the failing operation index.
 - summary responses include counts grouped by operation and model.
 - detailed responses can include created/updated/deleted IDs when requested.
+- edge create operations can use numeric node ids already known to the caller, or
+  batch-local refs from earlier `node_create` operations.
 
 ### `grm_graph_patch`
 
@@ -132,6 +134,9 @@ Expected behavior:
   rejected unless an explicit multi-match mode is added later.
 - create-or-update/upsert semantics should be considered, but should be explicit
   rather than inferred from partial input.
+- merge-oriented behavior should reduce noisy entity-by-entity updates by
+  letting agents refer to existing or newly-created data through explicit refs,
+  match filters, or upsert rules.
 - the result should include compact counts and a ref-to-ID map when useful.
 
 ## Agent Guidance Requirements
@@ -198,8 +203,8 @@ mutation batches.
 ## Initial Acceptance Tests
 
 - `grm_batch` creates multiple nodes in one call and returns grouped counts.
-- `grm_batch` creates nodes and edges using IDs returned by earlier operations
-  or patch-local refs.
+- `grm_batch` creates nodes and edges using numeric IDs supplied by the caller
+  or batch-local refs from earlier `node_create` operations.
 - failed `atomic: true` batch leaves the session unchanged.
 - failed non-atomic batch reports partial success with operation indexes.
 - `grm_graph_patch` creates a small connected graph using local refs.

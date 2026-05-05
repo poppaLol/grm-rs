@@ -149,7 +149,7 @@ few ordered schema, node, or edge mutations:
 `grm_batch` applies operations in order. By default, batches are atomic and
 return a compact summary grouped by operation and model. Use
 `"response": "detailed"` when you need created or updated ids back. Node create
-operations may provide a patch-local `ref`, and later edge create operations may
+operations may provide a batch-local `ref`, and later edge create operations may
 use either numeric ids or those earlier refs as endpoints.
 
 `grm_graph_patch` remains the planned declarative graph-shaped bulk write

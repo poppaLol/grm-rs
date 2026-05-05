@@ -168,6 +168,29 @@ async fn help_tools_teach_recovery_workflow() {
             .contains("missing required field")
     );
 
+    let batch_help = call(&client, "grm_tool_help", json!({ "tool": "grm_batch" })).await;
+    assert_eq!(batch_help["defaults"]["atomic"], json!(true));
+    assert_eq!(batch_help["defaults"]["response"], json!("summary"));
+    assert!(
+        batch_help["supported_ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "edge_create")
+    );
+    assert!(
+        batch_help["endpoint_rules"]
+            .to_string()
+            .contains("numeric node ids")
+    );
+    assert!(
+        batch_help["result_shape"]["summary"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "counts")
+    );
+
     client.cancel().await.unwrap();
 }
 
