@@ -75,6 +75,21 @@ impl GrmMcpServer {
         let mut refs = BTreeMap::<String, i64>::new();
 
         for (index, op) in params.ops.into_iter().enumerate() {
+            if op.is_delete() && !params.allow_deletes {
+                summary.record_error(
+                    index,
+                    format!("{} requires allow_deletes=true on grm_batch", op.op_name()),
+                );
+                if params.atomic {
+                    if let Some(snapshot) = snapshot {
+                        state.restore(snapshot);
+                    }
+                    summary.applied = false;
+                    return Ok(Json(to_object(summary.into_value())?));
+                }
+                continue;
+            }
+
             let result = apply_batch_op(&mut state, &mut refs, op).await;
             match result {
                 Ok(applied) => summary.record(applied),
@@ -564,6 +579,14 @@ async fn apply_batch_op(
             })
         }
         BatchOp::NodeCreate(params) => {
+            if let Some(local_ref) = &params.local_ref {
+                if refs.contains_key(local_ref) {
+                    return Err(GrmError::Constraint(format!(
+                        "duplicate batch ref '{}'",
+                        local_ref
+                    )));
+                }
+            }
             let props = value_map_to_raw(params.props)?;
             let node = state.create_instance(&params.model, &props).await?;
             if let Some(local_ref) = &params.local_ref {

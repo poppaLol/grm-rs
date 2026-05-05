@@ -40,7 +40,7 @@ Use it when the caller knows the exact sequence of operations:
 - create edges
 - update nodes
 - update edges
-- delete nodes or edges if explicitly allowed
+- delete nodes or edges when `allow_deletes` is explicitly set
 
 The input should be structured JSON rather than CLI text. Agents are generally
 better at producing JSON operation objects than safely composing command strings.
@@ -82,6 +82,8 @@ Expected behavior:
 - detailed responses can include created/updated/deleted IDs when requested.
 - edge create operations can use numeric node ids already known to the caller, or
   batch-local refs from earlier `node_create` operations.
+- batch-local refs must be unique within the batch.
+- delete operations are rejected unless `allow_deletes` is true.
 
 ### `grm_graph_patch`
 
@@ -207,6 +209,8 @@ mutation batches.
   or batch-local refs from earlier `node_create` operations.
 - failed `atomic: true` batch leaves the session unchanged.
 - failed non-atomic batch reports partial success with operation indexes.
+- duplicate batch-local refs are rejected.
+- delete operations require `allow_deletes: true`.
 - `grm_graph_patch` creates a small connected graph using local refs.
 - `grm_graph_patch` rejects ambiguous updates unless explicit multi-match mode
   is supplied.

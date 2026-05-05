@@ -115,6 +115,11 @@ async fn batch_tool_exposes_structured_operation_objects() {
         .get("properties")
         .and_then(|properties| properties.get("ops"))
         .expect("ops schema should be exposed");
+    let allow_deletes_schema = tool
+        .input_schema
+        .get("properties")
+        .and_then(|properties| properties.get("allow_deletes"))
+        .expect("allow_deletes schema should be exposed");
     let items = ops_schema
         .get("items")
         .expect("ops should describe array items");
@@ -124,6 +129,8 @@ async fn batch_tool_exposes_structured_operation_objects() {
         .expect("batch ops should expose structured operation variants");
 
     assert_eq!(ops_schema["type"], json!("array"));
+    assert_eq!(allow_deletes_schema["type"], json!("boolean"));
+    assert_eq!(allow_deletes_schema["default"], json!(false));
     assert!(variants.iter().any(|variant| {
         variant["type"] == json!("object")
             && variant["properties"]["op"]["enum"] == json!(["node_create"])
@@ -170,6 +177,7 @@ async fn help_tools_teach_recovery_workflow() {
 
     let batch_help = call(&client, "grm_tool_help", json!({ "tool": "grm_batch" })).await;
     assert_eq!(batch_help["defaults"]["atomic"], json!(true));
+    assert_eq!(batch_help["defaults"]["allow_deletes"], json!(false));
     assert_eq!(batch_help["defaults"]["response"], json!("summary"));
     assert!(
         batch_help["supported_ops"]
@@ -181,7 +189,7 @@ async fn help_tools_teach_recovery_workflow() {
     assert!(
         batch_help["endpoint_rules"]
             .to_string()
-            .contains("numeric node ids")
+            .contains("must be unique")
     );
     assert!(
         batch_help["result_shape"]["summary"]
@@ -343,6 +351,165 @@ async fn failed_atomic_batch_leaves_session_unchanged() {
     )
     .await;
     assert_eq!(found["nodes"].as_array().unwrap().len(), 0);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn duplicate_batch_refs_are_rejected_and_atomic_batch_rolls_back() {
+    let client = client(&[]).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Note",
+            "id_field": "noteId",
+            "fields": [
+                { "name": "title", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+
+    let result = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "ops": [
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "note:duplicate",
+                        "model": "Note",
+                        "props": { "title": "First duplicate ref" }
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "note:duplicate",
+                        "model": "Note",
+                        "props": { "title": "Second duplicate ref" }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(result["applied"], false);
+    assert_eq!(result["errors"][0]["index"], 1);
+    assert!(
+        result["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate batch ref")
+    );
+
+    let found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "Note",
+            "filters": { "title": "First duplicate ref" }
+        }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 0);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn batch_deletes_require_explicit_allow_deletes() {
+    let client = client(&[]).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Note",
+            "id_field": "noteId",
+            "fields": [
+                { "name": "title", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+    let created = call(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "Note",
+            "props": { "title": "Delete only when allowed" }
+        }),
+    )
+    .await;
+    let id = created["id"].as_i64().unwrap();
+
+    let rejected = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "ops": [
+                {
+                    "op": "node_delete",
+                    "args": { "model": "Note", "id": id }
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(rejected["applied"], false);
+    assert!(
+        rejected["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires allow_deletes=true")
+    );
+
+    let still_found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "Note",
+            "filters": { "id": id }
+        }),
+    )
+    .await;
+    assert_eq!(still_found["nodes"].as_array().unwrap().len(), 1);
+
+    let allowed = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "allow_deletes": true,
+            "ops": [
+                {
+                    "op": "node_delete",
+                    "args": { "model": "Note", "id": id }
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(allowed["applied"], true);
+    assert_eq!(allowed["counts"]["node_delete"]["Note"], 1);
+
+    let gone = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "Note",
+            "filters": { "id": id }
+        }),
+    )
+    .await;
+    assert_eq!(gone["nodes"].as_array().unwrap().len(), 0);
 
     client.cancel().await.unwrap();
 }
