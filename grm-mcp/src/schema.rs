@@ -59,6 +59,20 @@ fn fields_schema() -> Value {
     })
 }
 
+fn props_schema() -> Value {
+    json!({
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+            "anyOf": [
+                { "type": "string" },
+                { "type": "number" },
+                { "type": "boolean" }
+            ]
+        }
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefineNodeParams {
     pub name: String,
@@ -252,7 +266,7 @@ fn default_batch_response() -> BatchResponse {
     BatchResponse::Summary
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum BatchOp {
     SchemaDefineNode(DefineNodeParams),
@@ -263,6 +277,18 @@ pub enum BatchOp {
     EdgeCreate(BatchEdgeCreateParams),
     EdgeUpdate(EdgeUpdateParams),
     EdgeDelete(EdgeDeleteParams),
+}
+
+impl JsonSchema for BatchOp {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "BatchOp".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        batch_op_schema()
+            .try_into()
+            .expect("valid BatchOp schema")
+    }
 }
 
 impl BatchOp {
@@ -280,13 +306,164 @@ impl BatchOp {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchParams {
     #[serde(default = "default_atomic")]
     pub atomic: bool,
     #[serde(default = "default_batch_response")]
     pub response: BatchResponse,
     pub ops: Vec<BatchOp>,
+}
+
+impl JsonSchema for BatchParams {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "BatchParams".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json!({
+            "type": "object",
+            "properties": {
+                "atomic": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Whether the batch should apply all operations or roll back all successful operations after the first failure."
+                },
+                "response": {
+                    "type": "string",
+                    "enum": ["summary", "detailed"],
+                    "default": "summary",
+                    "description": "Use detailed to include created, updated, or deleted ids in the response."
+                },
+                "ops": {
+                    "type": "array",
+                    "description": "Ordered structured schema/node/edge operations.",
+                    "items": batch_op_schema()
+                }
+            },
+            "required": ["ops"],
+            "additionalProperties": false
+        })
+        .try_into()
+        .expect("valid BatchParams schema")
+    }
+}
+
+fn object_schema(properties: Value, required: Vec<&str>) -> Value {
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
+fn batch_op_variant_schema(op: &str, args: Value) -> Value {
+    object_schema(
+        json!({
+            "op": {
+                "type": "string",
+                "enum": [op]
+            },
+            "args": args
+        }),
+        vec!["op", "args"],
+    )
+}
+
+fn batch_op_schema() -> Value {
+    let define_node_args = json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" },
+            "id_field": { "type": "string" },
+            "fields": fields_schema()
+        },
+        "required": ["name", "id_field"],
+        "additionalProperties": false
+    });
+    let define_edge_args = json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": "string" },
+            "from_model": { "type": "string" },
+            "to_model": { "type": "string" },
+            "id_field": { "type": "string" },
+            "fields": fields_schema()
+        },
+        "required": ["name", "from_model", "to_model", "id_field"],
+        "additionalProperties": false
+    });
+    let node_create_args = object_schema(
+        json!({
+            "ref": {
+                "type": "string",
+                "description": "Batch-local reference that later edge_create operations may use as an endpoint."
+            },
+            "model": { "type": "string" },
+            "props": props_schema()
+        }),
+        vec!["model"],
+    );
+    let node_update_args = object_schema(
+        json!({
+            "model": { "type": "string" },
+            "id": { "type": "integer", "format": "int64" },
+            "props": props_schema()
+        }),
+        vec!["model", "id"],
+    );
+    let node_delete_args = object_schema(
+        json!({
+            "model": { "type": "string" },
+            "id": { "type": "integer", "format": "int64" }
+        }),
+        vec!["model", "id"],
+    );
+    let endpoint_schema = json!({
+        "anyOf": [
+            { "type": "integer", "format": "int64" },
+            { "type": "string" }
+        ],
+        "description": "Numeric node id or batch-local ref created by an earlier node_create operation."
+    });
+    let edge_create_args = object_schema(
+        json!({
+            "model": { "type": "string" },
+            "from": endpoint_schema.clone(),
+            "to": endpoint_schema,
+            "props": props_schema()
+        }),
+        vec!["model", "from", "to"],
+    );
+    let edge_update_args = object_schema(
+        json!({
+            "model": { "type": "string" },
+            "id": { "type": "integer", "format": "int64" },
+            "props": props_schema()
+        }),
+        vec!["model", "id"],
+    );
+    let edge_delete_args = object_schema(
+        json!({
+            "model": { "type": "string" },
+            "id": { "type": "integer", "format": "int64" }
+        }),
+        vec!["model", "id"],
+    );
+
+    json!({
+        "oneOf": [
+            batch_op_variant_schema("schema_define_node", define_node_args),
+            batch_op_variant_schema("schema_define_edge", define_edge_args),
+            batch_op_variant_schema("node_create", node_create_args),
+            batch_op_variant_schema("node_update", node_update_args),
+            batch_op_variant_schema("node_delete", node_delete_args),
+            batch_op_variant_schema("edge_create", edge_create_args),
+            batch_op_variant_schema("edge_update", edge_update_args),
+            batch_op_variant_schema("edge_delete", edge_delete_args)
+        ]
+    })
 }
 
 pub(crate) fn parse_fields(fields: Vec<FieldParam>) -> GrmResult<Vec<RuntimeField>> {
