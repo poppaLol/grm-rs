@@ -6,9 +6,10 @@ Recommended agent workflow:
 1. Call grm_help when first using this server in a session.
 2. Call grm_schema_list or read grm://schema before creating or querying data.
 3. Prefer structured tools for schema, node, edge, import, export, and persistence operations.
-4. Use grm_query for traversal queries or exact CLI parity.
-5. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
-6. Verify writes with grm://graph/summary, grm://graph/export, or grm_export.
+4. For more than 3 creates or updates, prefer grm_batch.
+5. Use grm_query for traversal queries or exact CLI parity.
+6. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
+7. Verify writes with grm://graph/summary, grm://graph/export, or grm_export.
 
 Property values must be strings, numbers, or booleans. Null, arrays, and objects are not supported as graph property values.
 "#;
@@ -21,6 +22,7 @@ pub fn help_index() -> Value {
             "Call grm_help when first using this server in a session.",
             "Call grm_schema_list or read grm://schema before creating or querying data.",
             "Prefer structured tools over grm_query except for traversal queries or CLI parity.",
+            "For more than 3 creates or updates, prefer grm_batch.",
             "After recoverable errors, call grm_tool_help with the tool name before retrying.",
             "Verify writes with grm://graph/summary, grm://graph/export, or grm_export."
         ],
@@ -35,6 +37,7 @@ pub fn help_index() -> Value {
         "tool_categories": {
             "help": ["grm_help", "grm_tool_help"],
             "schema": ["grm_schema_list", "grm_schema_define_node", "grm_schema_define_edge"],
+            "batch": ["grm_batch"],
             "nodes": ["grm_node_create", "grm_node_update", "grm_node_delete", "grm_node_find"],
             "edges": ["grm_edge_create", "grm_edge_update", "grm_edge_delete", "grm_edge_find"],
             "query": ["grm_query"],
@@ -97,6 +100,31 @@ pub fn tool_help(name: &str) -> Option<Value> {
             ],
             "related": ["grm_schema_list", "grm_node_create"]
         }),
+        "grm_batch" => json!({
+            "tool": "grm_batch",
+            "purpose": "Apply an ordered list of structured schema, node, and edge mutations in one MCP call.",
+            "before_calling": ["Use this for more than 3 creates or updates.", "Use ref on node_create operations when later edge_create operations should refer to created nodes."],
+            "example": {
+                "atomic": true,
+                "response": "detailed",
+                "ops": [
+                    {
+                        "op": "node_create",
+                        "args": {
+                            "ref": "file:src/lib.rs",
+                            "model": "File",
+                            "props": { "path": "src/lib.rs" }
+                        }
+                    }
+                ]
+            },
+            "common_errors": [
+                recovery("unknown field", "Call grm_schema_list and use only declared fields."),
+                recovery("was not created earlier in this batch", "Create the referenced node earlier in ops or use a numeric id."),
+                recovery("missing required field", "Provide all required fields from the schema.")
+            ],
+            "related": ["grm_schema_list", "grm_node_create", "grm_edge_create"]
+        }),
         "grm_schema_define_edge" => json!({
             "tool": "grm_schema_define_edge",
             "purpose": "Define a runtime edge/link model between existing node models.",
@@ -118,6 +146,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_node_create" => json!({
             "tool": "grm_node_create",
             "purpose": "Create a node for an existing runtime model.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
             "before_calling": ["Call grm_schema_list if you do not know the model fields."],
             "example": {
                 "model": "File",
@@ -134,6 +163,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_node_update" => json!({
             "tool": "grm_node_update",
             "purpose": "Update properties on an existing node.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
             "example": {
                 "model": "File",
                 "id": 1,
@@ -179,6 +209,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_edge_create" => json!({
             "tool": "grm_edge_create",
             "purpose": "Create an edge between two existing node ids.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
             "before_calling": ["Call grm_schema_list to confirm from_model and to_model.", "Call grm_node_find if you do not know endpoint ids."],
             "example": {
                 "model": "Contains",
@@ -197,6 +228,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_edge_update" => json!({
             "tool": "grm_edge_update",
             "purpose": "Update properties on an existing edge.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
             "example": { "model": "Contains", "id": 1, "props": {} },
             "common_errors": [
                 recovery("edge was not found", "Call grm_edge_find to locate the current edge id."),
@@ -308,6 +340,7 @@ pub fn known_tools() -> Vec<&'static str> {
         "grm_help",
         "grm_tool_help",
         "grm_schema_list",
+        "grm_batch",
         "grm_schema_define_node",
         "grm_schema_define_edge",
         "grm_node_create",

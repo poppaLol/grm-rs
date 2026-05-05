@@ -131,6 +131,220 @@ async fn help_tools_teach_recovery_workflow() {
 }
 
 #[tokio::test]
+async fn batch_creates_connected_graph_with_refs_and_counts() {
+    let client = client(&[]).await;
+
+    let result = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "response": "detailed",
+            "ops": [
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "User",
+                        "id_field": "userId",
+                        "fields": [
+                            { "name": "name", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "Post",
+                        "id_field": "postId",
+                        "fields": [
+                            { "name": "title", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "schema_define_edge",
+                    "args": {
+                        "name": "Authored",
+                        "from_model": "User",
+                        "to_model": "Post",
+                        "id_field": "authoredId",
+                        "fields": [
+                            { "name": "year", "type": "int", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "user:alice",
+                        "model": "User",
+                        "props": { "name": "Alice" }
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "post:hello",
+                        "model": "Post",
+                        "props": { "title": "Hello" }
+                    }
+                },
+                {
+                    "op": "edge_create",
+                    "args": {
+                        "model": "Authored",
+                        "from": "user:alice",
+                        "to": "post:hello",
+                        "props": { "year": 2026 }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(result["applied"], true);
+    assert_eq!(result["counts"]["node_create"]["User"], 1);
+    assert_eq!(result["counts"]["node_create"]["Post"], 1);
+    assert_eq!(result["counts"]["edge_create"]["Authored"], 1);
+    assert_eq!(result["errors"], json!([]));
+    assert_eq!(result["ids"].as_array().unwrap().len(), 3);
+
+    let found = call(
+        &client,
+        "grm_edge_find",
+        json!({
+            "model": "Authored",
+            "filters": { "year": 2026 }
+        }),
+    )
+    .await;
+    assert_eq!(found["edges"].as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_atomic_batch_leaves_session_unchanged() {
+    let client = client(&[]).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Note",
+            "id_field": "noteId",
+            "fields": [
+                { "name": "title", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+
+    let result = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "ops": [
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "Note",
+                        "props": { "title": "Kept only if batch succeeds" }
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "Note",
+                        "props": {}
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(result["applied"], false);
+    assert_eq!(result["errors"][0]["index"], 1);
+
+    let found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "Note",
+            "filters": { "title": "Kept only if batch succeeds" }
+        }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 0);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn non_atomic_batch_reports_partial_success() {
+    let client = client(&[]).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Note",
+            "id_field": "noteId",
+            "fields": [
+                { "name": "title", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+
+    let result = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": false,
+            "ops": [
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "Note",
+                        "props": { "title": "Partial success" }
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "Note",
+                        "props": {}
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(result["applied"], false);
+    assert_eq!(result["atomic"], false);
+    assert_eq!(result["counts"]["node_create"]["Note"], 1);
+    assert_eq!(result["errors"][0]["index"], 1);
+
+    let found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "Note",
+            "filters": { "title": "Partial success" }
+        }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn export_json_flag_writes_readable_graph_after_mutation() {
     let temp = tempdir().unwrap();
     let export_path = temp.path().join("graph.export.json");

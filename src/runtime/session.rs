@@ -278,6 +278,23 @@ impl SessionState {
         &self.client
     }
 
+    pub fn snapshot(&self) -> Self {
+        let mut snapshot = Self::new();
+        snapshot
+            .client
+            .backend()
+            .replace_store(self.client.backend().snapshot_store());
+        snapshot.catalog = self.catalog.clone();
+        snapshot
+    }
+
+    pub fn restore(&mut self, snapshot: Self) {
+        self.client
+            .backend()
+            .replace_store(snapshot.client.backend().snapshot_store());
+        self.catalog = snapshot.catalog;
+    }
+
     pub fn catalog(&self) -> &SessionModelCatalog {
         &self.catalog
     }
