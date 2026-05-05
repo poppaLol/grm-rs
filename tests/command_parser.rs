@@ -36,6 +36,7 @@ fn parser_builds_structured_node_create_assignments() {
     assert_eq!(
         command,
         SessionCommand::NodeCreate {
+            binding: None,
             model_name: "User".into(),
             assignments: vec![
                 KeyValueArg {
@@ -47,6 +48,23 @@ fn parser_builds_structured_node_create_assignments() {
                     value: "42".into(),
                 },
             ],
+        }
+    );
+}
+
+#[test]
+fn parser_builds_bound_node_create() {
+    let command = parse_command_line(r#"let alice = node.create User name="Alice Jones""#).unwrap();
+
+    assert_eq!(
+        command,
+        SessionCommand::NodeCreate {
+            binding: Some("alice".into()),
+            model_name: "User".into(),
+            assignments: vec![KeyValueArg {
+                key: "name".into(),
+                value: "Alice Jones".into(),
+            }],
         }
     );
 }
