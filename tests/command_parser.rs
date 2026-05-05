@@ -172,6 +172,18 @@ fn parser_builds_session_compact_command() {
 }
 
 #[test]
+fn parser_builds_transaction_commands() {
+    assert_eq!(
+        parse_command_line("tx.begin").unwrap(),
+        SessionCommand::TxBegin
+    );
+    assert_eq!(
+        parse_command_line("transaction.commit").unwrap(),
+        SessionCommand::TxCommit
+    );
+}
+
+#[test]
 fn parser_preserves_traversal_terms_in_node_find() {
     let command = parse_command_line(
         r#"node.find User name="Alice Jones" via=out:Authored:Post end.title~"Hello" return=edge"#,
