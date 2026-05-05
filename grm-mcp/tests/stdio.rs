@@ -102,6 +102,47 @@ async fn schema_define_tools_expose_structured_field_objects() {
 }
 
 #[tokio::test]
+async fn batch_tool_exposes_structured_operation_objects() {
+    let client = client(&[]).await;
+    let tools = client.list_tools(None).await.expect("list tools");
+    let tool = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name == "grm_batch")
+        .expect("missing grm_batch tool");
+    let ops_schema = tool
+        .input_schema
+        .get("properties")
+        .and_then(|properties| properties.get("ops"))
+        .expect("ops schema should be exposed");
+    let items = ops_schema
+        .get("items")
+        .expect("ops should describe array items");
+    let variants = items
+        .get("oneOf")
+        .and_then(|value| value.as_array())
+        .expect("batch ops should expose structured operation variants");
+
+    assert_eq!(ops_schema["type"], json!("array"));
+    assert!(variants.iter().any(|variant| {
+        variant["type"] == json!("object")
+            && variant["properties"]["op"]["enum"] == json!(["node_create"])
+            && variant["properties"]["args"]["properties"]["ref"]["type"] == json!("string")
+    }));
+    assert!(variants.iter().any(|variant| {
+        variant["type"] == json!("object")
+            && variant["properties"]["op"]["enum"] == json!(["edge_create"])
+            && variant["properties"]["args"]["properties"]["from"]["anyOf"]
+                .as_array()
+                .expect("edge_create from endpoint should expose id/ref choices")
+                .iter()
+                .any(|choice| choice["type"] == json!("string"))
+    }));
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn help_tools_teach_recovery_workflow() {
     let client = client(&[]).await;
 
