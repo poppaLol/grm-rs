@@ -70,7 +70,7 @@ fn take_required_field(
         .position(|field| field.name == field_name)
         .ok_or_else(|| {
             Error::new_spanned(
-                &field_name,
+                field_name,
                 format!("{derive_name} must contain a field named `{field_name}`"),
             )
         })?;

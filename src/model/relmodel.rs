@@ -16,6 +16,7 @@ pub trait RelModel: Sized {
     type To: NodeModel;
 
     /// Get source endpoint ID (may be None if not set via create_between)
+    #[allow(clippy::wrong_self_convention)]
     fn from_id(&self) -> Option<i64> {
         panic!(
             "from_id is not available for this RelModel - use RelRepository::create_between instead"

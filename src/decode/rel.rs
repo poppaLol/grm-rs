@@ -25,9 +25,9 @@ pub fn decode_rel_from_row<R: RelModel>(gq: &GraphQuery, row: &QueryRow) -> Resu
 }
 
 #[allow(dead_code)]
-pub fn decode_rel_at<R: RelModel>(gq: &GraphQuery, row: &QueryRow, var: VarId) -> Result<R>
+pub fn decode_rel_at<R>(gq: &GraphQuery, row: &QueryRow, var: VarId) -> Result<R>
 where
-    R: DecodeFromRowAt,
+    R: RelModel + DecodeFromRowAt,
 {
     R::decode_at(gq, row, var)
 }

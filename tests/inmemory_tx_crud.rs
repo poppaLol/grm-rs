@@ -130,13 +130,13 @@ async fn tx_incoming_returns_from_node_for_matching_type() -> Result<()> {
 
     let mut tx = backend.begin_tx().await?;
 
-    let incoming_to_b = tx.incoming(b_id, Some(&rel_type)).await?;
+    let incoming_to_b = tx.incoming(b_id, Some(rel_type)).await?;
     assert_eq!(incoming_to_b.len(), 1);
 
     let (_rel, from_node) = &incoming_to_b[0];
     assert_eq!(from_node.id, a_id);
 
-    let incoming_to_a = tx.incoming(a_id, Some(&rel_type)).await?;
+    let incoming_to_a = tx.incoming(a_id, Some(rel_type)).await?;
     assert!(incoming_to_a.is_empty());
 
     tx.commit().await?;
@@ -172,7 +172,7 @@ async fn tx_both_returns_neighbors_from_outgoing_and_incoming() -> Result<()> {
 
     let mut tx = backend.begin_tx().await?;
 
-    let pairs = tx.both(a_id, Some(&rel_type)).await?;
+    let pairs = tx.both(a_id, Some(rel_type)).await?;
 
     let neighbor_ids: BTreeSet<i64> = pairs.into_iter().map(|(_rel, n)| n.id).collect();
     let expected: BTreeSet<i64> = [b_id, c_id].into_iter().collect();

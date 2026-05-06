@@ -26,9 +26,9 @@ pub fn decode_node_from_row<M: NodeModel>(gq: &GraphQuery, row: &QueryRow) -> Re
 }
 
 #[allow(dead_code)]
-pub fn decode_node_at<M: NodeModel>(gq: &GraphQuery, row: &QueryRow, var: VarId) -> Result<M>
+pub fn decode_node_at<M>(gq: &GraphQuery, row: &QueryRow, var: VarId) -> Result<M>
 where
-    M: DecodeFromRowAt,
+    M: NodeModel + DecodeFromRowAt,
 {
     M::decode_at(gq, row, var)
 }

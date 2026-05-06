@@ -76,9 +76,10 @@ mod node_matches_filters_tests {
 
         let mut tx = client.transaction().await?;
 
-        // Create the repo and drop it immediately
-        let _repo = tx.repo();
-        drop(_repo);
+        // Create the repo and let it go out of scope immediately.
+        {
+            let _repo = tx.repo();
+        }
 
         // If repo borrowing was wrong, this would not compile or would fail to commit
         tx.commit().await?;
@@ -113,7 +114,7 @@ mod node_matches_filters_tests {
             users.create(&mut user).await?;
 
             // You must have an id now
-            let id = user.id().clone();
+            let id = *user.id();
 
             // --- find_by_id ---
             let fetched = users.find_by_id(&id).await?;
@@ -163,8 +164,8 @@ mod node_matches_filters_tests {
             repo.nodes::<User>().create(&mut user).await?;
             repo.nodes::<Post>().create(&mut post).await?;
 
-            let user_id = user.id().clone();
-            let post_id = post.id().clone();
+            let user_id = *user.id();
+            let post_id = *post.id();
 
             let mut authored = Authored {
                 id: AuthoredId::default(),

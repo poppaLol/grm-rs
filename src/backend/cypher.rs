@@ -39,7 +39,7 @@ pub fn graph_query_to_cypher(q: &GraphQuery) -> Result<CypherQuery> {
         Return::Node(var) | Return::Rel(var) => format!("RETURN {}", var_name(var)),
     };
 
-    let mut text = format!("MATCH {}", pattern);
+    let mut text = format!("MATCH {pattern}");
     if !predicates.is_empty() {
         text.push_str(" WHERE ");
         text.push_str(&predicates.join(" AND "));
@@ -48,10 +48,10 @@ pub fn graph_query_to_cypher(q: &GraphQuery) -> Result<CypherQuery> {
     text.push_str(&return_clause);
 
     if let Some(offset) = q.offset {
-        text.push_str(&format!(" SKIP {}", offset));
+        text.push_str(&format!(" SKIP {offset}"));
     }
     if let Some(limit) = q.limit {
-        text.push_str(&format!(" LIMIT {}", limit));
+        text.push_str(&format!(" LIMIT {limit}"));
     }
 
     Ok(CypherQuery {
@@ -112,7 +112,7 @@ fn build_predicates(
         let name = var_name(node.var);
         if let Some(id) = node.id_filter {
             let param = translator.push_param(Value::from(id));
-            predicates.push(format!("id({}) = ${}", name, param));
+            predicates.push(format!("id({name}) = ${param}"));
         }
         predicates.extend(
             node.property_filters
@@ -136,13 +136,13 @@ fn property_predicate(var: &str, filter: &PropertyFilter, translator: &mut Trans
     let param = translator.push_param(filter.value.clone());
     let prop = format!("{}.{}", var, property_key(filter.key));
     match filter.op {
-        CompareOp::Eq => format!("{} = ${}", prop, param),
-        CompareOp::Ne => format!("{} <> ${}", prop, param),
-        CompareOp::Gt => format!("{} > ${}", prop, param),
-        CompareOp::Ge => format!("{} >= ${}", prop, param),
-        CompareOp::Lt => format!("{} < ${}", prop, param),
-        CompareOp::Le => format!("{} <= ${}", prop, param),
-        CompareOp::Contains => format!("{} CONTAINS ${}", prop, param),
+        CompareOp::Eq => format!("{prop} = ${param}"),
+        CompareOp::Ne => format!("{prop} <> ${param}"),
+        CompareOp::Gt => format!("{prop} > ${param}"),
+        CompareOp::Ge => format!("{prop} >= ${param}"),
+        CompareOp::Lt => format!("{prop} < ${param}"),
+        CompareOp::Le => format!("{prop} <= ${param}"),
+        CompareOp::Contains => format!("{prop} CONTAINS ${param}"),
     }
 }
 

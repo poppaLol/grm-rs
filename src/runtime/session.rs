@@ -224,7 +224,7 @@ enum SessionQueryResult {
         model: RuntimeRelModel,
         rows: Vec<StoredRel>,
     },
-    Graph(SessionGraphResult),
+    Graph(Box<SessionGraphResult>),
 }
 
 #[derive(Debug, Clone)]
@@ -607,7 +607,7 @@ impl SessionState {
         let model = self
             .catalog
             .get(model_name)
-            .ok_or_else(|| crate::GrmError::NotFound)?;
+            .ok_or(crate::GrmError::NotFound)?;
         let props = model.validate_instance_input(raw_values)?;
         let mut tx = self.client.transaction().await?;
         let created = tx
@@ -640,7 +640,7 @@ impl SessionState {
             .find_node_by_id(from_raw)
             .await?
             .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("from node '{}' was not found", from_raw))
+                crate::GrmError::Constraint(format!("from node '{from_raw}' was not found"))
             })?;
         if !from_node
             .labels
@@ -654,7 +654,7 @@ impl SessionState {
         }
 
         let to_node = tx.tx_mut()?.find_node_by_id(to_raw).await?.ok_or_else(|| {
-            crate::GrmError::Constraint(format!("to node '{}' was not found", to_raw))
+            crate::GrmError::Constraint(format!("to node '{to_raw}' was not found"))
         })?;
         if !to_node.labels.iter().any(|label| label == &model.to_model) {
             return Err(crate::GrmError::Constraint(format!(
@@ -686,7 +686,7 @@ impl SessionState {
 
         let mut tx = self.client.transaction().await?;
         let existing = tx.tx_mut()?.find_node_by_id(raw_id).await?.ok_or_else(|| {
-            crate::GrmError::Constraint(format!("node '{}' was not found", raw_id))
+            crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
         })?;
         if !existing.labels.iter().any(|label| label == &model.label) {
             return Err(crate::GrmError::Constraint(format!(
@@ -700,7 +700,7 @@ impl SessionState {
             .update_node(raw_id, props)
             .await?
             .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("node '{}' was not found", raw_id))
+                crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
             })?;
         tx.commit().await?;
         Ok(updated)
@@ -715,7 +715,7 @@ impl SessionState {
 
         let mut tx = self.client.transaction().await?;
         let existing = tx.tx_mut()?.find_node_by_id(raw_id).await?.ok_or_else(|| {
-            crate::GrmError::Constraint(format!("node '{}' was not found", raw_id))
+            crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
         })?;
         if !existing.labels.iter().any(|label| label == &model.label) {
             return Err(crate::GrmError::Constraint(format!(
@@ -750,7 +750,7 @@ impl SessionState {
             .into_iter()
             .next()
             .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("edge '{}' was not found", raw_id))
+                crate::GrmError::Constraint(format!("edge '{raw_id}' was not found"))
             })?;
 
         let mut tx = self.client.transaction().await?;
@@ -759,7 +759,7 @@ impl SessionState {
             .update_relationship(existing.id, props)
             .await?
             .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("edge '{}' was not found", raw_id))
+                crate::GrmError::Constraint(format!("edge '{raw_id}' was not found"))
             })?;
         tx.commit().await?;
         Ok(updated)
@@ -775,7 +775,7 @@ impl SessionState {
             .into_iter()
             .next()
             .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("edge '{}' was not found", raw_id))
+                crate::GrmError::Constraint(format!("edge '{raw_id}' was not found"))
             })?;
 
         let mut tx = self.client.transaction().await?;
@@ -929,11 +929,11 @@ impl SessionState {
             }
             rows = apply_offset_limit(rows, query.offset, query.limit);
 
-            return Ok(SessionQueryResult::Graph(SessionGraphResult {
+            return Ok(SessionQueryResult::Graph(Box::new(SessionGraphResult {
                 plan,
                 rows,
                 return_mode: query.return_mode,
-            }));
+            })));
         }
 
         match plan.graph_query.return_kind() {
@@ -1226,8 +1226,7 @@ impl SessionState {
                     self.catalog
                         .get_rel_model(name)
                         .ok_or(crate::GrmError::Constraint(format!(
-                            "unknown traversal link '{}'",
-                            name
+                            "unknown traversal link '{name}'"
                         )))?
                         .clone(),
                 ),
@@ -1491,8 +1490,7 @@ fn parse_interchange_id_type(input: &str) -> Result<crate::BackendIdType> {
     match input {
         "int" => Ok(crate::BackendIdType::Int64),
         other => Err(crate::GrmError::Constraint(format!(
-            "unsupported import id type '{}'",
-            other
+            "unsupported import id type '{other}'"
         ))),
     }
 }
@@ -1526,8 +1524,7 @@ fn validate_interchange_props(
     for key in props.keys() {
         if !fields.iter().any(|field| field.name == *key) {
             return Err(crate::GrmError::Constraint(format!(
-                "unknown field '{}' for imported {} model '{}'",
-                key, kind, model_name
+                "unknown field '{key}' for imported {kind} model '{model_name}'"
             )));
         }
     }
@@ -2112,8 +2109,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             let segments: Vec<&str> = field_spec.split(':').collect();
             if segments.len() != 3 {
                 return Err(crate::GrmError::Constraint(format!(
-                    "invalid field spec '{}'; expected name:type:required|optional",
-                    field_spec
+                    "invalid field spec '{field_spec}'; expected name:type:required|optional"
                 )));
             }
 
@@ -2292,8 +2288,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     fn ensure_binding_available(&self, binding: &str) -> Result<()> {
         if self.bindings.contains_key(binding) {
             return Err(crate::GrmError::Constraint(format!(
-                "binding '{}' is already defined",
-                binding
+                "binding '{binding}' is already defined"
             )));
         }
         Ok(())
@@ -2310,8 +2305,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
         if is_binding_name_like(raw) {
             return Err(crate::GrmError::Constraint(format!(
-                "unknown binding '{}' for edge.create {}",
-                raw, field
+                "unknown binding '{raw}' for edge.create {field}"
             )));
         }
 
@@ -2355,7 +2349,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .parse_backend_id(id, self.state.node_id_type(), "node id")?;
         self.persist_autocommit_entry(SessionLogEntry::DeleteNode { id: raw_id })?;
-        writeln!(self.writer, "Deleted node {} {}.", model_name, id)?;
+        writeln!(self.writer, "Deleted node {model_name} {id}.")?;
         Ok(())
     }
 
@@ -2457,7 +2451,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .parse_backend_id(id, self.state.rel_id_type(), "edge id")?;
         self.persist_autocommit_entry(SessionLogEntry::DeleteRel { id: raw_id })?;
-        writeln!(self.writer, "Deleted edge {} {}.", model_name, id)?;
+        writeln!(self.writer, "Deleted edge {model_name} {id}.")?;
         Ok(())
     }
 
@@ -2667,7 +2661,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             OutputFormat::Jsonl => self.render_jsonl_query_result(result),
             OutputFormat::Table => self.render_table_query_result(result),
             OutputFormat::Graph => match result {
-                SessionQueryResult::Graph(graph) => self.render_graph_query_result(graph),
+                SessionQueryResult::Graph(graph) => self.render_graph_query_result(*graph),
                 _ => Err(crate::GrmError::NotSupported(
                     "graph format is only supported for graph-shaped query results",
                 )),
@@ -2883,7 +2877,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             }
             first_group = false;
 
-            root_paths.sort_by(|left, right| compare_graph_paths(left, right));
+            root_paths.sort_by(compare_graph_paths);
             let root = roots
                 .get(&root_id)
                 .expect("root path grouping must preserve root node");
@@ -3200,7 +3194,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             let name = self.prompt(prompt)?;
             match self.state.model(&name) {
                 Some(_) => return Ok(name),
-                None => writeln!(self.writer, "Node model '{}' is not defined.", name)?,
+                None => writeln!(self.writer, "Node model '{name}' is not defined.")?,
             }
         }
     }
@@ -3223,15 +3217,14 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 .iter()
                 .any(|field: &RuntimeField| field.name == field_name)
             {
-                writeln!(self.writer, "field '{}' is already defined", field_name)?;
+                writeln!(self.writer, "field '{field_name}' is already defined")?;
                 continue;
             }
 
             if field_name == id_field_name {
                 writeln!(
                     self.writer,
-                    "field '{}' is already reserved as the backend-assigned id field",
-                    field_name
+                    "field '{field_name}' is already reserved as the backend-assigned id field"
                 )?;
                 continue;
             }
@@ -3267,8 +3260,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let segments: Vec<&str> = field_spec.split(':').collect();
         if segments.len() != 3 {
             return Err(crate::GrmError::Constraint(format!(
-                "invalid field spec '{}'; expected name:type:required|optional",
-                field_spec
+                "invalid field spec '{field_spec}'; expected name:type:required|optional"
             )));
         }
 
@@ -4221,8 +4213,7 @@ fn parse_node_find_terms(
                 let (field, op) = split_predicate_key(raw_key)?;
                 if field == "id" || field == model.id_field_name {
                     return Err(crate::GrmError::Constraint(format!(
-                        "backend id filter '{}' only supports '='",
-                        field
+                        "backend id filter '{field}' only supports '='"
                     )));
                 }
                 query.predicates.push(SessionPredicate {
@@ -4271,8 +4262,7 @@ fn parse_edge_find_query(
                 if field == "id" || field == model.id_field_name || field == "from" || field == "to"
                 {
                     return Err(crate::GrmError::Constraint(format!(
-                        "special filter '{}' only supports '='",
-                        field
+                        "special filter '{field}' only supports '='"
                     )));
                 }
                 query.predicates.push(SessionPredicate {
@@ -4337,8 +4327,7 @@ fn parse_order_term(raw: &str) -> Result<Vec<SessionOrder>> {
 
         if !seen.insert(field.to_string()) {
             return Err(crate::GrmError::Constraint(format!(
-                "duplicate order field '{}'",
-                field
+                "duplicate order field '{field}'"
             )));
         }
 

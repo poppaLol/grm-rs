@@ -15,9 +15,8 @@ pub(crate) fn write_file_atomically(path: impl AsRef<Path>, bytes: &[u8]) -> io:
     file.sync_all()?;
     drop(file);
 
-    fs::rename(&temp_path, path).or_else(|rename_err| {
+    fs::rename(&temp_path, path).inspect_err(|_| {
         let _ = fs::remove_file(&temp_path);
-        Err(rename_err)
     })
 }
 

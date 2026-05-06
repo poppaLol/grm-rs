@@ -22,7 +22,7 @@ async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
     let backend = InMemoryBackend::new();
     let client = GraphClient::new(backend);
 
-    println!("  -> Saving to {}...", json_file);
+    println!("  -> Saving to {json_file}...");
     client
         .persistence()
         .expect("Backend does not support persistence")
@@ -30,16 +30,16 @@ async fn test_persistence() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("  -> Saved successfully");
 
-    println!("  -> Loading from {}...", json_file);
+    println!("  -> Loading from {json_file}...");
     let _loaded_client = GraphClient::new(InMemoryBackend::load_from_file(json_file)?);
 
-    println!("  -> Saving binary to {}...", bin_file);
+    println!("  -> Saving binary to {bin_file}...");
     client
         .persistence()
         .expect("Backend does not support persistence")
         .save_to_binary_file(bin_file)?;
 
-    println!("  -> Loading binary from {}...", bin_file);
+    println!("  -> Loading binary from {bin_file}...");
     let _loaded_binary_client = GraphClient::new(InMemoryBackend::load_from_binary_file(bin_file)?);
 
     println!("✓ InMemoryBackend persistence test passed!");
@@ -106,7 +106,7 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
     };
 
     // Persist to JSON
-    println!("  -> Persisting to {}...", json_file);
+    println!("  -> Persisting to {json_file}...");
     {
         let mut tx = client.transaction().await?;
         let mut repo = tx.repo();
@@ -134,7 +134,7 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
     println!("  -> Saved successfully");
 
     // Load from JSON
-    println!("  -> Loading from {}...", json_file);
+    println!("  -> Loading from {json_file}...");
     let _loaded_client = GraphClient::new(InMemoryBackend::load_from_file(json_file)?);
 
     // Verify data
@@ -168,13 +168,13 @@ async fn test_persistence_with_typed_models() -> Result<(), Box<dyn std::error::
 
     println!("  -> Verifying relationships (skipped - Authored is a RelModel, not NodeModel)");
 
-    println!("  -> Saving binary to {}...", bin_file);
+    println!("  -> Saving binary to {bin_file}...");
     client
         .persistence()
         .expect("Backend does not support persistence")
         .save_to_binary_file(bin_file)?;
 
-    println!("  -> Loading binary from {}...", bin_file);
+    println!("  -> Loading binary from {bin_file}...");
     let _loaded_binary_client = GraphClient::new(InMemoryBackend::load_from_binary_file(bin_file)?);
 
     println!("  -> Verifying users from binary load...");

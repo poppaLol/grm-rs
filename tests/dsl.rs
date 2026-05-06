@@ -203,7 +203,7 @@ mod tests {
                 assert_eq!(nm.property_filters.len(), 1);
                 assert_eq!(nm.property_filters[0].key, "name");
             }
-            other => panic!("expected root MatchClause::Node, got: {:?}", other),
+            other => panic!("expected root MatchClause::Node, got: {other:?}"),
         }
     }
 
@@ -227,7 +227,7 @@ mod tests {
                 assert_eq!(nm.property_filters.len(), 1);
                 nm.var
             }
-            other => panic!("expected root node match, got {:?}", other),
+            other => panic!("expected root node match, got {other:?}"),
         };
 
         // 1: hop match
@@ -239,7 +239,7 @@ mod tests {
                 assert_eq!(h.end_labels, Post::LABELS);
                 h.end
             }
-            other => panic!("expected hop match, got {:?}", other),
+            other => panic!("expected hop match, got {other:?}"),
         };
 
         // 2: end node match with filter
@@ -250,14 +250,14 @@ mod tests {
                 assert_eq!(nm.property_filters.len(), 1);
                 assert_eq!(nm.property_filters[0].key, "title");
             }
-            other => panic!("expected end node match, got {:?}", other),
+            other => panic!("expected end node match, got {other:?}"),
         };
 
         // Return should be root var (User)
         debug_assert!(matches!(g.ret, Return::Node(_)));
         match g.ret {
             Return::Node(v) => assert_eq!(v, root_var),
-            other => panic!("expected Return::Node, got {:?}", other),
+            other => panic!("expected Return::Node, got {other:?}"),
         }
     }
 
@@ -355,7 +355,7 @@ mod tests {
 
         match &g.matches[1] {
             MatchClause::Hop(h) => assert!(matches!(h.dir, Direction::In)),
-            other => panic!("expected hop match, got {:?}", other),
+            other => panic!("expected hop match, got {other:?}"),
         }
     }
 
@@ -367,7 +367,7 @@ mod tests {
 
         match &g.matches[1] {
             MatchClause::Hop(h) => assert!(matches!(h.dir, Direction::Both)),
-            other => panic!("expected hop match, got {:?}", other),
+            other => panic!("expected hop match, got {other:?}"),
         }
     }
 
@@ -517,9 +517,9 @@ mod tests {
             .rows
             .iter()
             .filter_map(|row| {
-                row.values.values().next().and_then(|v| match v {
-                    KernelValue::Node(n) => Some(n.id),
-                    __ => panic!("expected rel"),
+                row.values.values().next().map(|v| match v {
+                    KernelValue::Node(n) => n.id,
+                    _other => panic!("expected rel"),
                 })
             })
             .collect();
@@ -573,8 +573,8 @@ mod tests {
             .rows
             .iter()
             .filter_map(|row| {
-                row.values.values().next().and_then(|v| match v {
-                    KernelValue::Node(n) => Some(n.id),
+                row.values.values().next().map(|v| match v {
+                    KernelValue::Node(n) => n.id,
                     _ => panic!("expected rel"),
                 })
             })

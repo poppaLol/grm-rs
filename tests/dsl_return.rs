@@ -13,7 +13,7 @@ mod tests {
         q.matches
             .iter()
             .filter_map(|m| match m {
-                MatchClause::Node(nm) => Some(nm.var.clone()),
+                MatchClause::Node(nm) => Some(nm.var),
                 _ => None,
             })
             .collect()
@@ -21,7 +21,7 @@ mod tests {
 
     fn ret_node_var(q: &GraphQuery) -> VarId {
         match &q.ret {
-            Return::Node(v) => v.clone(),
+            Return::Node(v) => *v,
             _ => panic!("Expected Return::Node"),
         }
     }
@@ -35,7 +35,7 @@ mod tests {
 
         let vars = node_vars(&gq);
         assert!(!vars.is_empty(), "Expected at least one NodeMatch");
-        let root = vars.first().unwrap().clone();
+        let root = *vars.first().unwrap();
 
         assert_eq!(ret_node_var(&gq), root);
     }
@@ -62,7 +62,7 @@ mod tests {
             "Expected at least 2 NodeMatch vars for a multi-hop traversal"
         );
 
-        let end = vars.last().unwrap().clone();
+        let end = *vars.last().unwrap();
         assert_eq!(ret_node_var(&gq), end);
     }
 
@@ -75,7 +75,7 @@ mod tests {
 
         let vars = node_vars(&gq);
         assert!(!vars.is_empty(), "Expected at least one NodeMatch");
-        let root = vars.first().unwrap().clone();
+        let root = *vars.first().unwrap();
 
         assert_eq!(ret_node_var(&gq), root);
     }

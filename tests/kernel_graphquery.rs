@@ -82,8 +82,8 @@ async fn execute_graph_out_any_matches_any_relationship_type() -> Result<()> {
         .rows
         .iter()
         .filter_map(|row| {
-            row.values.values().next().and_then(|v| match v {
-                KernelValue::Node(n) => Some(n.id),
+            row.values.values().next().map(|v| match v {
+                KernelValue::Node(n) => n.id,
                 _ => panic!("expected node"),
             })
         })

@@ -205,7 +205,7 @@ where
             }
 
             // Return only the endpoint ID, not the full node model
-            out.push((rel_model, Some(stored_node.id.into())));
+            out.push((rel_model, Some(stored_node.id)));
         }
 
         Ok(out)
@@ -237,7 +237,7 @@ where
             }
 
             // Return only the endpoint ID, not the full node model
-            out.push((rel_model, Some(stored_node.id.into())));
+            out.push((rel_model, Some(stored_node.id)));
         }
 
         Ok(out)

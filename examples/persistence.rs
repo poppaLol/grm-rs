@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
     tx.commit().await.expect("commit failed");
 
     // Persist to JSON
-    println!("  -> Writing to {}...", json_file);
+    println!("  -> Writing to {json_file}...");
     client
         .persistence()
         .expect("Backend does not support persistence")
@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
     println!("✓ Graph persisted to JSON\n");
 
     println!("Persisting graph to binary...");
-    println!("  -> Writing to {}...", bin_file);
+    println!("  -> Writing to {bin_file}...");
     client
         .persistence()
         .expect("Backend does not support persistence")
