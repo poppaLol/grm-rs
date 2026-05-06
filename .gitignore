@@ -29,6 +29,7 @@ target
 .venv/
 venv/
 env/
+dist/
 __pycache__/
 *.py[cod]
 *.so
