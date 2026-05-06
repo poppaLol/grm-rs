@@ -294,7 +294,7 @@ fn tokenize_command_line_internal(input: &str) -> Result<Vec<ParsedToken>> {
                             return Err(constraint_at(
                                 input,
                                 index,
-                                format!("invalid escape sequence '\\{}' in quoted string", other),
+                                format!("invalid escape sequence '\\{other}' in quoted string"),
                             ));
                         }
                     });
@@ -396,7 +396,7 @@ fn split_query_term<'a>(arg: &'a str, input: &str, start: usize) -> Result<(&'a 
         return Err(constraint_at(
             input,
             start,
-            format!("invalid query term '{}'", arg),
+            format!("invalid query term '{arg}'"),
         ));
     }
 
@@ -406,7 +406,7 @@ fn split_query_term<'a>(arg: &'a str, input: &str, start: usize) -> Result<(&'a 
                 return Err(constraint_at(
                     input,
                     start,
-                    format!("invalid query term '{}'", arg),
+                    format!("invalid query term '{arg}'"),
                 ));
             }
             let result = (
@@ -432,7 +432,7 @@ fn split_query_term<'a>(arg: &'a str, input: &str, start: usize) -> Result<(&'a 
     Err(constraint_at(
         input,
         start,
-        format!("invalid query term '{}'", arg),
+        format!("invalid query term '{arg}'"),
     ))
 }
 
@@ -494,7 +494,7 @@ fn required_positional<'a>(
 ) -> Result<&'a str> {
     args.get(index)
         .map(|token| token.text.as_str())
-        .ok_or_else(|| GrmError::Constraint(format!("missing required argument for {}", command)))
+        .ok_or_else(|| GrmError::Constraint(format!("missing required argument for {command}")))
 }
 
 fn constraint_at(input: &str, offset: usize, message: impl Into<String>) -> GrmError {

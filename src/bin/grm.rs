@@ -19,7 +19,7 @@ async fn main() {
                     let file = match File::open(&path) {
                         Ok(file) => file,
                         Err(err) => {
-                            eprintln!("failed to open script '{}': {}", path, err);
+                            eprintln!("failed to open script '{path}': {err}");
                             std::process::exit(1);
                         }
                     };

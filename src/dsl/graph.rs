@@ -251,7 +251,7 @@ fn end_var_from_matches(matches: &[MatchClause], root: VarId) -> VarId {
     let mut last = root;
     for m in matches {
         if let MatchClause::Node(nm) = m {
-            last = nm.var.clone();
+            last = nm.var;
         }
     }
     last

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::useless_conversion,
+    reason = "PyO3's pymethod wrappers currently expand PyResult returns through redundant conversions"
+)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -11,7 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyModule};
 use serde_json::Value;
 
-create_exception!(_grm_rs, GrmError, pyo3::exceptions::PyException);
+create_exception!(_grm_rs, PyGrmError, pyo3::exceptions::PyException);
 
 #[pyclass(name = "Session")]
 struct PySession {
@@ -333,14 +338,14 @@ fn parse_fields(fields: &Bound<'_, PyAny>) -> PyResult<Vec<RuntimeField>> {
                 "field definitions must be dicts with 'name', 'type', and 'required' keys",
             )
         })?;
-        let name = required_string(&field, "name")?;
-        let field_type = required_string(&field, "type")?;
+        let name = required_string(field, "name")?;
+        let field_type = required_string(field, "type")?;
         let value_type = RuntimeValueType::parse_keyword(&field_type).ok_or_else(|| {
             PyTypeError::new_err(format!(
                 "unsupported field type '{field_type}', expected one of: string, int, float, bool"
             ))
         })?;
-        let required = required_bool(&field, "required")?;
+        let required = required_bool(field, "required")?;
         parsed.push(RuntimeField {
             name,
             value_type,
@@ -551,12 +556,12 @@ fn backend_id_type_name(id_type: BackendIdType) -> &'static str {
 }
 
 fn grm_err(err: grm_rs::GrmError) -> PyErr {
-    GrmError::new_err(err.to_string())
+    PyGrmError::new_err(err.to_string())
 }
 
 #[pymodule]
 fn _grm_rs(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add("GrmError", py.get_type_bound::<GrmError>())?;
+    module.add("GrmError", py.get_type_bound::<PyGrmError>())?;
     module.add_class::<PySession>()?;
     Ok(())
 }

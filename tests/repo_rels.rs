@@ -102,7 +102,7 @@ async fn rel_repository_create_many_between_uses_one_transaction() {
     let post_repo = NodeRepository::<_, Post>::new(backend.clone());
     let rel_repo = RelRepository::<_, Authored>::new(backend);
 
-    let mut users = vec![
+    let mut users = [
         User {
             id: UserId(0),
             name: "Alice".into(),
@@ -121,7 +121,7 @@ async fn rel_repository_create_many_between_uses_one_transaction() {
     ];
     user_repo.create_many(users.iter_mut()).await.unwrap();
 
-    let mut posts = vec![
+    let mut posts = [
         Post {
             id: PostId(0),
             title: "One".into(),
@@ -139,7 +139,7 @@ async fn rel_repository_create_many_between_uses_one_transaction() {
 
     commits.store(0, Ordering::SeqCst);
 
-    let mut authored = vec![
+    let mut authored = [
         (
             users[0].id,
             posts[0].id,

@@ -134,7 +134,7 @@ impl<T: GraphTx + Send> Transaction<T> {
     fn inner_mut(&mut self) -> crate::Result<&mut T> {
         self.inner
             .as_mut()
-            .ok_or_else(|| GrmError::TransactionClosed)
+            .ok_or(GrmError::TransactionClosed)
     }
 
     pub async fn execute<R: NodeModel>(&mut self, q: Query<R>) -> Result<QueryExecution> {
@@ -144,10 +144,10 @@ impl<T: GraphTx + Send> Transaction<T> {
     }
 
     // Typed decode wrapper (thin)
-    pub async fn query<R, M: DecodeFromRow>(&mut self, q: Query<R>) -> Result<Vec<M>>
+    pub async fn query<R, M>(&mut self, q: Query<R>) -> Result<Vec<M>>
     where
         R: NodeModel,
-        M: crate::decode::DecodeFromRow,
+        M: DecodeFromRow,
     {
         let exec = self.execute(q).await?;
         exec.qr

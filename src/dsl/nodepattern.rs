@@ -25,6 +25,7 @@ pub struct TraversalBuilderAny<N: NodeModel> {
 }
 
 impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
+    #[allow(clippy::wrong_self_convention)]
     pub fn to<M: NodeModel>(mut self) -> NodePattern<N> {
         self.pat.traversals.push(TraversalStep {
             dir: self.dir,
@@ -37,6 +38,7 @@ impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
     }
 
     /// Convenience: allow filtering the end node inline
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_where<M: NodeModel>(
         mut self,
         build: impl FnOnce(NodePattern<M>) -> NodePattern<M>,
@@ -54,6 +56,7 @@ impl<N: NodeModel, R: RelModel> TraversalBuilder<N, R> {
 }
 
 impl<N: NodeModel> TraversalBuilderAny<N> {
+    #[allow(clippy::wrong_self_convention)]
     pub fn to<M: NodeModel>(mut self) -> NodePattern<N> {
         self.pat.traversals.push(TraversalStep {
             rel_type: None, // <-- KEY DIFFERENCE
@@ -65,6 +68,7 @@ impl<N: NodeModel> TraversalBuilderAny<N> {
         self.pat
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_where<M: NodeModel>(
         mut self,
         f: impl FnOnce(NodePattern<M>) -> NodePattern<M>,
@@ -101,6 +105,12 @@ pub struct NodePattern<N: NodeModel> {
     pub traversals: Vec<TraversalStep>,
 
     _marker: PhantomData<N>,
+}
+
+impl<N: NodeModel> Default for NodePattern<N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<N: NodeModel> NodePattern<N> {
