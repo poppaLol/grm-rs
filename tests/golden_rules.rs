@@ -61,7 +61,7 @@ async fn execute_graph_rows_contain_bound_vars_and_correct_return_kind() -> Resu
 
     for row in &exec.qr.rows {
         for v in &bound {
-            assert!(row.contains_key(v), "row missing bound var {:?}", v);
+            assert!(row.contains_key(v), "row missing bound var {v:?}");
         }
 
         match ret_kind {

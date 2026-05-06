@@ -166,7 +166,7 @@ impl ExecCtx {
         for m in &q.matches {
             match m {
                 MatchClause::Node(nm) => {
-                    node_match_by_var.insert(nm.var.clone(), nm.clone());
+                    node_match_by_var.insert(nm.var, nm.clone());
                 }
                 MatchClause::Hop(h) => {
                     hops.push(h.clone());
@@ -181,6 +181,12 @@ impl ExecCtx {
 #[derive(Clone)]
 pub struct InMemoryBackend {
     pub store: Arc<Mutex<GraphStore>>,
+}
+
+impl Default for InMemoryBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryBackend {

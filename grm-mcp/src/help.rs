@@ -363,7 +363,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
 pub fn tool_help_index() -> Value {
     let tools = known_tools()
         .into_iter()
-        .filter_map(|tool| tool_help(tool))
+        .filter_map(tool_help)
         .collect::<Vec<_>>();
     json!({ "tools": tools })
 }

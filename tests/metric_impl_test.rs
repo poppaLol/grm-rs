@@ -103,7 +103,7 @@ async fn test_document_schema_construction() -> Result<()> {
             .create_between(&para2.id, &metric.id, &mut cont2)
             .await?;
 
-        (para.id.clone(), para2.id.clone(), metric.id.clone())
+        (para.id, para2.id, metric.id)
     };
 
     assert_ne!(para_id, ParagraphId::default());
@@ -197,7 +197,7 @@ async fn test_document_schema_construction() -> Result<()> {
     let mut returned_paragraph_kernel_ids: Vec<i64> = Vec::new();
 
     for (i, row) in exec.qr.rows.iter().enumerate() {
-        eprintln!("--- row {} ---", i);
+        eprintln!("--- row {i} ---");
 
         // Sort by VarId for stable output (VarId likely implements Ord; if not, remove sort)
         let mut items: Vec<_> = row.values.iter().collect();
@@ -207,8 +207,7 @@ async fn test_document_schema_construction() -> Result<()> {
             match kv {
                 KernelValue::Node(n) => {
                     eprintln!(
-                        "  {:?} => Node(id={}, labels={:?}, props_keys={:?})",
-                        var,
+                        "  {var:?} => Node(id={}, labels={:?}, props_keys={:?})",
                         n.id,
                         n.labels,
                         n.props.keys().collect::<Vec<_>>()
@@ -221,8 +220,7 @@ async fn test_document_schema_construction() -> Result<()> {
                 }
                 KernelValue::Rel(r) => {
                     eprintln!(
-                        "  {:?} => Rel(id={}, type={}, from={}, to={}, props_keys={:?})",
-                        var,
+                        "  {var:?} => Rel(id={}, type={}, from={}, to={}, props_keys={:?})",
                         r.id,
                         r.ty,
                         r.from,
@@ -231,7 +229,7 @@ async fn test_document_schema_construction() -> Result<()> {
                     );
                 }
                 KernelValue::Scalar(_) => {
-                    eprintln!("  {:?} => Scalar(_)", var);
+                    eprintln!("  {var:?} => Scalar(_)");
                 }
             }
         }
@@ -241,16 +239,13 @@ async fn test_document_schema_construction() -> Result<()> {
     //
     // ParagraphId is likely a typed wrapper around i64 and implements Into<i64>.
     // If not, replace with whatever "extract raw i64" you have.
-    let para_raw: i64 = para_id.clone().into();
-    let para2_raw: i64 = para2_id.clone().into();
+    let para_raw: i64 = para_id.into();
+    let para2_raw: i64 = para2_id.into();
 
     assert!(
         returned_paragraph_kernel_ids.contains(&para_raw)
             || returned_paragraph_kernel_ids.contains(&para2_raw),
-        "expected returned paragraphs to include created ones; got={:?}, expected one of {:?} or {:?}",
-        returned_paragraph_kernel_ids,
-        para_raw,
-        para2_raw
+        "expected returned paragraphs to include created ones; got={returned_paragraph_kernel_ids:?}, expected one of {para_raw:?} or {para2_raw:?}"
     );
 
     tx.commit().await?;

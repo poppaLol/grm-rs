@@ -106,11 +106,7 @@ impl GrmMcpServer {
             }
         }
 
-        if summary.applied {
-            self.persist_autocommit(&state)
-                .await
-                .map_err(to_mcp_error)?;
-        } else if summary.has_successes() {
+        if summary.applied || summary.has_successes() {
             self.persist_autocommit(&state)
                 .await
                 .map_err(to_mcp_error)?;
@@ -582,8 +578,7 @@ async fn apply_batch_op(
             if let Some(local_ref) = &params.local_ref {
                 if refs.contains_key(local_ref) {
                     return Err(GrmError::Constraint(format!(
-                        "duplicate batch ref '{}'",
-                        local_ref
+                        "duplicate batch ref '{local_ref}'"
                     )));
                 }
             }
@@ -676,8 +671,7 @@ fn resolve_batch_endpoint(
         BatchEndpoint::Id(id) => Ok(*id),
         BatchEndpoint::Ref(local_ref) => refs.get(local_ref).copied().ok_or_else(|| {
             GrmError::Constraint(format!(
-                "{} ref '{}' was not created earlier in this batch",
-                field, local_ref
+                "{field} ref '{local_ref}' was not created earlier in this batch"
             ))
         }),
     }

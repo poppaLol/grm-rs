@@ -93,8 +93,7 @@ async fn node_repository_create_many_uses_one_transaction() {
     };
     let repo = NodeRepository::<_, User>::new(backend);
 
-    let mut users = vec![
-        User {
+    let mut users = [User {
             id: UserId(0),
             name: "Alice".into(),
             age: 31,
@@ -108,8 +107,7 @@ async fn node_repository_create_many_uses_one_transaction() {
             id: UserId(0),
             name: "Carol".into(),
             age: 33,
-        },
-    ];
+        }];
 
     repo.create_many(users.iter_mut()).await.unwrap();
 
@@ -122,8 +120,7 @@ async fn node_repository_create_many_preserves_property_lookup() {
     let backend = InMemoryBackend::new();
     let repo = NodeRepository::<_, User>::new(backend);
 
-    let mut users = vec![
-        User {
+    let mut users = [User {
             id: UserId(0),
             name: "Alice".into(),
             age: 31,
@@ -132,8 +129,7 @@ async fn node_repository_create_many_preserves_property_lookup() {
             id: UserId(0),
             name: "Bob".into(),
             age: 32,
-        },
-    ];
+        }];
 
     repo.create_many(users.iter_mut()).await.unwrap();
 

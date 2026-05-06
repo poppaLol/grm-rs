@@ -132,7 +132,7 @@ async fn query_return_end_does_not_commit_if_end_node_decode_fails() -> Result<(
 
     let q = Query::<A>::matching(
         NodePattern::<A>::new()
-            .with_id(a_id.clone())
+            .with_id(a_id)
             .out::<AB>()
             .to::<B>(),
     )
