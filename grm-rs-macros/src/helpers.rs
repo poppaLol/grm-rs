@@ -31,10 +31,10 @@ pub fn is_grm_id_field(field: &Field) -> bool {
     }
 
     // Fallback: a field literally named `id`
-    if let Some(ident) = &field.ident {
-        if ident == "id" {
-            return true;
-        }
+    if let Some(ident) = &field.ident
+        && ident == "id"
+    {
+        return true;
     }
 
     false
