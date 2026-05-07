@@ -73,15 +73,17 @@ The current CLI is useful, but there are several major limitations:
 8. Bulk insert repository helpers
 9. Lazy node property indexing for cheaper writes
 10. Insert benchmark scaling and flamegraph profiling workflow
+11. Cypher translator spike validating the first `GraphQuery` to Cypher path
 
 ### Now
 
-1. Cypher translator spike to validate `GraphQuery` portability before deeper backend work
-2. Indexed in-memory transaction overlay beyond the current simple write paths
-3. Persistence durability improvements
-4. Smarter autocommit strategy and WAL evaluation
-5. Python integration surface improvements
-6. Session-core cleanup and runtime/schema refactor prep
+1. Finish the indexed in-memory transaction overlay/read-view beyond the current simple write paths
+2. Minimal live Neo4j backend prototype that can run shared query tests
+3. Backend contract cleanup around rows, errors, transactions, capabilities, and IDs
+4. Persistence durability improvements
+5. Smarter autocommit strategy and WAL evaluation
+6. Python integration surface improvements
+7. Session-core cleanup and runtime/schema refactor prep
 
 ### Next
 
@@ -89,7 +91,7 @@ The current CLI is useful, but there are several major limitations:
 2. Import/export design and bulk interchange surface
 3. Explicit bulk-update design for matched query results
 4. Richer traversal result controls and graph presentation polish
-5. Backend-neutral identity support
+5. Backend-neutral identity support beyond the current mostly-`i64` shape
 
 ### Later
 
@@ -185,7 +187,7 @@ Status:
 partially completed, with bulk insert helpers, entity lookup indexes, lazy node property indexing, and benchmark/profiling support in place.
 
 Backend pivot note:
-see [Backend Pivot: Cypher Spike Before Deeper In-Memory Storage Work](backend-pivot-cypher-spike.md). The next in-memory work should be treated as an indexed transaction overlay, not a move toward true index-free adjacency.
+see [Backend Pivot: Cypher Spike Before Deeper In-Memory Storage Work](backend-pivot-cypher-spike.md). The Cypher translator spike is complete; the next in-memory work should be treated as an indexed transaction overlay/read-view, not a move toward true index-free adjacency.
 
 Current state:
 
@@ -208,7 +210,7 @@ Measured direction:
 
 Next work:
 
-- extend delta-style transactions so graph execution, traversal, deletes, and property-indexed reads do not always require whole-store working copies
+- finish the indexed transaction overlay/read-view so graph execution, traversal, deletes, and property-indexed reads do not always require whole-store working copies
 - keep property indexes private or method-gated so future code cannot bypass dirty-cache checks
 - evaluate whether bulk import can use lower-level batch validation and creation paths rather than replaying CLI commands
 - evaluate WAL after the delta transaction shape is clearer, so durability logging records compact operation deltas instead of whole snapshots
