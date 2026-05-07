@@ -686,15 +686,14 @@ This lays a solid foundation for richer projections, safer execution, and cleane
 
 Current priorities:
 
-* Keep insert and indexed-read performance measurable with Criterion benchmarks
+* Bring the Python extension and MCP surface closer to parity across schema, CRUD, traversal, import/export, and batch operations
 * Finish the indexed in-memory transaction overlay/read-view beyond simple write paths
-* Add a minimal live Neo4j backend prototype for shared query tests
+* Add a minimal live Neo4j backend prototype, then grow it toward a fully featured Cypher-compliant backend
 * Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
-* Persistence durability and smarter autocommit behavior
+* Improve local backend durability toward Redis-like resilient operation: append-friendly logging, recovery, compaction, and repair tooling
+* Build demo scenarios that show typed ORM-like usage, query-like integrations, Python workflows, and equivalent MCP workflows
 * Session-core cleanup and runtime schema refactoring
-* Python/session integration improvements
 * Concurrency and coordination for persisted sessions
-* Traversal and graph-output polish for denser query results
 
 Recently completed:
 
