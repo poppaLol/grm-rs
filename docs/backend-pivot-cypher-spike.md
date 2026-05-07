@@ -121,9 +121,20 @@ engine, then a deeper adjacency redesign can be evaluated with evidence.
 ## Priority Order From Here
 
 1. Cypher translator spike. (done)
-2. Indexed in-memory transaction overlay.
-3. Minimal live Neo4j prototype that can run shared query/repository tests.
-4. Backend contract cleanup around result rows, errors, transactions, and IDs.
-5. Backend-neutral identity work.
-6. Durability/WAL decisions using compact operation deltas.
-7. Benchmark-driven adjacency redesign only if the evidence points there.
+2. Finish the indexed in-memory transaction overlay/read-view so graph execution,
+   traversal reads, deletes, and property scans no longer need to materialize a
+   whole-store working copy in common paths.
+3. Add a minimal live Neo4j backend prototype that can execute translated
+   `GraphQuery` values, then use it to start running shared query tests against
+   both backends.
+4. Clean up the backend contract around result rows, error mapping,
+   transaction semantics, and backend capability reporting.
+5. Move identity handling from the current mostly-`i64` shape toward a
+   backend-neutral model that can support Neo4j IDs and UUID-style IDs without
+   leaking backend details through repository APIs.
+6. Revisit durability and WAL design after the transaction delta shape is
+   stable, so logging can use compact operation deltas instead of whole
+   snapshots.
+7. Consider a deeper adjacency redesign only if benchmarks show that the
+   indexed store, transaction overlay, and query path are still bottlenecked by
+   the current adjacency layout.
