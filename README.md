@@ -20,13 +20,14 @@ Over time, the project aims to support additional backends and a CLI for both hu
 
 ## Current Backend Direction
 
-The current backend roadmap has pivoted toward validating the backend-agnostic
-`GraphQuery` IR against Neo4j/Cypher before deeper in-memory transaction work.
+The current backend roadmap has completed the first validation pass for mapping
+the backend-agnostic `GraphQuery` IR to Neo4j/Cypher. That keeps the next
+in-memory work focused on an indexed transaction overlay/read-view rather than a
+physical storage redesign.
 
 The important decision: `grm-rs` is **not** currently moving directly toward
 index-free adjacency. The in-memory backend remains an indexed local graph store
-for now, while the project checks whether the backend-agnostic `GraphQuery` IR
-maps cleanly to Neo4j/Cypher.
+for now, while the project builds out portable backend contracts above it.
 
 This branch now includes:
 
@@ -686,7 +687,9 @@ This lays a solid foundation for richer projections, safer execution, and cleane
 Current priorities:
 
 * Keep insert and indexed-read performance measurable with Criterion benchmarks
-* Inspect current write hot paths for possible optimisation
+* Finish the indexed in-memory transaction overlay/read-view beyond simple write paths
+* Add a minimal live Neo4j backend prototype for shared query tests
+* Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
 * Persistence durability and smarter autocommit behavior
 * Session-core cleanup and runtime schema refactoring
 * Python/session integration improvements
@@ -695,6 +698,7 @@ Current priorities:
 
 Recently completed:
 
+* Offline `GraphQuery` to Cypher translator with named parameters, translation tests, and an ignored live Neo4j Bolt smoke test
 * Delta transaction work landed for simple in-memory write paths, reducing full-store copies for common inserts and updates
 * Repository bulk insert helpers for typed nodes and relationships
 * In-memory entity lookup indexes for labels, properties, relationship types, and adjacency
