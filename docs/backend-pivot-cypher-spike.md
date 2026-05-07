@@ -124,17 +124,21 @@ engine, then a deeper adjacency redesign can be evaluated with evidence.
 2. Finish the indexed in-memory transaction overlay/read-view so graph execution,
    traversal reads, deletes, and property scans no longer need to materialize a
    whole-store working copy in common paths.
-3. Add a minimal live Neo4j backend prototype that can execute translated
-   `GraphQuery` values, then use it to start running shared query tests against
-   both backends.
-4. Clean up the backend contract around result rows, error mapping,
-   transaction semantics, and backend capability reporting.
-5. Move identity handling from the current mostly-`i64` shape toward a
+3. Bring Python and MCP closer to parity over schema, CRUD, traversal,
+   import/export, and batch operations.
+4. Add a minimal live Neo4j backend prototype that can execute translated
+   `GraphQuery` values, then grow it toward a fully featured Cypher-compliant
+   backend with shared query/repository tests.
+5. Clean up the backend contract around result rows, error mapping,
+   transaction semantics, backend capability reporting, and IDs.
+6. Move identity handling from the current mostly-`i64` shape toward a
    backend-neutral model that can support Neo4j IDs and UUID-style IDs without
    leaking backend details through repository APIs.
-6. Revisit durability and WAL design after the transaction delta shape is
-   stable, so logging can use compact operation deltas instead of whole
-   snapshots.
-7. Consider a deeper adjacency redesign only if benchmarks show that the
+7. Revisit durability and WAL design after the transaction delta shape is
+   stable, so the local backend can move toward resilient, Redis-like operation
+   using compact operation deltas instead of whole snapshots.
+8. Build demo scenarios that show ORM-like typed Rust usage, query-like
+   integrations, Python workflows, and equivalent MCP workflows.
+9. Consider a deeper adjacency redesign only if benchmarks show that the
    indexed store, transaction overlay, and query path are still bottlenecked by
    the current adjacency layout.
