@@ -78,20 +78,21 @@ The current CLI is useful, but there are several major limitations:
 ### Now
 
 1. Finish the indexed in-memory transaction overlay/read-view beyond the current simple write paths
-2. Minimal live Neo4j backend prototype that can run shared query tests
-3. Backend contract cleanup around rows, errors, transactions, capabilities, and IDs
-4. Persistence durability improvements
-5. Smarter autocommit strategy and WAL evaluation
-6. Python integration surface improvements
-7. Session-core cleanup and runtime/schema refactor prep
+2. Bring the Python extension and MCP surface closer to parity, with shared semantics for schema, CRUD, traversal, import/export, and batch operations
+3. Add a minimal live Neo4j backend prototype, then grow it toward a fully featured Cypher-compliant backend
+4. Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
+5. Persistence durability improvements for the local in-memory backend, including safer autocommit and WAL evaluation
+6. Session-core cleanup and runtime/schema refactor prep
+7. Demo scenarios that show ORM-like typed usage, query-like workflows, and equivalent MCP workflows
 
 ### Next
 
 1. Concurrency and session coordination
-2. Import/export design and bulk interchange surface
+2. Import/export design and bulk interchange surface across CLI, Python, and MCP
 3. Explicit bulk-update design for matched query results
 4. Richer traversal result controls and graph presentation polish
 5. Backend-neutral identity support beyond the current mostly-`i64` shape
+6. Resilient Redis-like local backend behavior: append-friendly durability, recovery, compaction, and operational tooling
 
 ### Later
 
@@ -100,6 +101,7 @@ The current CLI is useful, but there are several major limitations:
 3. Stronger script language
 4. Pubsub and live subscriptions
 5. Link directionality semantics, including bidirectional-by-default link types
+6. Additional language integrations such as a C# LINQ provider where a concrete workflow justifies them
 
 ### Stretch
 

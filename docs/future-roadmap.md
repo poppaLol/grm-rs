@@ -12,6 +12,7 @@ It is intentionally broader than the near-term CLI roadmap. The aim here is to d
 - an interactive graph session CLI
 - a runtime schema playground for local graph work
 - a first-pass Python integration surface
+- an MCP server surface for agent workflows
 
 The long-term opportunity is not just "more commands". It is a coherent graph workbench that supports:
 
@@ -20,11 +21,73 @@ The long-term opportunity is not just "more commands". It is a coherent graph wo
 - repeatable scripted scenarios
 - machine-friendly import/export
 - Python-driven experimentation
+- agent-driven graph construction and analysis through MCP
 - eventual multi-process or shared workflows
 
 ## Long-Term Product Themes
 
-### 1. Durable Graph Workspace
+### 1. Python And MCP As First-Class Surfaces
+
+The Python extension and MCP server should grow as peer surfaces rather than
+separate experiments.
+
+Long-term direction:
+
+- shared semantics for schema definition, CRUD, traversal, query execution,
+  import/export, and batch operations
+- Python APIs that feel natural for analysis and scripting
+- MCP tools that are equally capable for agent-driven workflows
+- common documentation and demo scenarios that show the same graph tasks through
+  Python, CLI, and MCP
+
+This matters more than adding many language integrations early. Other surfaces,
+such as a C# LINQ provider, can stay future possibilities until there is a clear
+workflow that justifies them.
+
+### 2. Real Backend Support
+
+The completed Cypher translator spike validated the first backend portability
+path. The next product-level step is a real backend, not only string generation.
+
+Long-term direction:
+
+- a live Neo4j backend that executes translated `GraphQuery` values
+- shared query and repository tests across in-memory and Cypher backends
+- a backend contract that makes rows, errors, transactions, IDs, and capability
+  reporting explicit
+- enough Cypher compliance to support serious graph workloads rather than only
+  smoke tests
+
+### 3. Durable Local Graph Engine
+
+The in-memory backend should remain useful for tests and local workflows, but it
+can grow toward Redis-like operational expectations: fast, local, inspectable,
+and resilient.
+
+Long-term direction:
+
+- indexed transaction overlays/read-views without whole-store copies on common
+  paths
+- append-friendly durability and recovery decisions after transaction deltas are
+  stable
+- compaction, repair, and operational tooling for local persisted graphs
+- clear durability claims grounded in tested failure modes
+
+### 4. Demo-Driven Product Proof
+
+The project needs multiple concrete use cases that prove the surfaces are
+coherent.
+
+Long-term direction:
+
+- ORM-like typed Rust demos using repositories and model derives
+- query-like demos that show `GraphQuery`, traversal, filtering, and backend
+  portability
+- Python analysis demos over the same scenarios
+- MCP demos that construct, query, and update similar graphs through agent tools
+- fixtures that double as tests, docs, and onboarding examples
+
+### 5. Durable Graph Workspace
 
 The current session model already points toward a real workspace product.
 
@@ -37,7 +100,7 @@ Long-term direction:
 
 This is the foundation for almost every later capability.
 
-### 2. Runtime Schema As A First-Class Engine Concept
+### 6. Runtime Schema As A First-Class Engine Concept
 
 Today, runtime schema exists, but it still leans heavily on the CLI/session layer.
 
@@ -47,7 +110,7 @@ Long-term direction:
 - make schema usable consistently across CLI, Rust, Python, and persistence flows
 - treat models, links, and validation rules as durable product concepts rather than only interactive session metadata
 
-### 3. Multi-Surface Product
+### 7. Multi-Surface Product
 
 The product naturally wants to serve several kinds of users.
 
@@ -56,6 +119,7 @@ Long-term direction:
 - Rust library surface for typed application development
 - CLI workspace for interactive graph work
 - Python surface for analysis and automation
+- MCP surface for agents and tool-using assistants
 - possible future service mode for shared or remote access
 
 This should become a deliberate product strategy rather than an accidental collection of entrypoints.
@@ -157,11 +221,12 @@ This would make `grm-rs` more compelling as a local graph analysis tool.
 
 ### PowerShell And Other Language Extensions
 
-The product already spans Rust, CLI, and an initial Python surface, so additional language integrations are a logical extension where they unlock real workflows.
+The product already spans Rust, CLI, Python, and MCP, so additional language integrations are a logical extension where they unlock real workflows. They should not outrank Python/MCP parity, real backend support, resilient local operations, or demo coverage.
 
 Future possibilities:
 
 - a PowerShell module for accessing graph and session logic from scripts and automation
+- a C# LINQ provider over the portable graph query IR if .NET workflows become a concrete product need
 - admin-friendly command wrappers for local graph inspection and maintenance
 - language extensions added deliberately where they open up strong user workflows
 - shared core abstractions so new bindings do not reimplement behavior inconsistently
@@ -290,14 +355,18 @@ This keeps `.grm` useful for authored workflows while allowing import/export to 
 
 ### Nearer Long-Term
 
+- Python and MCP parity over schema, CRUD, traversal, import/export, and batch operations
+- minimal live Neo4j backend, then broader Cypher-compliant backend support
+- indexed transaction overlay/read-view for the local backend
+- demo scenarios covering typed Rust, query-style usage, Python, and MCP
 - runtime schema refactor
 - backend-neutral identity model
 - import/export command family
-- stronger Python integration
 - session coordination semantics
 
 ### Mid Long-Term
 
+- Redis-like resilient local backend operations: recovery, compaction, repair, and durability tooling
 - schema migrations
 - constraints and integrity rules
 - named queries and reusable views
