@@ -142,3 +142,6 @@ engine, then a deeper adjacency redesign can be evaluated with evidence.
 9. Consider a deeper adjacency redesign only if benchmarks show that the
    indexed store, transaction overlay, and query path are still bottlenecked by
    the current adjacency layout.
+
+For the Python-facing API direction that should guide the live Neo4j work, see
+[Python API Expansion Toward Neo4j](python-neo4j-api-expansion.md).
