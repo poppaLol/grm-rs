@@ -12,7 +12,8 @@ pub mod runtime;
 // Re-exports for convenient use
 pub use backend::{
     BackendIdType, BackendIdentity, CypherQuery, GraphBackend, GraphPersistence, GraphTx,
-    InMemoryBackend, StoredNode, StoredRel, graph_query_to_cypher,
+    InMemoryBackend, Neo4jBackend, Neo4jConfig, Neo4jTx, StoredNode, StoredRel,
+    graph_query_to_cypher,
 };
 pub use client::{GraphClient, GraphPersistenceAccess};
 pub use decode::{DecodeFromRow, ResultShape, labels_match, node, rel};
@@ -28,3 +29,7 @@ pub use runtime::{
     CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
     SessionCompactSummary, SessionModelCatalog, SessionState,
 };
+
+pub async fn connect_neo4j_backend(config: Neo4jConfig) -> Result<Neo4jBackend> {
+    Neo4jBackend::connect(config).await
+}
