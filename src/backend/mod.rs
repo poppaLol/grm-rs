@@ -3,6 +3,8 @@ mod graph;
 mod graphpersistence;
 mod graphstore;
 mod inmemory;
+#[path = "neo4j.rs"]
+pub mod neo4j;
 mod persisted;
 mod storednode;
 mod storedrel;
@@ -12,6 +14,7 @@ pub use graph::*;
 pub use graphpersistence::GraphPersistence;
 pub use graphstore::GraphStore;
 pub use inmemory::InMemoryBackend;
+pub use neo4j::{Neo4jBackend, Neo4jConfig, Neo4jTx};
 pub(crate) use persisted::BinaryPersistedGraphStore;
 pub use persisted::PersistedGraphStore;
 pub use storednode::StoredNode;

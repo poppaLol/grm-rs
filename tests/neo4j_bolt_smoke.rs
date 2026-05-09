@@ -3,7 +3,10 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use grm_rs::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, VarId};
-use grm_rs::{CompareOp, PropertyFilter, graph_query_to_cypher};
+use grm_rs::{
+    CompareOp, GraphBackend, GraphTx, Neo4jBackend, Neo4jConfig, PropertyFilter,
+    graph_query_to_cypher,
+};
 use neo4rs::{Graph, Node, Query, query};
 use serde_json::{Value, json};
 
@@ -51,6 +54,65 @@ async fn translated_one_hop_query_executes_against_neo4j() {
     assert_eq!(title, "Cypher Smoke");
     assert!(rows.next().await.expect("read row").is_none());
 
+    cleanup_smoke_graph(&graph, &smoke_id).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a running Neo4j Bolt endpoint and NEO4J_* env vars"]
+async fn neo4j_backend_persists_nodes_and_relationships() {
+    let backend = connect_backend().await;
+    let smoke_id = unique_smoke_id();
+    println!("neo4j backend smoke_id={smoke_id}");
+
+    let mut tx = backend.begin_tx().await.expect("begin Neo4j tx");
+    let user = tx
+        .create_node(
+            vec!["GrmSmokeUser".to_string()],
+            BTreeMap::from([
+                ("name".to_string(), json!("Alice")),
+                ("smoke_id".to_string(), json!(smoke_id.clone())),
+            ]),
+        )
+        .await
+        .expect("create user node");
+    let post = tx
+        .create_node(
+            vec!["GrmSmokePost".to_string()],
+            BTreeMap::from([
+                ("title".to_string(), json!("Backend Smoke")),
+                ("smoke_id".to_string(), json!(smoke_id.clone())),
+            ]),
+        )
+        .await
+        .expect("create post node");
+    let rel = tx
+        .create_relationship(
+            user.id,
+            post.id,
+            "GRM_SMOKE_AUTHORED",
+            BTreeMap::from([("smoke_id".to_string(), json!(smoke_id.clone()))]),
+        )
+        .await
+        .expect("create relationship");
+    tx.commit().await.expect("commit Neo4j tx");
+
+    let mut tx = backend.begin_tx().await.expect("begin read tx");
+    let loaded = tx
+        .find_node_by_id(user.id)
+        .await
+        .expect("find user")
+        .expect("user should exist");
+    assert_eq!(loaded.props.get("name"), Some(&json!("Alice")));
+    let outgoing = tx
+        .outgoing(user.id, Some("GRM_SMOKE_AUTHORED"))
+        .await
+        .expect("find outgoing rels");
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(outgoing[0].0.id, rel.id);
+    assert_eq!(outgoing[0].1.id, post.id);
+    tx.rollback().await.expect("rollback read tx");
+
+    let graph = connect_graph().await;
     cleanup_smoke_graph(&graph, &smoke_id).await;
 }
 
@@ -102,6 +164,32 @@ fn one_hop_query(smoke_id: &str) -> GraphQuery {
         limit: Some(1),
         offset: None,
     }
+}
+
+async fn connect_backend() -> Neo4jBackend {
+    let uri = env::var("NEO4J_URI").unwrap_or_else(|_| "host.docker.internal:7687".to_string());
+    let user = env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+    let password =
+        env::var("NEO4J_PASSWORD").expect("set NEO4J_PASSWORD to run the Neo4j smoke test");
+
+    Neo4jBackend::connect(Neo4jConfig {
+        uri,
+        user,
+        password,
+    })
+    .await
+    .expect("connect Neo4j backend")
+}
+
+async fn connect_graph() -> Graph {
+    let uri = env::var("NEO4J_URI").unwrap_or_else(|_| "host.docker.internal:7687".to_string());
+    let user = env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+    let password =
+        env::var("NEO4J_PASSWORD").expect("set NEO4J_PASSWORD to run the Neo4j smoke test");
+
+    Graph::new(&uri, &user, &password)
+        .await
+        .expect("connect to Neo4j")
 }
 
 fn apply_params(mut query: Query, params: &BTreeMap<String, Value>) -> Query {
