@@ -74,13 +74,14 @@ The current CLI is useful, but there are several major limitations:
 9. Lazy node property indexing for cheaper writes
 10. Insert benchmark scaling and flamegraph profiling workflow
 11. Cypher translator spike validating the first `GraphQuery` to Cypher path
+12. Minimal live Neo4j backend prototype with Rust and Python smoke coverage
 
 ### Now
 
 1. Finish the indexed in-memory transaction overlay/read-view beyond the current simple write paths
-2. Bring the Python extension and MCP surface closer to parity, with shared semantics for schema, CRUD, traversal, import/export, and batch operations
-3. Add a minimal live Neo4j backend prototype, then grow it toward a fully featured Cypher-compliant backend
-4. Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
+2. Harden the live Neo4j backend path with shared in-memory/Neo4j behavior tests
+3. Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
+4. Bring the Python extension and MCP surface closer to parity, with shared semantics for schema, CRUD, traversal, import/export, and batch operations
 5. Persistence durability improvements for the local in-memory backend, including safer autocommit and WAL evaluation
 6. Session-core cleanup and runtime/schema refactor prep
 7. Demo scenarios that show ORM-like typed usage, query-like workflows, and equivalent MCP workflows
@@ -92,7 +93,8 @@ The current CLI is useful, but there are several major limitations:
 3. Explicit bulk-update design for matched query results
 4. Richer traversal result controls and graph presentation polish
 5. Backend-neutral identity support beyond the current mostly-`i64` shape
-6. Resilient Redis-like local backend behavior: append-friendly durability, recovery, compaction, and operational tooling
+6. Grow the live Neo4j backend from prototype toward a fuller Cypher-compliant backend
+7. Resilient Redis-like local backend behavior: append-friendly durability, recovery, compaction, and operational tooling
 
 ### Later
 
