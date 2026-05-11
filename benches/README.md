@@ -31,6 +31,8 @@ Compare:
 - exact property lookup: user by name
 - range-style property filter: users by age threshold
 - one-hop traversal: user authored posts
+- transaction overlay/read-view reads: property lookup, one-hop traversal, and
+  `GraphQuery` execution inside a read transaction
 
 Compare:
 
@@ -65,6 +67,8 @@ The checked-in harness currently uses quick-run local datasets:
 Use deterministic generated data so benchmark runs are comparable.
 The lookup and traversal benchmarks bulk-load fixtures through one lower-level
 transaction so setup time does not dominate indexed read measurements.
+The `tx_overlay_reads_*` group measures read transactions over existing committed
+data so whole-store materialization regressions are visible in Criterion output.
 A 100,000-user Criterion suite is available through `scripts/benchmarks.sh stress`;
 it is intentionally opt-in and should be treated as a stress test, not the
 default benchmark scope.
