@@ -61,6 +61,9 @@ The current CLI is useful, but there are several major limitations:
 
 ## Prioritized Roadmap
 
+This is the canonical future-priority list for the project. Other docs should
+link here instead of copying the current/future ordering.
+
 ### Completed
 
 1. Query language expansion

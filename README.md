@@ -682,18 +682,11 @@ All backends now implement the same GraphTx contract. The transaction boundary i
 
 This lays a solid foundation for richer projections, safer execution, and cleaner integrations going forward.
 
-## 🚧 Roadmap (Short Term)
+## 🚧 Roadmap
 
-Current priorities:
-
-* Finish the indexed in-memory transaction overlay/read-view beyond simple write paths
-* Harden the live Neo4j backend path with shared in-memory/Neo4j behavior tests
-* Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
-* Bring the Python extension and MCP surface closer to parity across schema, CRUD, traversal, import/export, and batch operations
-* Improve local backend durability toward Redis-like resilient operation: append-friendly logging, recovery, compaction, and repair tooling
-* Build demo scenarios that show typed ORM-like usage, query-like integrations, Python workflows, and equivalent MCP workflows
-* Session-core cleanup and runtime schema refactoring
-* Concurrency and coordination for persisted sessions
+The canonical priority list lives in [docs/cli-roadmap.md](docs/cli-roadmap.md).
+Keep future ordering there so README, backend notes, and topic-specific design
+docs do not drift into competing roadmaps.
 
 Recently completed:
 
@@ -704,5 +697,3 @@ Recently completed:
 * In-memory entity lookup indexes for labels, properties, relationship types, and adjacency
 * Lazy node property-index rebuilds, preserving read-your-writes behavior while reducing write-time index churn
 * Insert benchmark scaling and a flamegraph workflow for profiling Criterion benches
-
-For the detailed CLI/session roadmap, see [docs/cli-roadmap.md](docs/cli-roadmap.md).
