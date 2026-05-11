@@ -118,30 +118,15 @@ look like Neo4j internally.
 If future benchmarks show indexed adjacency is the limiting factor for the local
 engine, then a deeper adjacency redesign can be evaluated with evidence.
 
-## Priority Order From Here
+## Current Status
 
-1. Cypher translator spike. (done)
-2. Minimal live Neo4j backend prototype with Rust/Python smoke coverage. (done)
-3. Finish the indexed in-memory transaction overlay/read-view so graph execution,
-   traversal reads, deletes, and property scans no longer need to materialize a
-   whole-store working copy in common paths.
-4. Harden the live Neo4j backend path with shared in-memory/Neo4j behavior
-   tests, then grow it toward a fully featured Cypher-compliant backend.
-5. Bring Python and MCP closer to parity over schema, CRUD, traversal,
-   import/export, and batch operations.
-6. Clean up the backend contract around result rows, error mapping,
-   transaction semantics, backend capability reporting, and IDs.
-7. Move identity handling from the current mostly-`i64` shape toward a
-   backend-neutral model that can support Neo4j IDs and UUID-style IDs without
-   leaking backend details through repository APIs.
-8. Revisit durability and WAL design after the transaction delta shape is
-   stable, so the local backend can move toward resilient, Redis-like operation
-   using compact operation deltas instead of whole snapshots.
-9. Build demo scenarios that show ORM-like typed Rust usage, query-like
-   integrations, Python workflows, and equivalent MCP workflows.
-10. Consider a deeper adjacency redesign only if benchmarks show that the
-   indexed store, transaction overlay, and query path are still bottlenecked by
-   the current adjacency layout.
+The Cypher translator spike and minimal live Neo4j backend prototype are done.
+The prototype has Rust/Python smoke coverage and is now a backend-hardening
+input rather than a standalone future milestone.
+
+Future priority ordering is centralized in [CLI Session Roadmap](cli-roadmap.md).
+This note should capture the backend design rationale; the roadmap should remain
+the source of truth for what comes next.
 
 For the Python-facing API direction that should guide the live Neo4j work, see
 [Python API Expansion Toward Neo4j](python-neo4j-api-expansion.md).
