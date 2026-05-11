@@ -107,16 +107,11 @@ impl GraphTx for InMemoryTx {
     }
 
     async fn delete_node(&mut self, id: i64) -> Result<()> {
-        self.materialize_working_copy();
-        let related_rel_ids = self
-            .materialized_store()
-            .rels
-            .values()
-            .filter(|rel| rel.from == id || rel.to == id)
-            .map(|rel| rel.id)
-            .collect::<Vec<_>>();
+        let related_rel_ids = self.visible_related_rel_ids(id);
 
-        self.materialized_store_mut().remove_node(id);
+        if self.working_copy.is_some() {
+            self.materialized_store_mut().remove_node(id);
+        }
         if self.delta.nodes.remove(&id).is_none() {
             self.delta.deleted_nodes.insert(id);
         }
@@ -148,14 +143,7 @@ impl GraphTx for InMemoryTx {
         key: &str,
         value: &Value,
     ) -> Result<Vec<StoredNode>> {
-        self.materialize_working_copy();
-        Ok(self
-            .materialized_store()
-            .nodes
-            .values()
-            .filter(|n| n.props.get(key).map(|v| v == value).unwrap_or(false))
-            .cloned()
-            .collect())
+        Ok(self.visible_nodes_by_property(key, value))
     }
 
     async fn create_relationship(
@@ -241,20 +229,7 @@ impl GraphTx for InMemoryTx {
         from: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        self.materialize_working_copy();
-        let rel_ids = self
-            .materialized_store()
-            .outgoing_relationship_ids(from, rel_type);
-        let mut out = Vec::with_capacity(rel_ids.len());
-        for rel_id in rel_ids {
-            let Some(rel) = self.materialized_store().rels.get(&rel_id) else {
-                continue;
-            };
-            if let Some(n) = self.materialized_store().nodes.get(&rel.to) {
-                out.push((rel.clone(), n.clone()));
-            }
-        }
-        Ok(out)
+        Ok(self.visible_neighbor_pairs(from, rel_type, crate::dsl::Direction::Out))
     }
 
     async fn incoming(
@@ -262,20 +237,7 @@ impl GraphTx for InMemoryTx {
         to: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        self.materialize_working_copy();
-        let rel_ids = self
-            .materialized_store()
-            .incoming_relationship_ids(to, rel_type);
-        let mut out = Vec::with_capacity(rel_ids.len());
-        for rel_id in rel_ids {
-            let Some(rel) = self.materialized_store().rels.get(&rel_id) else {
-                continue;
-            };
-            if let Some(n) = self.materialized_store().nodes.get(&rel.from) {
-                out.push((rel.clone(), n.clone()));
-            }
-        }
-        Ok(out)
+        Ok(self.visible_neighbor_pairs(to, rel_type, crate::dsl::Direction::In))
     }
 
     async fn both(
@@ -283,39 +245,7 @@ impl GraphTx for InMemoryTx {
         node: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        let mut out = Vec::new();
-        let mut seen_rel_ids = std::collections::BTreeSet::new();
-
-        self.materialize_working_copy();
-        for rel_id in self
-            .materialized_store()
-            .outgoing_relationship_ids(node, rel_type)
-        {
-            let Some(rel) = self.materialized_store().rels.get(&rel_id) else {
-                continue;
-            };
-            if let Some(n) = self.materialized_store().nodes.get(&rel.to) {
-                if seen_rel_ids.insert(rel.id) {
-                    out.push((rel.clone(), n.clone()));
-                }
-            }
-        }
-
-        for rel_id in self
-            .materialized_store()
-            .incoming_relationship_ids(node, rel_type)
-        {
-            let Some(rel) = self.materialized_store().rels.get(&rel_id) else {
-                continue;
-            };
-            if let Some(n) = self.materialized_store().nodes.get(&rel.from) {
-                if seen_rel_ids.insert(rel.id) {
-                    out.push((rel.clone(), n.clone()));
-                }
-            }
-        }
-
-        Ok(out)
+        Ok(self.visible_neighbor_pairs(node, rel_type, crate::dsl::Direction::Both))
     }
 
     async fn commit(mut self) -> Result<()> {
