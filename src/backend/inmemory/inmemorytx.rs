@@ -1,4 +1,5 @@
 use log::trace;
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -104,15 +105,15 @@ fn emit_rows_from_bindings(tx: &InMemoryTx, bindings: Vec<Binding>) -> Vec<Query
 
         // node vars (root + hop end vars)
         for (var, id) in b.nodes {
-            if let Some(node) = tx.materialized_store().nodes.get(&id) {
-                values.insert(var, stored_node_to_kernel(node));
+            if let Some(node) = tx.visible_node(id) {
+                values.insert(var, stored_node_to_kernel(&node));
             }
         }
 
         // rel vars
         for (var, id) in b.rels {
-            if let Some(rel) = tx.materialized_store().rels.get(&id) {
-                values.insert(var, stored_rel_to_kernel(rel));
+            if let Some(rel) = tx.visible_rel(id) {
+                values.insert(var, stored_rel_to_kernel(&rel));
             }
         }
 
@@ -421,25 +422,210 @@ impl InMemoryTx {
         }
     }
 
+    pub fn visible_node(&self, id: i64) -> Option<StoredNode> {
+        if let Some(store) = &self.working_copy {
+            return store.nodes.get(&id).cloned();
+        }
+        if self.delta.deleted_nodes.contains(&id) {
+            return None;
+        }
+        self.delta
+            .nodes
+            .get(&id)
+            .cloned()
+            .or_else(|| self.store.lock().unwrap().nodes.get(&id).cloned())
+    }
+
+    pub fn visible_rel(&self, id: i64) -> Option<StoredRel> {
+        if let Some(store) = &self.working_copy {
+            return store.rels.get(&id).cloned();
+        }
+        if self.delta.deleted_rels.contains(&id) {
+            return None;
+        }
+        self.delta
+            .rels
+            .get(&id)
+            .cloned()
+            .or_else(|| self.store.lock().unwrap().rels.get(&id).cloned())
+    }
+
+    pub fn visible_nodes_by_property(&self, key: &str, value: &Value) -> Vec<StoredNode> {
+        if let Some(store) = &self.working_copy {
+            return store
+                .nodes
+                .values()
+                .filter(|n| n.props.get(key).map(|v| v == value).unwrap_or(false))
+                .cloned()
+                .collect();
+        }
+
+        let mut nodes = {
+            let store = self.store.lock().unwrap();
+            store
+                .nodes
+                .values()
+                .filter(|node| {
+                    !self.delta.deleted_nodes.contains(&node.id)
+                        && !self.delta.nodes.contains_key(&node.id)
+                        && node.props.get(key).map(|v| v == value).unwrap_or(false)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+
+        nodes.extend(
+            self.delta
+                .nodes
+                .values()
+                .filter(|node| node.props.get(key).map(|v| v == value).unwrap_or(false))
+                .cloned(),
+        );
+        nodes
+    }
+
+    pub fn visible_nodes_matching(
+        &self,
+        labels: &'static [&'static str],
+        filters: &[PropertyFilter],
+    ) -> Vec<StoredNode> {
+        if let Some(store) = &self.working_copy {
+            return store
+                .nodes
+                .values()
+                .filter(|node| {
+                    labels_match(&node.labels, labels) && stored_node_matches_filters(node, filters)
+                })
+                .cloned()
+                .collect();
+        }
+
+        let mut nodes = {
+            let store = self.store.lock().unwrap();
+            store
+                .nodes
+                .values()
+                .filter(|node| {
+                    !self.delta.deleted_nodes.contains(&node.id)
+                        && !self.delta.nodes.contains_key(&node.id)
+                        && labels_match(&node.labels, labels)
+                        && stored_node_matches_filters(node, filters)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+
+        nodes.extend(
+            self.delta
+                .nodes
+                .values()
+                .filter(|node| {
+                    labels_match(&node.labels, labels) && stored_node_matches_filters(node, filters)
+                })
+                .cloned(),
+        );
+        nodes
+    }
+
+    pub fn visible_neighbor_pairs(
+        &self,
+        node: i64,
+        rel_type: Option<&str>,
+        dir: Direction,
+    ) -> Vec<(StoredRel, StoredNode)> {
+        if let Some(store) = &self.working_copy {
+            return materialized_neighbor_pairs(store, node, rel_type, dir);
+        }
+
+        let mut seen_rel_ids = BTreeSet::new();
+        let mut pairs = Vec::new();
+        let base_rel_ids = {
+            let store = self.store.lock().unwrap();
+            match dir {
+                Direction::Out => store.outgoing_relationship_ids(node, rel_type),
+                Direction::In => store.incoming_relationship_ids(node, rel_type),
+                Direction::Both => {
+                    let mut ids = store.outgoing_relationship_ids(node, rel_type);
+                    ids.extend(store.incoming_relationship_ids(node, rel_type));
+                    ids
+                }
+            }
+        };
+
+        for rel_id in base_rel_ids {
+            if !seen_rel_ids.insert(rel_id) {
+                continue;
+            }
+            if let Some((rel, neighbor)) = self.visible_neighbor_pair(node, rel_id, dir) {
+                pairs.push((rel, neighbor));
+            }
+        }
+
+        for rel in self.delta.rels.values() {
+            if !rel_matches_neighbor(rel, node, rel_type, dir) || !seen_rel_ids.insert(rel.id) {
+                continue;
+            }
+            if let Some(neighbor) = neighbor_id(rel, node, dir).and_then(|id| self.visible_node(id))
+            {
+                pairs.push((rel.clone(), neighbor));
+            }
+        }
+
+        pairs
+    }
+
+    fn visible_neighbor_pair(
+        &self,
+        node: i64,
+        rel_id: i64,
+        dir: Direction,
+    ) -> Option<(StoredRel, StoredNode)> {
+        let rel = self.visible_rel(rel_id)?;
+        let neighbor = neighbor_id(&rel, node, dir).and_then(|id| self.visible_node(id))?;
+        Some((rel, neighbor))
+    }
+
+    pub fn visible_related_rel_ids(&self, node: i64) -> BTreeSet<i64> {
+        if let Some(store) = &self.working_copy {
+            return store
+                .rels
+                .values()
+                .filter(|rel| rel.from == node || rel.to == node)
+                .map(|rel| rel.id)
+                .collect();
+        }
+
+        let mut ids = {
+            let store = self.store.lock().unwrap();
+            let mut ids = store.outgoing_relationship_ids(node, None);
+            ids.extend(store.incoming_relationship_ids(node, None));
+            ids.into_iter().collect::<BTreeSet<_>>()
+        };
+        ids.extend(
+            self.delta
+                .rels
+                .values()
+                .filter(|rel| rel.from == node || rel.to == node)
+                .map(|rel| rel.id),
+        );
+        ids
+    }
+
     /// Pure function to seed bindings from roots - no mutation of self
     fn seed_roots(tx: &InMemoryTx, root_nm: &NodeMatch) -> Vec<Binding> {
         let mut bindings = Vec::new();
 
         if let Some(id) = root_nm.id_filter {
-            if let Some(node) = tx.materialized_store().nodes.get(&id) {
+            if let Some(node) = tx.visible_node(id) {
                 if labels_match(&node.labels, root_nm.labels)
-                    && stored_node_matches_filters(node, &root_nm.property_filters)
+                    && stored_node_matches_filters(&node, &root_nm.property_filters)
                 {
                     bindings.push(Binding::new_root(root_nm.var, node.id));
                 }
             }
         } else {
-            for node in tx.materialized_store().nodes.values() {
-                if labels_match(&node.labels, root_nm.labels)
-                    && stored_node_matches_filters(node, &root_nm.property_filters)
-                {
-                    bindings.push(Binding::new_root(root_nm.var, node.id));
-                }
+            for node in tx.visible_nodes_matching(root_nm.labels, &root_nm.property_filters) {
+                bindings.push(Binding::new_root(root_nm.var, node.id));
             }
         }
 
@@ -556,8 +742,6 @@ impl InMemoryTx {
     }
 
     pub async fn execute_graph_query(&mut self, q: &GraphQuery) -> Result<QueryResult> {
-        self.materialize_working_copy();
-
         // ---- 1) Build the execution context
         let ctx = ExecCtx::build(q)?;
 
@@ -590,5 +774,63 @@ impl InMemoryTx {
         // ---- 5) Emit full binding rows ----
         let rows = emit_rows_from_bindings(self, selected);
         Ok(QueryResult { rows })
+    }
+}
+
+fn materialized_neighbor_pairs(
+    store: &GraphStore,
+    node: i64,
+    rel_type: Option<&str>,
+    dir: Direction,
+) -> Vec<(StoredRel, StoredNode)> {
+    let mut seen_rel_ids = BTreeSet::new();
+    let rel_ids = match dir {
+        Direction::Out => store.outgoing_relationship_ids(node, rel_type),
+        Direction::In => store.incoming_relationship_ids(node, rel_type),
+        Direction::Both => {
+            let mut ids = store.outgoing_relationship_ids(node, rel_type);
+            ids.extend(store.incoming_relationship_ids(node, rel_type));
+            ids
+        }
+    };
+
+    let mut pairs = Vec::new();
+    for rel_id in rel_ids {
+        if !seen_rel_ids.insert(rel_id) {
+            continue;
+        }
+        let Some(rel) = store.rels.get(&rel_id) else {
+            continue;
+        };
+        if let Some(neighbor) = neighbor_id(rel, node, dir).and_then(|id| store.nodes.get(&id)) {
+            pairs.push((rel.clone(), neighbor.clone()));
+        }
+    }
+    pairs
+}
+
+fn rel_matches_neighbor(
+    rel: &StoredRel,
+    node: i64,
+    rel_type: Option<&str>,
+    dir: Direction,
+) -> bool {
+    if rel_type.is_some_and(|ty| rel.rel_type != ty) {
+        return false;
+    }
+    match dir {
+        Direction::Out => rel.from == node,
+        Direction::In => rel.to == node,
+        Direction::Both => rel.from == node || rel.to == node,
+    }
+}
+
+fn neighbor_id(rel: &StoredRel, node: i64, dir: Direction) -> Option<i64> {
+    match dir {
+        Direction::Out if rel.from == node => Some(rel.to),
+        Direction::In if rel.to == node => Some(rel.from),
+        Direction::Both if rel.from == node => Some(rel.to),
+        Direction::Both if rel.to == node => Some(rel.from),
+        _ => None,
     }
 }

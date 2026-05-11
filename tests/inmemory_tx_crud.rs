@@ -3,6 +3,8 @@ mod common;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
+use grm_rs::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, VarId};
+use grm_rs::{CompareOp, PropertyFilter};
 use grm_rs::{GraphBackend, GraphTx, InMemoryBackend, Result};
 
 #[tokio::test]
@@ -105,6 +107,125 @@ async fn materialized_read_transaction_does_not_replace_later_commits() -> Resul
     assert!(verify_tx.find_node_by_id(bob.id).await?.is_some());
     verify_tx.commit().await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn property_lookup_read_does_not_materialize_working_copy() -> Result<()> {
+    let backend = InMemoryBackend::new();
+
+    {
+        let mut tx = backend.begin_tx().await?;
+        tx.create_node(
+            vec!["User".to_string()],
+            BTreeMap::from([("name".to_string(), json!("Alice"))]),
+        )
+        .await?;
+        tx.commit().await?;
+    }
+
+    let mut tx = backend.begin_tx().await?;
+    let users = tx.find_nodes_by_property("name", &json!("Alice")).await?;
+
+    assert_eq!(users.len(), 1);
+    assert!(
+        tx.working_copy.is_none(),
+        "property lookup should use overlay read-view"
+    );
+
+    tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn traversal_read_does_not_materialize_working_copy() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let user_id = {
+        let mut tx = backend.begin_tx().await?;
+        let user = tx
+            .create_node(vec!["User".to_string()], Default::default())
+            .await?;
+        let post = tx
+            .create_node(vec!["Post".to_string()], Default::default())
+            .await?;
+        tx.create_relationship(user.id, post.id, "Authored", Default::default())
+            .await?;
+        tx.commit().await?;
+        user.id
+    };
+
+    let mut tx = backend.begin_tx().await?;
+    let posts = tx.outgoing(user_id, Some("Authored")).await?;
+
+    assert_eq!(posts.len(), 1);
+    assert!(
+        tx.working_copy.is_none(),
+        "one-hop traversal should use overlay read-view"
+    );
+
+    tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn graph_query_read_does_not_materialize_working_copy() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    {
+        let mut tx = backend.begin_tx().await?;
+        let user = tx
+            .create_node(
+                vec!["User".to_string()],
+                BTreeMap::from([("name".to_string(), json!("Alice"))]),
+            )
+            .await?;
+        let post = tx
+            .create_node(vec!["Post".to_string()], Default::default())
+            .await?;
+        tx.create_relationship(user.id, post.id, "Authored", Default::default())
+            .await?;
+        tx.commit().await?;
+    }
+
+    let root = VarId(0);
+    let rel = VarId(1);
+    let end = VarId(2);
+    let query = GraphQuery {
+        matches: vec![
+            MatchClause::Node(NodeMatch {
+                var: root,
+                labels: &["User"],
+                id_filter: None,
+                property_filters: vec![PropertyFilter {
+                    key: "name",
+                    op: CompareOp::Eq,
+                    value: json!("Alice"),
+                }],
+            }),
+            MatchClause::Hop(HopMatch {
+                start: root,
+                rel_type: Some("Authored"),
+                rel_var: rel,
+                dir: Direction::Out,
+                end,
+                end_labels: &["Post"],
+            }),
+        ],
+        where_: vec![],
+        ret: Return::Node(end),
+        limit: None,
+        offset: None,
+    };
+
+    let mut tx = backend.begin_tx().await?;
+    let rows = tx.execute_graph(&query).await?;
+
+    assert_eq!(rows.rows.len(), 1);
+    assert!(
+        tx.working_copy.is_none(),
+        "graph query execution should use overlay read-view"
+    );
+
+    tx.commit().await?;
     Ok(())
 }
 
