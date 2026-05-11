@@ -3,8 +3,11 @@ use std::time::Duration;
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use grm_rs::{
-    GraphTx, InMemoryBackend, NodeModel, NodeRepository, RelModel, RelRepository, RuntimeField,
-    RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionState, typed_id,
+    CompareOp, GraphBackend, GraphQuery, GraphTx, InMemoryBackend, NodeModel, NodeRepository,
+    RelModel, RelRepository, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
+    SessionState,
+    dsl::{Direction, HopMatch, MatchClause, NodeMatch, Return, VarId},
+    typed_id,
 };
 use rusqlite::{Connection, params};
 use serde_json::json;
@@ -610,6 +613,91 @@ fn bench_one_hop(c: &mut Criterion) {
     }
 }
 
+fn bench_tx_overlay_reads(c: &mut Criterion) {
+    if std::env::var_os("GRM_BENCH_PROFILE_GRM_INSERT_ONLY").is_some() {
+        return;
+    }
+
+    let rt = Runtime::new().unwrap();
+    for rows in read_rows() {
+        let data = dataset(rows);
+        let grm = populate_grm_repo_bulk(&rt, &data);
+        let lookup_name = format!("user-{:06}", rows / 2);
+        let user_id = rows as i64 / 2 + 1;
+        let graph_query = authored_post_query(lookup_name.clone());
+        let group_name = format!("tx_overlay_reads_{}", size_label(rows));
+        let mut group = c.benchmark_group(group_name);
+
+        group.bench_function("property_lookup_name_eq", |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut tx = grm.begin_tx().await.unwrap();
+                    let rows = tx.find_nodes_by_property("name", &json!(lookup_name)).await;
+                    tx.rollback().await.unwrap();
+                    black_box(rows.unwrap())
+                })
+            });
+        });
+
+        group.bench_function("one_hop_outgoing_authored", |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut tx = grm.begin_tx().await.unwrap();
+                    let rows = tx.outgoing(user_id, Some("Authored")).await;
+                    tx.rollback().await.unwrap();
+                    black_box(rows.unwrap())
+                })
+            });
+        });
+
+        group.bench_function("graph_query_user_authored_post", |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut tx = grm.begin_tx().await.unwrap();
+                    let rows = tx.execute_graph(&graph_query).await;
+                    tx.rollback().await.unwrap();
+                    black_box(rows.unwrap())
+                })
+            });
+        });
+
+        group.finish();
+    }
+}
+
+fn authored_post_query(name: String) -> GraphQuery {
+    let root = VarId(0);
+    let rel = VarId(1);
+    let end = VarId(2);
+
+    GraphQuery {
+        matches: vec![
+            MatchClause::Node(NodeMatch {
+                var: root,
+                labels: &["User"],
+                id_filter: None,
+                property_filters: vec![grm_rs::PropertyFilter {
+                    key: "name",
+                    op: CompareOp::Eq,
+                    value: json!(name),
+                }],
+            }),
+            MatchClause::Hop(HopMatch {
+                start: root,
+                rel_type: Some("Authored"),
+                rel_var: rel,
+                dir: Direction::Out,
+                end,
+                end_labels: &["Post"],
+            }),
+        ],
+        where_: vec![],
+        ret: Return::Node(end),
+        limit: None,
+        offset: None,
+    }
+}
+
 fn size_label(rows: usize) -> String {
     if rows >= 1_000 {
         format!("{}k", rows / 1_000)
@@ -634,5 +722,11 @@ fn insert_rows() -> Vec<usize> {
     rows
 }
 
-criterion_group!(benches, bench_inserts, bench_property_lookup, bench_one_hop);
+criterion_group!(
+    benches,
+    bench_inserts,
+    bench_property_lookup,
+    bench_one_hop,
+    bench_tx_overlay_reads
+);
 criterion_main!(benches);
