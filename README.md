@@ -686,10 +686,10 @@ This lays a solid foundation for richer projections, safer execution, and cleane
 
 Current priorities:
 
-* Bring the Python extension and MCP surface closer to parity across schema, CRUD, traversal, import/export, and batch operations
 * Finish the indexed in-memory transaction overlay/read-view beyond simple write paths
-* Add a minimal live Neo4j backend prototype, then grow it toward a fully featured Cypher-compliant backend
+* Harden the live Neo4j backend path with shared in-memory/Neo4j behavior tests
 * Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
+* Bring the Python extension and MCP surface closer to parity across schema, CRUD, traversal, import/export, and batch operations
 * Improve local backend durability toward Redis-like resilient operation: append-friendly logging, recovery, compaction, and repair tooling
 * Build demo scenarios that show typed ORM-like usage, query-like integrations, Python workflows, and equivalent MCP workflows
 * Session-core cleanup and runtime schema refactoring
@@ -697,6 +697,7 @@ Current priorities:
 
 Recently completed:
 
+* Minimal live Neo4j backend prototype with Rust and Python smoke coverage
 * Offline `GraphQuery` to Cypher translator with named parameters, translation tests, and an ignored live Neo4j Bolt smoke test
 * Delta transaction work landed for simple in-memory write paths, reducing full-store copies for common inserts and updates
 * Repository bulk insert helpers for typed nodes and relationships
