@@ -73,6 +73,15 @@ implementation understandable.
 GRM should grow `session.explain` and `session.profile` style introspection for
 query execution.
 
+Current groundwork is intentionally internal: backend contracts now document the
+`QueryResult`/`QueryRow` shape, transaction visibility expectations, practical
+error categories, current backend-assigned `i64` IDs, and lightweight capability
+hints. A small execution-plan vocabulary (`NodeById`, `NodeLabelScan`,
+`NodePropertySeek`, `NodeCheck`, `NodeFilter`, `ExpandOut`, `ExpandIn`,
+`ExpandBoth`, `Return`) gives later planner and profile work stable words to use
+in tests and logs. This does not add CLI `session.explain` or
+`session.profile` commands yet.
+
 `session.explain` should show the selected logical or physical plan without
 running the query. `session.profile` should run the query and report
 per-operator row counts and timings.

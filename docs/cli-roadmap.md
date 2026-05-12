@@ -79,12 +79,15 @@ link here instead of copying the current/future ordering.
 11. Cypher translator spike validating the first `GraphQuery` to Cypher path
 12. Minimal live Neo4j backend prototype with Rust and Python smoke coverage
 13. Python/MCP parity for import/export, traversal queries, and shared batch operations
+14. Backend contract groundwork for query rows, transaction semantics, current
+    `i64` backend IDs, lightweight capabilities, and minimal execution-plan
+    vocabulary
 
 ### Now
 
 1. Finish the indexed in-memory transaction overlay/read-view beyond the current simple write paths
 2. Harden the live Neo4j backend path with shared in-memory/Neo4j behavior tests
-3. Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
+3. Expand the backend contract tests into reusable in-memory/Neo4j behavior suites
 4. Continue Python and MCP surface parity beyond the completed import/export, traversal, and batch work, especially around remaining schema/CRUD polish and shared error behavior
 5. Persistence durability improvements for the local in-memory backend, including safer autocommit and WAL evaluation
 6. Session-core cleanup and runtime/schema refactor prep
