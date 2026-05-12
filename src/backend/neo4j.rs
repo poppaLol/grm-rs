@@ -5,7 +5,8 @@ use neo4rs::{BoltMap, BoltString, BoltType, Graph, Node, Query, Relation, Row, T
 use serde_json::Value;
 
 use crate::backend::{
-    BackendIdType, BackendIdentity, GraphBackend, GraphTx, StoredNode, StoredRel,
+    BackendCapabilities, BackendIdType, BackendIdentity, GraphBackend, GraphTx, StoredNode,
+    StoredRel,
 };
 use crate::dsl::{GraphQuery, KernelValue, NodeValue, QueryResult, RelValue, Return, VarId};
 use crate::error::{GrmError, Result};
@@ -43,6 +44,16 @@ impl Neo4jBackend {
 #[async_trait]
 impl GraphBackend for Neo4jBackend {
     type Tx = Neo4jTx;
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            graph_query: true,
+            string_query: true,
+            transactions: true,
+            read_your_writes: true,
+            rollback: true,
+        }
+    }
 
     async fn execute_query(&self, query_text: &str, params: Value) -> Result<QueryResult> {
         let mut tx = self.begin_tx().await?;

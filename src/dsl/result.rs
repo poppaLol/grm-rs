@@ -7,11 +7,20 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct QueryRow {
+    /// Values bound by a backend for one `GraphQuery` result row.
+    ///
+    /// Backend contract:
+    /// - keys are kernel `VarId`s introduced by `GraphQuery::bound_vars()`
+    /// - every returned row must include `GraphQuery::return_var()`
+    /// - the returned value variant must match `GraphQuery::return_kind()`
+    /// - backends may include additional bound variables, but should not omit
+    ///   variables matched along the executed path
     pub values: BTreeMap<VarId, Value>,
 }
 
 #[derive(Debug, Clone)]
 pub struct QueryResult {
+    /// Ordered query rows. Empty means the query matched no rows.
     pub rows: Vec<QueryRow>,
 }
 

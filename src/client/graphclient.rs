@@ -122,9 +122,7 @@ impl<T: GraphTx + Send> Transaction<T> {
     }
 
     fn take_inner(&mut self) -> Result<T> {
-        self.inner
-            .take()
-            .ok_or_else(|| GrmError::Backend("transaction already finished".into()))
+        self.inner.take().ok_or(GrmError::TransactionClosed)
     }
 
     pub(crate) fn from_inner(inner: T) -> Self {
@@ -189,5 +187,42 @@ impl<T: GraphTx + Send> Transaction<T> {
     pub async fn rollback(mut self) -> Result<()> {
         let tx = self.take_inner()?;
         tx.rollback().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    struct ClosedMockTx;
+
+    #[async_trait]
+    impl GraphTx for ClosedMockTx {
+        async fn execute_graph(&mut self, _q: &GraphQuery) -> Result<QueryResult> {
+            unreachable!("closed transaction should not expose its inner tx")
+        }
+
+        async fn commit(self) -> Result<()> {
+            unreachable!("closed transaction should not expose its inner tx")
+        }
+
+        async fn rollback(self) -> Result<()> {
+            unreachable!("closed transaction should not expose its inner tx")
+        }
+    }
+
+    #[test]
+    fn closed_transaction_returns_transaction_closed_from_mut_access() {
+        let mut tx = Transaction::<ClosedMockTx> { inner: None };
+
+        assert!(matches!(tx.tx_mut(), Err(GrmError::TransactionClosed)));
+    }
+
+    #[test]
+    fn closed_transaction_returns_transaction_closed_when_consumed_again() {
+        let mut tx = Transaction::<ClosedMockTx> { inner: None };
+
+        assert!(matches!(tx.take_inner(), Err(GrmError::TransactionClosed)));
     }
 }
