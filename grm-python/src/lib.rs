@@ -294,6 +294,15 @@ impl PySession {
         self.state.save_to_binary(path).map_err(grm_err)
     }
 
+    fn export_json(&self, path: &str) -> PyResult<()> {
+        self.state.export_to_json(path).map_err(grm_err)
+    }
+
+    fn export_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let value = self.state.export_value().map_err(grm_err)?;
+        json_value_to_py(py, &value)
+    }
+
     fn load_json(&mut self, path: &str) -> PyResult<()> {
         self.state.load_from_json(path).map_err(grm_err)?;
         self.persist_autocommit().map_err(grm_err)
@@ -301,6 +310,11 @@ impl PySession {
 
     fn load_binary(&mut self, path: &str) -> PyResult<()> {
         self.state.load_from_binary(path).map_err(grm_err)?;
+        self.persist_autocommit().map_err(grm_err)
+    }
+
+    fn import_json(&mut self, path: &str) -> PyResult<()> {
+        self.state.import_from_json(path).map_err(grm_err)?;
         self.persist_autocommit().map_err(grm_err)
     }
 }
@@ -399,7 +413,9 @@ impl PyNeo4jSession {
             .ok_or_else(|| grm_err(grm_rs::GrmError::NotFound))?
             .clone();
         let raw_values = extract_string_map(values)?;
-        let props = model.validate_instance_input(&raw_values).map_err(grm_err)?;
+        let props = model
+            .validate_instance_input(&raw_values)
+            .map_err(grm_err)?;
         let node = block_on(py, async {
             let mut tx = self.client.transaction().await?;
             let node = tx
@@ -444,7 +460,10 @@ impl PyNeo4jSession {
 
         let nodes = block_on(py, async {
             let mut tx = self.client.transaction().await?;
-            let nodes = tx.tx_mut()?.find_nodes_by_property(field_name, &value).await?;
+            let nodes = tx
+                .tx_mut()?
+                .find_nodes_by_property(field_name, &value)
+                .await?;
             tx.rollback().await?;
             Ok(nodes)
         })?;
@@ -479,7 +498,9 @@ impl PyNeo4jSession {
             .parse::<i64>()
             .map_err(|_| PyTypeError::new_err("to_id must be an int for Neo4jSession"))?;
         let raw_values = extract_string_map(values)?;
-        let props = model.validate_instance_input(&raw_values).map_err(grm_err)?;
+        let props = model
+            .validate_instance_input(&raw_values)
+            .map_err(grm_err)?;
         let rel = block_on(py, async {
             let mut tx = self.client.transaction().await?;
             let rel = tx
