@@ -130,13 +130,8 @@ async fn query_return_end_does_not_commit_if_end_node_decode_fails() -> Result<(
 
     let repo = NodeRepository::<_, B>::new(backend);
 
-    let q = Query::<A>::matching(
-        NodePattern::<A>::new()
-            .with_id(a_id)
-            .out::<AB>()
-            .to::<B>(),
-    )
-    .return_end();
+    let q = Query::<A>::matching(NodePattern::<A>::new().with_id(a_id).out::<AB>().to::<B>())
+        .return_end();
 
     // IMPORTANT:
     // This must be a TYPED query method that decodes B before commit.

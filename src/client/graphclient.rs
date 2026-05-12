@@ -132,9 +132,7 @@ impl<T: GraphTx + Send> Transaction<T> {
     }
 
     fn inner_mut(&mut self) -> crate::Result<&mut T> {
-        self.inner
-            .as_mut()
-            .ok_or(GrmError::TransactionClosed)
+        self.inner.as_mut().ok_or(GrmError::TransactionClosed)
     }
 
     pub async fn execute<R: NodeModel>(&mut self, q: Query<R>) -> Result<QueryExecution> {
