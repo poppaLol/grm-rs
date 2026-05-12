@@ -31,7 +31,9 @@ batch-oriented affordances and make them the recommended path.
 
 ### `grm_batch`
 
-`grm_batch` should apply an ordered list of existing MCP-style operations.
+`grm_batch` applies an ordered list of existing MCP-style operations. Its
+operation semantics now live in the shared runtime batch helper, which is also
+used by Python `Session.batch(...)`; MCP keeps the tool schema and wrapper.
 
 Use it when the caller knows the exact sequence of operations:
 

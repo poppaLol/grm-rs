@@ -101,11 +101,41 @@ fresh.import_json("test-dbs/users.interchange.json")
 print(portable["format"])
 ```
 
+Batch several related mutations with one shared result and one autocommit write:
+
+```python
+result = session.batch(
+    [
+        {
+            "op": "node_create",
+            "args": {"model": "User", "props": {"name": "Bob"}, "ref": "bob"},
+        },
+        {
+            "op": "node_create",
+            "args": {"model": "Post", "props": {"title": "Batch hello"}, "ref": "post"},
+        },
+        {
+            "op": "edge_create",
+            "args": {
+                "model": "Authored",
+                "from": "bob",
+                "to": "post",
+                "props": {"year": 2026},
+            },
+        },
+    ],
+    atomic=True,
+    response="detailed",
+)
+print(result["counts"])
+```
+
 ### Data Shape Notes
 
 - Field definitions are Python dicts with `name`, `type`, and `required`
 - Supported field types are `string`, `int`, `float`, and `bool`
 - The Python method names mostly mirror the CLI commands with `_` instead of `.`, such as `model_create`, `node_find`, and `edge_update`
+- `session.batch(...)` accepts structured operation dicts for schema, node, and edge creates/updates/deletes; deletes require `allow_deletes=True`, and node creates can define batch-local refs for later edge endpoints
 - `save_json`, `save_binary`, `load_json`, and `load_binary` persist local workspace snapshots, including storage bookkeeping
 - `export_json`, `export_dict`, and `import_json` use the portable `grm.interchange` graph format described in [`import-export.md`](import-export.md)
 - `import_json` currently requires an empty session; create a fresh `Session()` before importing interchange files
