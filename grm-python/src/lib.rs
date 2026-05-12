@@ -199,6 +199,10 @@ impl PySession {
     }
 
     #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 method signature mirrors the Python API keyword arguments"
+    )]
     fn node_find(
         &self,
         py: Python<'_>,
@@ -688,6 +692,10 @@ fn extract_string_map(input: Option<&Bound<'_, PyDict>>) -> PyResult<BTreeMap<St
     Ok(values)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keeps Python node_find keyword handling explicit and close to the PyO3 signature"
+)]
 fn build_node_find_terms(
     filters: Option<&Bound<'_, PyDict>>,
     via: Option<&Bound<'_, PyAny>>,
