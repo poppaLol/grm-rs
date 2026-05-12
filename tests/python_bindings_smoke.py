@@ -94,6 +94,167 @@ def main() -> None:
         autocommit_reloaded.load_json(str(import_autocommit_path))
         assert len(autocommit_reloaded.node_find("User", {"name": "Alice"})) == 1
 
+        batch_autocommit_path = Path(tmpdir) / "batch-session.json"
+        batch_session = Session(
+            autocommit=True,
+            autocommit_path=str(batch_autocommit_path),
+        )
+        batch_result = batch_session.batch(
+            [
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "BatchUser",
+                        "id_field": "userId",
+                        "fields": [
+                            {"name": "name", "type": "string", "required": True}
+                        ],
+                    },
+                },
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "BatchPost",
+                        "id_field": "postId",
+                        "fields": [
+                            {"name": "title", "type": "string", "required": True}
+                        ],
+                    },
+                },
+                {
+                    "op": "schema_define_edge",
+                    "args": {
+                        "name": "BatchAuthored",
+                        "from_model": "BatchUser",
+                        "to_model": "BatchPost",
+                        "id_field": "authoredId",
+                        "fields": [
+                            {"name": "year", "type": "int", "required": True}
+                        ],
+                    },
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "BatchUser",
+                        "props": {"name": "Alice"},
+                        "ref": "alice",
+                    },
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "BatchPost",
+                        "props": {"title": "Hello"},
+                        "ref": "post",
+                    },
+                },
+                {
+                    "op": "edge_create",
+                    "args": {
+                        "model": "BatchAuthored",
+                        "from": "alice",
+                        "to": "post",
+                        "props": {"year": 2026},
+                    },
+                },
+            ],
+            response="detailed",
+        )
+        assert batch_result["applied"] is True
+        assert batch_result["counts"]["node_create"]["BatchUser"] == 1
+        assert batch_result["counts"]["edge_create"]["BatchAuthored"] == 1
+        assert len(batch_result["ids"]) == 3
+        assert {"alice", "post"}.issubset(
+            {item.get("ref") for item in batch_result["ids"]}
+        )
+        assert len(batch_session.edge_find("BatchAuthored", {"year": 2026})) == 1
+
+        batch_reloaded = Session()
+        batch_reloaded.load_json(str(batch_autocommit_path))
+        assert len(batch_reloaded.node_find("BatchUser", {"name": "Alice"})) == 1
+
+        failed_atomic = batch_session.batch(
+            [
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "BatchPost",
+                        "props": {"title": "Atomic rollback"},
+                    },
+                },
+                {"op": "node_create", "args": {"model": "BatchPost", "props": {}}},
+            ]
+        )
+        assert failed_atomic["applied"] is False
+        assert failed_atomic["errors"][0]["index"] == 1
+        assert batch_session.node_find("BatchPost", {"title": "Atomic rollback"}) == []
+
+        partial = batch_session.batch(
+            [
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "BatchPost",
+                        "props": {"title": "Partial success"},
+                    },
+                },
+                {"op": "node_create", "args": {"model": "BatchPost", "props": {}}},
+            ],
+            atomic=False,
+        )
+        assert partial["applied"] is False
+        assert partial["counts"]["node_create"]["BatchPost"] == 1
+        assert len(batch_session.node_find("BatchPost", {"title": "Partial success"})) == 1
+
+        duplicate_ref = batch_session.batch(
+            [
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "BatchUser",
+                        "props": {"name": "Duplicate one"},
+                        "ref": "duplicate",
+                    },
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "BatchUser",
+                        "props": {"name": "Duplicate two"},
+                        "ref": "duplicate",
+                    },
+                },
+            ]
+        )
+        assert duplicate_ref["applied"] is False
+        assert "duplicate batch ref" in duplicate_ref["errors"][0]["message"]
+        assert batch_session.node_find("BatchUser", {"name": "Duplicate one"}) == []
+
+        delete_target = batch_session.node_create("BatchPost", {"title": "Delete me"})
+        rejected_delete = batch_session.batch(
+            [
+                {
+                    "op": "node_delete",
+                    "args": {"model": "BatchPost", "id": delete_target["id"]},
+                }
+            ]
+        )
+        assert rejected_delete["applied"] is False
+        assert "requires allow_deletes=true" in rejected_delete["errors"][0]["message"]
+        assert len(batch_session.node_find("BatchPost", {"id": delete_target["id"]})) == 1
+        allowed_delete = batch_session.batch(
+            [
+                {
+                    "op": "node_delete",
+                    "args": {"model": "BatchPost", "id": delete_target["id"]},
+                }
+            ],
+            allow_deletes=True,
+        )
+        assert allowed_delete["applied"] is True
+        assert batch_session.node_find("BatchPost", {"id": delete_target["id"]}) == []
+
         non_empty = Session()
         non_empty.model_create(
             "User",

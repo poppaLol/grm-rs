@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
 use grm_rs::{
-    GraphClient, Neo4jBackend, Neo4jConfig, QueryTerm, RuntimeField, RuntimeNodeModel,
-    RuntimeRelModel, RuntimeValueType, SessionFindResult, SessionModelCatalog, SessionState,
-    StoredNode, StoredRel,
+    apply_session_batch, GraphClient, Neo4jBackend, Neo4jConfig, QueryTerm, RuntimeField,
+    RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionBatchParams, SessionFindResult,
+    SessionModelCatalog, SessionState, StoredNode, StoredRel,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -166,6 +166,30 @@ impl PySession {
         let node = block_on(py, self.state.create_instance(model_name, &raw_values))?;
         self.persist_autocommit().map_err(grm_err)?;
         stored_node_to_py(py, &node)
+    }
+
+    #[pyo3(signature = (ops, *, atomic=true, response="summary", allow_deletes=false))]
+    fn batch(
+        &mut self,
+        py: Python<'_>,
+        ops: &Bound<'_, PyAny>,
+        atomic: bool,
+        response: &str,
+        allow_deletes: bool,
+    ) -> PyResult<PyObject> {
+        let params_value = Value::Object(serde_json::Map::from_iter([
+            ("ops".to_string(), py_any_to_json_value(ops)?),
+            ("atomic".to_string(), Value::Bool(atomic)),
+            ("response".to_string(), Value::String(response.to_string())),
+            ("allow_deletes".to_string(), Value::Bool(allow_deletes)),
+        ]));
+        let params: SessionBatchParams = serde_json::from_value(params_value)
+            .map_err(|err| PyTypeError::new_err(format!("invalid batch parameters: {err}")))?;
+        let outcome = block_on(py, apply_session_batch(&mut self.state, params))?;
+        if outcome.should_persist {
+            self.persist_autocommit().map_err(grm_err)?;
+        }
+        json_value_to_py(py, &outcome.value)
     }
 
     #[pyo3(signature = (model_name, node_id, values=None))]
@@ -819,8 +843,25 @@ fn py_any_to_json_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(value) = value.extract::<String>() {
         return Ok(Value::String(value));
     }
+    if let Ok(dict) = value.downcast::<PyDict>() {
+        let mut values = serde_json::Map::new();
+        for (key, value) in dict {
+            let key = key
+                .extract::<String>()
+                .map_err(|_| PyTypeError::new_err("JSON object keys must be strings"))?;
+            values.insert(key, py_any_to_json_value(&value)?);
+        }
+        return Ok(Value::Object(values));
+    }
+    if let Ok(list) = value.downcast::<PyList>() {
+        let mut values = Vec::with_capacity(list.len());
+        for item in list {
+            values.push(py_any_to_json_value(&item)?);
+        }
+        return Ok(Value::Array(values));
+    }
     Err(PyTypeError::new_err(
-        "query parameters must be None, bool, int, float, or string",
+        "JSON values must be None, bool, int, float, string, dict, or list",
     ))
 }
 
