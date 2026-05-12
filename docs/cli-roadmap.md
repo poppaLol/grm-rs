@@ -180,6 +180,11 @@ Improve durability without changing the simple user-facing model.
 Testing note:
 see [docs/durability-testing.md](durability-testing.md) for the current durability-confidence scope, initial Linux/macOS targets, and the need for larger scripted scale-data tests.
 
+Optimization note:
+see [docs/query-persistence-optimization.md](query-persistence-optimization.md)
+for the next query-planning, execution-profiling, aggregation, and persistence
+benchmarking path.
+
 Target areas:
 
 - reduce or remove full-file rewrite behavior on every autocommit

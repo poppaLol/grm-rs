@@ -140,3 +140,11 @@ FLAMEGRAPH_OUTPUT=target/flamegraph.svg scripts/benchmarks.sh profile-insert
 
 The SQLite comparator uses `rusqlite` with bundled SQLite, so local benchmark runs
 do not require a system SQLite installation.
+
+## Next Optimization Phase
+
+The next performance phase is tracked in
+[docs/query-persistence-optimization.md](../docs/query-persistence-optimization.md).
+That note captures how to interpret the SQLite comparison, where query planning
+and profiling should go next, and which persistence benchmarks should be added
+as the in-memory backend moves toward append-friendly durability.
