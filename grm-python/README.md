@@ -79,6 +79,24 @@ authored_edges = session.node_find(
 )
 ```
 
+Batch operations share the same runtime semantics as MCP `grm_batch`, including
+atomic rollback, indexed errors, batch-local refs, and one autocommit snapshot
+after successful applied operations:
+
+```python
+result = session.batch(
+    [
+        {"op": "node_create", "args": {"model": "User", "props": {"name": "Bob"}, "ref": "bob"}},
+        {"op": "node_create", "args": {"model": "Post", "props": {"title": "Hello"}, "ref": "post"}},
+        {
+            "op": "edge_create",
+            "args": {"model": "Authored", "from": "bob", "to": "post", "props": {"year": 2026}},
+        },
+    ],
+    response="detailed",
+)
+```
+
 Use `save_json` / `load_json` or `save_binary` / `load_binary` for local
 workspace snapshots. Use `export_json`, `export_dict`, and `import_json` for
 portable `grm.interchange` graph files; `import_json` currently imports into an

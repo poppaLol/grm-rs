@@ -85,6 +85,7 @@ link here instead of copying the current/future ordering.
 2. Harden the live Neo4j backend path with shared in-memory/Neo4j behavior tests
 3. Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
 4. Bring the Python extension and MCP surface closer to parity, with shared semantics for schema, CRUD, traversal, import/export, and batch operations
+   - MCP `grm_batch` and Python `Session.batch(...)` now share runtime batch semantics for refs, rollback, result summaries, and delete gating.
 5. Persistence durability improvements for the local in-memory backend, including safer autocommit and WAL evaluation
 6. Session-core cleanup and runtime/schema refactor prep
 7. Demo scenarios that show ORM-like typed usage, query-like workflows, and equivalent MCP workflows
