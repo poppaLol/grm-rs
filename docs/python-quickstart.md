@@ -70,6 +70,13 @@ print(user)
 print(edge)
 print(session.node_find("User", {"name": "Alice"}))
 print(session.edge_find("Authored"))
+
+session.export_json("test-dbs/users.interchange.json")
+portable = session.export_dict()
+
+fresh = Session()
+fresh.import_json("test-dbs/users.interchange.json")
+print(portable["format"])
 ```
 
 ### Data Shape Notes
@@ -77,9 +84,11 @@ print(session.edge_find("Authored"))
 - Field definitions are Python dicts with `name`, `type`, and `required`
 - Supported field types are `string`, `int`, `float`, and `bool`
 - The Python method names mostly mirror the CLI commands with `_` instead of `.`, such as `model_create`, `node_find`, and `edge_update`
-- Session persistence helpers use the shorter Python-style names `save_json`, `save_binary`, `load_json`, and `load_binary`
+- `save_json`, `save_binary`, `load_json`, and `load_binary` persist local workspace snapshots, including storage bookkeeping
+- `export_json`, `export_dict`, and `import_json` use the portable `grm.interchange` graph format described in [`import-export.md`](import-export.md)
+- `import_json` currently requires an empty session; create a fresh `Session()` before importing interchange files
 - Autocommit is off by default; enable it at construction time with `Session(autocommit=True, autocommit_path="test-dbs/session.json")`
-- When autocommit is enabled, `session.autocommit` is `True` and every successful mutating operation persists the session file
+- When autocommit is enabled, `session.autocommit` is `True` and every successful mutating operation, including `import_json`, persists the session snapshot file
 - `node_create`, `node_find`, `edge_create`, and `edge_find` return plain Python dictionaries/lists
 - Rust-side failures are raised as `grm_rs.GrmError`
 - For local scratch session files, prefer keeping them under `test-dbs/`
