@@ -228,6 +228,12 @@ enum SessionQueryResult {
 }
 
 #[derive(Debug, Clone)]
+pub enum SessionFindResult {
+    Nodes(Vec<StoredNode>),
+    Edges(Vec<StoredRel>),
+}
+
+#[derive(Debug, Clone)]
 struct SessionGraphResult {
     plan: RuntimeTraversalPlan,
     rows: Vec<crate::dsl::QueryRow>,
@@ -785,6 +791,21 @@ impl SessionState {
     ) -> Result<Vec<StoredNode>> {
         let query = self.parse_node_find_query(model_name, filters)?;
         self.find_nodes_with_query(model_name, &query)
+    }
+
+    pub async fn find_nodes_with_terms(
+        &self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> Result<SessionFindResult> {
+        let query = self.parse_node_find_terms(model_name, terms)?;
+        match self.execute_node_query(model_name, &query).await? {
+            SessionQueryResult::Nodes { rows, .. } => Ok(SessionFindResult::Nodes(rows)),
+            SessionQueryResult::Edges { rows, .. } => Ok(SessionFindResult::Edges(rows)),
+            SessionQueryResult::Graph(_) => Err(crate::GrmError::NotSupported(
+                "graph format is not supported by structured find results",
+            )),
+        }
     }
 
     fn find_nodes_with_query(
