@@ -72,6 +72,17 @@ async fn schema_list_on_empty_stdio_session() {
 }
 
 #[tokio::test]
+async fn initialize_reports_grm_mcp_package_version() {
+    let client = client(&[]).await;
+    let info = client.peer_info().expect("server initialize info");
+
+    assert_eq!(info.server_info.name, "grm-mcp");
+    assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn schema_define_tools_expose_structured_field_objects() {
     let client = client(&[]).await;
     let tools = client.list_tools(None).await.expect("list tools");
