@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use neo4rs::{BoltMap, BoltString, BoltType, Graph, Node, Query, Relation, Row, Txn, query};
 use serde_json::Value;
 
-use crate::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx, StoredNode, StoredRel};
+use crate::backend::{
+    BackendIdType, BackendIdentity, GraphBackend, GraphTx, StoredNode, StoredRel,
+};
 use crate::dsl::{GraphQuery, KernelValue, NodeValue, QueryResult, RelValue, Return, VarId};
 use crate::error::{GrmError, Result};
 use crate::{QueryRow, graph_query_to_cypher};
@@ -234,8 +236,12 @@ impl GraphTx for Neo4jTx {
         from: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        self.neighbor_pairs("MATCH (a)-[r{ty}]->(n) WHERE id(a) = $id RETURN r, n", from, rel_type)
-            .await
+        self.neighbor_pairs(
+            "MATCH (a)-[r{ty}]->(n) WHERE id(a) = $id RETURN r, n",
+            from,
+            rel_type,
+        )
+        .await
     }
 
     async fn incoming(
@@ -243,8 +249,12 @@ impl GraphTx for Neo4jTx {
         to: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        self.neighbor_pairs("MATCH (n)-[r{ty}]->(a) WHERE id(a) = $id RETURN r, n", to, rel_type)
-            .await
+        self.neighbor_pairs(
+            "MATCH (n)-[r{ty}]->(a) WHERE id(a) = $id RETURN r, n",
+            to,
+            rel_type,
+        )
+        .await
     }
 
     async fn both(
@@ -252,8 +262,12 @@ impl GraphTx for Neo4jTx {
         node: i64,
         rel_type: Option<&str>,
     ) -> Result<Vec<(StoredRel, StoredNode)>> {
-        self.neighbor_pairs("MATCH (a)-[r{ty}]-(n) WHERE id(a) = $id RETURN r, n", node, rel_type)
-            .await
+        self.neighbor_pairs(
+            "MATCH (a)-[r{ty}]-(n) WHERE id(a) = $id RETURN r, n",
+            node,
+            rel_type,
+        )
+        .await
     }
 
     async fn commit(self) -> Result<()> {

@@ -685,9 +685,10 @@ impl SessionState {
         let props = self.parse_model_filters(raw_values, model)?;
 
         let mut tx = self.client.transaction().await?;
-        let existing = tx.tx_mut()?.find_node_by_id(raw_id).await?.ok_or_else(|| {
-            crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
-        })?;
+        let existing =
+            tx.tx_mut()?.find_node_by_id(raw_id).await?.ok_or_else(|| {
+                crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
+            })?;
         if !existing.labels.iter().any(|label| label == &model.label) {
             return Err(crate::GrmError::Constraint(format!(
                 "node '{}' does not match model '{}'",
@@ -699,9 +700,7 @@ impl SessionState {
             .tx_mut()?
             .update_node(raw_id, props)
             .await?
-            .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
-            })?;
+            .ok_or_else(|| crate::GrmError::Constraint(format!("node '{raw_id}' was not found")))?;
         tx.commit().await?;
         Ok(updated)
     }
@@ -714,9 +713,10 @@ impl SessionState {
         let raw_id = self.parse_backend_id(id, self.node_id_type(), "node id")?;
 
         let mut tx = self.client.transaction().await?;
-        let existing = tx.tx_mut()?.find_node_by_id(raw_id).await?.ok_or_else(|| {
-            crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
-        })?;
+        let existing =
+            tx.tx_mut()?.find_node_by_id(raw_id).await?.ok_or_else(|| {
+                crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
+            })?;
         if !existing.labels.iter().any(|label| label == &model.label) {
             return Err(crate::GrmError::Constraint(format!(
                 "node '{}' does not match model '{}'",
@@ -749,18 +749,14 @@ impl SessionState {
             )?
             .into_iter()
             .next()
-            .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("edge '{raw_id}' was not found"))
-            })?;
+            .ok_or_else(|| crate::GrmError::Constraint(format!("edge '{raw_id}' was not found")))?;
 
         let mut tx = self.client.transaction().await?;
         let updated = tx
             .tx_mut()?
             .update_relationship(existing.id, props)
             .await?
-            .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("edge '{raw_id}' was not found"))
-            })?;
+            .ok_or_else(|| crate::GrmError::Constraint(format!("edge '{raw_id}' was not found")))?;
         tx.commit().await?;
         Ok(updated)
     }
@@ -774,9 +770,7 @@ impl SessionState {
             )?
             .into_iter()
             .next()
-            .ok_or_else(|| {
-                crate::GrmError::Constraint(format!("edge '{raw_id}' was not found"))
-            })?;
+            .ok_or_else(|| crate::GrmError::Constraint(format!("edge '{raw_id}' was not found")))?;
 
         let mut tx = self.client.transaction().await?;
         tx.tx_mut()?.delete_relationship(existing.id).await?;
