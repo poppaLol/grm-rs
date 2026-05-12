@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use super::plan::BackendCapabilities;
 use crate::{GraphQuery, GrmError, StoredNode, StoredRel, dsl::QueryResult, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -22,10 +23,29 @@ impl BackendIdType {
 
 #[async_trait]
 pub trait GraphTx {
+    /// Execute a backend-native textual query, when supported.
+    ///
+    /// Backends that do not support native strings should return
+    /// `GrmError::NotSupported` or a practical `GrmError::Backend` describing
+    /// the unsupported path. Returned rows follow the same `QueryResult`
+    /// contract as `execute_graph` where variables are available.
     async fn execute_query(&mut self, _query: &str, _params: Value) -> Result<QueryResult> {
         Err(GrmError::NotSupported("execute_query"))
     }
 
+    /// Execute GRM's kernel graph query.
+    ///
+    /// Row contract:
+    /// - each row is keyed by bound `VarId`
+    /// - each row contains `GraphQuery::return_var()`
+    /// - the returned value variant matches `GraphQuery::return_kind()`
+    ///
+    /// Transaction contract:
+    /// - reads inside a transaction observe that transaction's writes
+    /// - committed writes become visible to later transactions
+    /// - rolled-back writes are discarded
+    /// - behavior after a consumed/closed transaction is exposed by the
+    ///   `client::Transaction` wrapper as `GrmError::TransactionClosed`
     async fn execute_graph(&mut self, _q: &GraphQuery) -> Result<QueryResult>;
 
     async fn create_node(
@@ -124,6 +144,11 @@ pub trait GraphTx {
 #[async_trait]
 pub trait GraphBackend: Send + Sync + Clone {
     type Tx: GraphTx + Send;
+
+    /// Lightweight capability hints for planning, tests, and documentation.
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::default()
+    }
 
     async fn execute_query(&self, query: &str, params: Value) -> Result<QueryResult>;
     async fn begin_tx(&self) -> Result<Self::Tx>;

@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::{
-    GraphBackend, GraphQuery, GrmError, InMemoryBackend, QueryResult,
+    BackendCapabilities, GraphBackend, GraphQuery, GrmError, InMemoryBackend, QueryResult,
     backend::inmemory::inmemorytx::InMemoryTx,
 };
 use async_trait::async_trait;
@@ -9,6 +9,16 @@ use serde_json::Value;
 #[async_trait]
 impl GraphBackend for InMemoryBackend {
     type Tx = InMemoryTx;
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            graph_query: true,
+            string_query: false,
+            transactions: true,
+            read_your_writes: true,
+            rollback: true,
+        }
+    }
 
     async fn execute_query(&self, _query: &str, _params: Value) -> Result<QueryResult> {
         Err(GrmError::Backend(
