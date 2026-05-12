@@ -27,7 +27,12 @@ pub use model::{NodeModel, RelModel};
 pub use repo::{NodeRepository, RelRepository, Repo};
 pub use runtime::{
     CliSession, QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionCompactSummary, SessionFindResult, SessionModelCatalog, SessionState,
+    SessionBatchDefineEdgeParams, SessionBatchDefineNodeParams, SessionBatchEdgeCreateParams,
+    SessionBatchEdgeDeleteParams, SessionBatchEdgeUpdateParams, SessionBatchEndpoint,
+    SessionBatchFieldParam, SessionBatchNodeCreateParams, SessionBatchNodeDeleteParams,
+    SessionBatchNodeUpdateParams, SessionBatchOp, SessionBatchOutcome, SessionBatchParams,
+    SessionBatchResponse, SessionCompactSummary, SessionFindResult, SessionModelCatalog,
+    SessionState, apply_session_batch,
 };
 
 pub async fn connect_neo4j_backend(config: Neo4jConfig) -> Result<Neo4jBackend> {
