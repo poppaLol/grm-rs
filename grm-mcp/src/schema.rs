@@ -143,15 +143,6 @@ pub struct NodeCreateParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BatchNodeCreateParams {
-    pub model: String,
-    #[serde(default)]
-    pub props: BTreeMap<String, Value>,
-    #[serde(default, rename = "ref")]
-    pub local_ref: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NodeUpdateParams {
     pub model: String,
     pub id: i64,
@@ -177,22 +168,6 @@ pub struct EdgeCreateParams {
     pub model: String,
     pub from: i64,
     pub to: i64,
-    #[serde(default)]
-    pub props: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum BatchEndpoint {
-    Id(i64),
-    Ref(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BatchEdgeCreateParams {
-    pub model: String,
-    pub from: BatchEndpoint,
-    pub to: BatchEndpoint,
     #[serde(default)]
     pub props: BTreeMap<String, Value>,
 }
@@ -258,66 +233,9 @@ pub enum BatchResponse {
     Detailed,
 }
 
-fn default_atomic() -> bool {
-    true
-}
-
-fn default_batch_response() -> BatchResponse {
-    BatchResponse::Summary
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", content = "args", rename_all = "snake_case")]
-pub enum BatchOp {
-    SchemaDefineNode(DefineNodeParams),
-    SchemaDefineEdge(DefineEdgeParams),
-    NodeCreate(BatchNodeCreateParams),
-    NodeUpdate(NodeUpdateParams),
-    NodeDelete(NodeDeleteParams),
-    EdgeCreate(BatchEdgeCreateParams),
-    EdgeUpdate(EdgeUpdateParams),
-    EdgeDelete(EdgeDeleteParams),
-}
-
-impl JsonSchema for BatchOp {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "BatchOp".into()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        batch_op_schema().try_into().expect("valid BatchOp schema")
-    }
-}
-
-impl BatchOp {
-    pub fn op_name(&self) -> &'static str {
-        match self {
-            Self::SchemaDefineNode(_) => "schema_define_node",
-            Self::SchemaDefineEdge(_) => "schema_define_edge",
-            Self::NodeCreate(_) => "node_create",
-            Self::NodeUpdate(_) => "node_update",
-            Self::NodeDelete(_) => "node_delete",
-            Self::EdgeCreate(_) => "edge_create",
-            Self::EdgeUpdate(_) => "edge_update",
-            Self::EdgeDelete(_) => "edge_delete",
-        }
-    }
-
-    pub fn is_delete(&self) -> bool {
-        matches!(self, Self::NodeDelete(_) | Self::EdgeDelete(_))
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchParams {
-    #[serde(default = "default_atomic")]
-    pub atomic: bool,
-    #[serde(default)]
-    pub allow_deletes: bool,
-    #[serde(default = "default_batch_response")]
-    pub response: BatchResponse,
-    pub ops: Vec<BatchOp>,
-}
+#[serde(transparent)]
+pub struct BatchParams(pub grm_rs::SessionBatchParams);
 
 impl JsonSchema for BatchParams {
     fn schema_name() -> std::borrow::Cow<'static, str> {
