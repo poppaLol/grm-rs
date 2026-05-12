@@ -3,9 +3,9 @@ use std::io::Cursor;
 use grm_rs::{CliSession, GrmError, RuntimeNodeModel, RuntimeRelModel, apply_session_batch};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    AnnotateAble, JsonObject, ListResourcesResult, PaginatedRequestParams, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-    ServerInfo,
+    AnnotateAble, Implementation, JsonObject, ListResourcesResult, PaginatedRequestParams,
+    RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{
@@ -357,6 +357,10 @@ impl ServerHandler for GrmMcpServer {
                 .enable_resources()
                 .build(),
         )
+        .with_server_info(Implementation::new(
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        ))
         .with_instructions("Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible.")
     }
 
