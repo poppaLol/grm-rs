@@ -11,9 +11,18 @@ insert graphs node-by-node and edge-by-edge.
 For larger graph construction and update workflows, MCP should expose explicit
 batch-oriented affordances and make them the recommended path.
 
+Batching should also encourage agents to choose schema granularity deliberately.
+Before defining many similar node or edge models, agents should decide the
+graph's richness vs sparseness. Rich schemas use more specific models when
+concepts have distinct fields, constraints, relationship patterns, or traversal
+semantics. Sparse schemas use fewer broader models when instances share one
+shape and differ mainly by property values such as `kind`, `type`, or
+`category`.
+
 ## Goals
 
 - make efficient multi-entity writes obvious to agents
+- make schema richness vs sparseness an explicit modeling choice before batch writes
 - reduce repeated MCP round trips for graph construction
 - preserve transactional semantics for related writes
 - return compact summaries instead of large per-entity responses by default
@@ -46,6 +55,9 @@ Use it when the caller knows the exact sequence of operations:
 
 The input should be structured JSON rather than CLI text. Agents are generally
 better at producing JSON operation objects than safely composing command strings.
+Before composing the batch, agents should decide whether repeated concepts are
+best represented as richer specific models or sparser broad models with
+discriminating properties.
 
 Sketch:
 
