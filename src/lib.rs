@@ -26,8 +26,8 @@ pub use grm_rs_macros::*;
 pub use model::{NodeModel, RelModel};
 pub use repo::{NodeRepository, RelRepository, Repo};
 pub use runtime::{
-    CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionCompactSummary, SessionModelCatalog, SessionState,
+    CliSession, QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
+    SessionCompactSummary, SessionFindResult, SessionModelCatalog, SessionState,
 };
 
 pub async fn connect_neo4j_backend(config: Neo4jConfig) -> Result<Neo4jBackend> {

@@ -55,6 +55,30 @@ alice = session.node_create("User", {"name": "Alice", "age": 42})
 users = session.node_find("User", {"name": "Alice"})
 ```
 
+Traversal queries mirror CLI `node.find ... via=...` semantics with structured
+Python inputs:
+
+```python
+posts = session.node_find(
+    "User",
+    {"name": "Alice"},
+    via=[
+        {"dir": "out", "link": "Authored", "model": "Post"},
+    ],
+)
+
+authored_edges = session.node_find(
+    "User",
+    {"name": "Alice"},
+    via=[
+        {"dir": "out", "link": "Authored", "model": "Post"},
+    ],
+    end_filters={"title": "Hello"},
+    edge_filters={"year": 2024},
+    return_="edge",
+)
+```
+
 Use `save_json` / `load_json` or `save_binary` / `load_binary` for local
 workspace snapshots. Use `export_json`, `export_dict`, and `import_json` for
 portable `grm.interchange` graph files; `import_json` currently imports into an

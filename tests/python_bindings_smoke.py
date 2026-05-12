@@ -40,16 +40,29 @@ def main() -> None:
                 {"name": "year", "type": "int", "required": True},
             ],
         )
+        session.link_create(
+            "Knows",
+            "User",
+            "User",
+            "knowsId",
+            [
+                {"name": "since", "type": "int", "required": True},
+            ],
+        )
 
         assert autocommit_path.exists()
         assert session.model_show("User")["id_field"] == "userId"
         assert len(session.model_list()) == 2
         assert session.link_show("Authored")["from_model"] == "User"
-        assert len(session.link_list()) == 1
+        assert len(session.link_list()) == 2
 
         user = session.node_create("User", {"name": "Alice", "age": 42})
         post = session.node_create("Post", {"title": "Hello"})
         edge = session.edge_create("Authored", user["id"], post["id"], {"year": 2024})
+        bob = session.node_create("User", {"name": "Bob", "age": 37})
+        carol = session.node_create("User", {"name": "Carol", "age": 36})
+        knows_bob = session.edge_create("Knows", user["id"], bob["id"], {"since": 2020})
+        knows_carol = session.edge_create("Knows", bob["id"], carol["id"], {"since": 2021})
 
         export_path = Path(tmpdir) / "interchange.json"
         session.export_json(str(export_path))
@@ -57,8 +70,8 @@ def main() -> None:
         assert exported["format"] == "grm.interchange"
         assert exported["version"] == 1
         assert len(exported["schema"]["nodes"]) == 2
-        assert len(exported["data"]["nodes"]) == 2
-        assert len(exported["data"]["edges"]) == 1
+        assert len(exported["data"]["nodes"]) == 4
+        assert len(exported["data"]["edges"]) == 3
 
         exported_dict = session.export_dict()
         assert exported_dict["format"] == "grm.interchange"
@@ -99,6 +112,46 @@ def main() -> None:
         assert len(users) == 1
         assert users[0]["props"]["age"] == 42
 
+        authored_posts = session.node_find(
+            "User",
+            {"name": "Alice"},
+            via=[
+                {"dir": "out", "link": "Authored", "model": "Post"},
+            ],
+        )
+        assert len(authored_posts) == 1
+        assert authored_posts[0]["id"] == post["id"]
+
+        authored_edges = session.node_find(
+            "User",
+            {"name": "Alice"},
+            via=[
+                {"dir": "out", "link": "Authored", "model": "Post"},
+            ],
+            end_filters={"title": "Hello"},
+            edge_filters={"year": 2024},
+            return_="edge",
+        )
+        assert len(authored_edges) == 1
+        assert authored_edges[0]["id"] == edge["id"]
+
+        friends_of_friends = session.node_find(
+            "User",
+            {"name": "Alice"},
+            via=[
+                {"dir": "out", "link": "Knows", "model": "User"},
+                {"dir": "out", "link": "Knows", "model": "User"},
+            ],
+        )
+        assert len(friends_of_friends) == 1
+        assert friends_of_friends[0]["id"] == carol["id"]
+
+        try:
+            session.node_find("User", via=[{"dir": "out", "model": "Post"}])
+            raise AssertionError("node_find should reject incomplete traversal dicts")
+        except TypeError as exc:
+            assert "via entries require key 'link'" in str(exc)
+
         session.node_update("User", user["id"], {"age": 43})
         updated_users = session.node_find("User", {"age": 43})
         assert len(updated_users) == 1
@@ -114,9 +167,13 @@ def main() -> None:
         assert updated_edges[0]["id"] == edge["id"]
 
         session.edge_delete("Authored", edge["id"])
+        session.edge_delete("Knows", knows_carol["id"])
+        session.edge_delete("Knows", knows_bob["id"])
         assert session.edge_find("Authored") == []
 
         session.node_delete("Post", post["id"])
+        session.node_delete("User", carol["id"])
+        session.node_delete("User", bob["id"])
         session.node_delete("User", user["id"])
         assert session.node_find("User") == []
 

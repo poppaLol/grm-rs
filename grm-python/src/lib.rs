@@ -8,8 +8,9 @@ use std::path::PathBuf;
 
 use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
 use grm_rs::{
-    GraphClient, Neo4jBackend, Neo4jConfig, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
-    RuntimeValueType, SessionModelCatalog, SessionState, StoredNode, StoredRel,
+    GraphClient, Neo4jBackend, Neo4jConfig, QueryTerm, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, RuntimeValueType, SessionFindResult, SessionModelCatalog, SessionState,
+    StoredNode, StoredRel,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -197,21 +198,64 @@ impl PySession {
         self.persist_autocommit().map_err(grm_err)
     }
 
-    #[pyo3(signature = (model_name, filters=None))]
+    #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
     fn node_find(
         &self,
         py: Python<'_>,
         model_name: &str,
         filters: Option<&Bound<'_, PyDict>>,
+        via: Option<&Bound<'_, PyAny>>,
+        end_filters: Option<&Bound<'_, PyDict>>,
+        edge_filters: Option<&Bound<'_, PyDict>>,
+        return_: Option<&str>,
+        order: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
     ) -> PyResult<PyObject> {
-        let raw_filters = extract_string_map(filters)?;
-        let nodes = self
-            .state
-            .find_nodes(model_name, &raw_filters)
-            .map_err(grm_err)?;
+        let has_structured_query = via.is_some()
+            || end_filters.is_some()
+            || edge_filters.is_some()
+            || return_.is_some()
+            || order.is_some()
+            || limit.is_some()
+            || offset.is_some();
+
+        if !has_structured_query {
+            let raw_filters = extract_string_map(filters)?;
+            let nodes = self
+                .state
+                .find_nodes(model_name, &raw_filters)
+                .map_err(grm_err)?;
+            let items = PyList::empty_bound(py);
+            for node in nodes {
+                items.append(stored_node_to_py(py, &node)?)?;
+            }
+            return Ok(items.into());
+        }
+
+        let terms = build_node_find_terms(
+            filters,
+            via,
+            end_filters,
+            edge_filters,
+            return_,
+            order,
+            limit,
+            offset,
+        )?;
+        let result = block_on(py, self.state.find_nodes_with_terms(model_name, &terms))?;
         let items = PyList::empty_bound(py);
-        for node in nodes {
-            items.append(stored_node_to_py(py, &node)?)?;
+        match result {
+            SessionFindResult::Nodes(nodes) => {
+                for node in nodes {
+                    items.append(stored_node_to_py(py, &node)?)?;
+                }
+            }
+            SessionFindResult::Edges(rels) => {
+                for rel in rels {
+                    items.append(stored_rel_to_py(py, &rel)?)?;
+                }
+            }
         }
         Ok(items.into())
     }
@@ -642,6 +686,97 @@ fn extract_string_map(input: Option<&Bound<'_, PyDict>>) -> PyResult<BTreeMap<St
     }
 
     Ok(values)
+}
+
+fn build_node_find_terms(
+    filters: Option<&Bound<'_, PyDict>>,
+    via: Option<&Bound<'_, PyAny>>,
+    end_filters: Option<&Bound<'_, PyDict>>,
+    edge_filters: Option<&Bound<'_, PyDict>>,
+    return_: Option<&str>,
+    order: Option<&str>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> PyResult<Vec<QueryTerm>> {
+    let mut terms = Vec::new();
+    append_filter_terms(&mut terms, "", filters)?;
+    append_via_terms(&mut terms, via)?;
+    append_filter_terms(&mut terms, "end.", end_filters)?;
+    append_filter_terms(&mut terms, "edge.", edge_filters)?;
+
+    if let Some(return_) = return_ {
+        terms.push(QueryTerm {
+            key: "return".to_string(),
+            value: return_.to_string(),
+        });
+    }
+    if let Some(order) = order {
+        terms.push(QueryTerm {
+            key: "order".to_string(),
+            value: order.to_string(),
+        });
+    }
+    if let Some(limit) = limit {
+        terms.push(QueryTerm {
+            key: "limit".to_string(),
+            value: limit.to_string(),
+        });
+    }
+    if let Some(offset) = offset {
+        terms.push(QueryTerm {
+            key: "offset".to_string(),
+            value: offset.to_string(),
+        });
+    }
+
+    Ok(terms)
+}
+
+fn append_filter_terms(
+    terms: &mut Vec<QueryTerm>,
+    prefix: &str,
+    filters: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    for (key, value) in extract_string_map(filters)? {
+        terms.push(QueryTerm {
+            key: format!("{prefix}{key}"),
+            value,
+        });
+    }
+    Ok(())
+}
+
+fn append_via_terms(terms: &mut Vec<QueryTerm>, via: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+    let Some(via) = via else {
+        return Ok(());
+    };
+
+    for item in via.iter().map_err(|_| {
+        PyTypeError::new_err("via must be a list of dicts with 'dir', 'link', and 'model' keys")
+    })? {
+        let item = item?;
+        let step = item.downcast::<PyDict>().map_err(|_| {
+            PyTypeError::new_err("via entries must be dicts with 'dir', 'link', and 'model' keys")
+        })?;
+        let direction = required_traversal_string(step, "dir")?;
+        let link = required_traversal_string(step, "link")?;
+        let model = required_traversal_string(step, "model")?;
+        terms.push(QueryTerm {
+            key: "via".to_string(),
+            value: format!("{direction}:{link}:{model}"),
+        });
+    }
+
+    Ok(())
+}
+
+fn required_traversal_string(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<String> {
+    let value = dict
+        .get_item(key)?
+        .ok_or_else(|| PyTypeError::new_err(format!("via entries require key '{key}'")))?;
+    value
+        .extract::<String>()
+        .map_err(|_| PyTypeError::new_err(format!("via entry '{key}' must be a string")))
 }
 
 fn py_dict_to_json_object(input: Option<&Bound<'_, PyDict>>) -> PyResult<Value> {
