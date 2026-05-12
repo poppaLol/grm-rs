@@ -52,12 +52,12 @@ The current CLI is useful, but there are several major limitations:
 - autocommit appends change-log entries and checkpoints them into the session file
 - `session.compact` manually checkpoints the current autocommit target and clears the replay log
 - persistence still relies on snapshots plus a replay log rather than a backend-level WAL
-- some in-memory transaction paths still materialize a whole-store working copy, especially graph execution, traversal, deletes, and property scans
-- lazy property indexes move some work from writes to the first later property-indexed read
-- runtime schema is primarily a CLI-layer concept, not yet a deeper core abstraction
-- backend identity is only partially abstracted and still effectively `i64`-centric
+- the indexed in-memory transaction overlay/read-view is still incomplete; graph execution, traversal, deletes, and some scans can still fall back to snapshot-oriented or scan-heavy paths
+- lazy property indexes reduce write-time churn, but the first later property-indexed read can still pay the rebuild cost
+- runtime schema now has shared session abstractions used by CLI, MCP, and Python, but is not yet a deeper engine/backend-level schema abstraction
+- backend identity is exposed in more places, but session/query/binding paths are still mostly `i64`-centric
 - the session script format is still a thin command file, not a real DSL
-- `src/runtime/session.rs` currently carries too much behavior
+- `src/runtime/session.rs` still carries too much behavior, even though batch, import/export, traversal, and Python/MCP surfaces are gradually pulling semantics into shared paths
 
 ## Prioritized Roadmap
 
@@ -78,14 +78,14 @@ link here instead of copying the current/future ordering.
 10. Insert benchmark scaling and flamegraph profiling workflow
 11. Cypher translator spike validating the first `GraphQuery` to Cypher path
 12. Minimal live Neo4j backend prototype with Rust and Python smoke coverage
+13. Python/MCP parity for import/export, traversal queries, and shared batch operations
 
 ### Now
 
 1. Finish the indexed in-memory transaction overlay/read-view beyond the current simple write paths
 2. Harden the live Neo4j backend path with shared in-memory/Neo4j behavior tests
 3. Clean up backend contracts around rows, errors, transactions, capabilities, and IDs
-4. Bring the Python extension and MCP surface closer to parity, with shared semantics for schema, CRUD, traversal, import/export, and batch operations
-   - MCP `grm_batch` and Python `Session.batch(...)` now share runtime batch semantics for refs, rollback, result summaries, and delete gating.
+4. Continue Python and MCP surface parity beyond the completed import/export, traversal, and batch work, especially around remaining schema/CRUD polish and shared error behavior
 5. Persistence durability improvements for the local in-memory backend, including safer autocommit and WAL evaluation
 6. Session-core cleanup and runtime/schema refactor prep
 7. Demo scenarios that show ORM-like typed usage, query-like workflows, and equivalent MCP workflows
