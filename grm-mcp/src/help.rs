@@ -5,11 +5,18 @@ pub const AGENT_GUIDE: &str = r#"GRM is a runtime graph session exposed over MCP
 Recommended agent workflow:
 1. Call grm_help when first using this server in a session.
 2. Call grm_schema_list or read grm://schema before creating or querying data.
-3. Prefer structured tools for schema, node, edge, import, export, and persistence operations.
-4. For more than 3 creates or updates, prefer grm_batch.
-5. Use grm_query for traversal queries or exact CLI parity.
-6. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
-7. Verify writes with grm://graph/summary, grm://graph/export, or grm_export.
+3. Before defining schema, decide the graph's richness vs sparseness.
+4. Prefer structured tools for schema, node, edge, import, export, and persistence operations.
+5. For more than 3 creates or updates, prefer grm_batch.
+6. Use grm_query for traversal queries or exact CLI parity.
+7. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
+8. Verify writes with grm://graph/summary, grm://graph/export, or grm_export.
+
+Schema richness vs sparseness:
+- Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.
+- Sparse schemas use fewer broader node and edge models when instances share a shape and differ mainly by property values such as kind, type, or category.
+- Prefer rich models when future queries will care about the distinction as graph structure or traversal semantics.
+- Prefer sparse models when the distinction is mostly descriptive data.
 
 Property values must be strings, numbers, or booleans. Null, arrays, and objects are not supported as graph property values.
 "#;
@@ -21,11 +28,23 @@ pub fn help_index() -> Value {
         "recommended_workflow": [
             "Call grm_help when first using this server in a session.",
             "Call grm_schema_list or read grm://schema before creating or querying data.",
+            "Before defining schema, decide the graph's richness vs sparseness.",
             "Prefer structured tools over grm_query except for traversal queries or CLI parity.",
             "For more than 3 creates or updates, prefer grm_batch.",
             "After recoverable errors, call grm_tool_help with the tool name before retrying.",
             "Verify writes with grm://graph/summary, grm://graph/export, or grm_export."
         ],
+        "modeling_guidance": {
+            "richness_vs_sparseness": [
+                "Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.",
+                "Sparse schemas use fewer broader node and edge models when instances share a shape and differ mainly by property values such as kind, type, or category.",
+                "Prefer rich node models when categories carry different data or relationship patterns, for example Knife, Plate, and Fork.",
+                "Prefer sparse node models when categories are mostly values on one shape, for example Kitchenware with kind=knife|plate|fork.",
+                "Prefer rich edge models when relationships mean different things or drive different traversals, for example Authored, Purchased, LocatedIn, and DependsOn.",
+                "Prefer sparse edge models when relationships share meaning and differ mainly by properties, for example RelatedTo with kind, confidence, and source."
+            ],
+            "batching": "After choosing schema granularity, batch related schema and data mutations. For more than 3 related creates or updates, prefer grm_batch so refs, validation, and rollback happen together."
+        },
         "resources": [
             "grm://docs/agent-guide",
             "grm://docs/query-language",
@@ -85,6 +104,11 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_schema_define_node" => json!({
             "tool": "grm_schema_define_node",
             "purpose": "Define a runtime node model.",
+            "modeling_guidance": [
+                "Decide richness vs sparseness before defining many similar node models.",
+                "Use richer, specific node models when categories have distinct fields, constraints, relationship patterns, or query meaning.",
+                "Use a sparser, broader node model with a kind/type/category field when instances share one shape and differ mostly by property values."
+            ],
             "example": {
                 "name": "File",
                 "id_field": "fileId",
@@ -103,6 +127,12 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_batch" => json!({
             "tool": "grm_batch",
             "purpose": "Apply an ordered list of structured schema, node, and edge mutations in one MCP call.",
+            "modeling_guidance": [
+                "Before batching schema creation, choose the graph's richness vs sparseness.",
+                "Use richer node/edge models when distinctions matter to fields, constraints, relationships, or traversal semantics.",
+                "Use sparser node/edge models when distinctions are mostly descriptive property values.",
+                "After choosing granularity, batch related schema definitions and data creation together."
+            ],
             "defaults": {
                 "atomic": true,
                 "allow_deletes": false,
@@ -162,6 +192,11 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "tool": "grm_schema_define_edge",
             "purpose": "Define a runtime edge/link model between existing node models.",
             "before_calling": ["Define the from_model and to_model node models first."],
+            "modeling_guidance": [
+                "Decide richness vs sparseness before defining many similar edge models.",
+                "Use richer, specific edge models when relationships have different meanings, fields, constraints, or traversal semantics.",
+                "Use a sparser, broader edge model with a kind/type/category field when relationships share meaning and differ mostly by property values."
+            ],
             "example": {
                 "name": "Contains",
                 "from_model": "File",
@@ -421,6 +456,21 @@ mod tests {
         assert!(
             help.to_string().contains("grm_schema_list"),
             "node create help should guide agents back to schema"
+        );
+    }
+
+    #[test]
+    fn help_surfaces_richness_vs_sparseness_modeling_guidance() {
+        let help = help_index();
+        assert!(
+            help.to_string().contains("richness vs sparseness"),
+            "top-level help should guide agents on schema granularity"
+        );
+
+        let batch_help = tool_help("grm_batch").unwrap();
+        assert!(
+            batch_help.to_string().contains("richness vs sparseness"),
+            "batch help should remind agents to choose schema granularity before batching"
         );
     }
 }

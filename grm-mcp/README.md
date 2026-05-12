@@ -158,4 +158,26 @@ within a batch. Delete operations are rejected unless `allow_deletes` is set to
 `grm_graph_patch` remains the planned declarative graph-shaped bulk write
 surface.
 
+## Modeling Guidance
+
+Before defining schema, decide the graph's richness vs sparseness.
+
+Use richer, more specific node and edge models when concepts have distinct
+fields, constraints, relationship patterns, or query meaning. For example,
+separate `Knife`, `Plate`, and `Fork` node models can make sense when each has
+different fields or participates in different relationships. Separate `Authored`,
+`Purchased`, `LocatedIn`, and `DependsOn` edge models make sense when the
+relationship semantics drive different traversals or properties.
+
+Use sparser, broader node and edge models when instances share one shape and
+differ mainly by property values. For example, a `Kitchenware` node model with a
+`kind` property can be better than many tiny models if all items share the same
+fields and relationships. A `RelatedTo` edge with `kind`, `confidence`, and
+`source` can be better than many loose edge models when the relationship meaning
+is intentionally broad.
+
+After choosing granularity, batch related schema definitions and data mutations
+together. This keeps refs, validation, rollback, and compact summaries in one
+operation.
+
 See [MCP Batch And Graph Patch Requirements](../docs/mcp-batch-graph-patch-requirements.md).
