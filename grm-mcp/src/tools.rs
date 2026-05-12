@@ -1,7 +1,6 @@
-use std::collections::BTreeMap;
 use std::io::Cursor;
 
-use grm_rs::{CliSession, GrmError, Result as GrmResult, RuntimeNodeModel, RuntimeRelModel};
+use grm_rs::{CliSession, GrmError, RuntimeNodeModel, RuntimeRelModel, apply_session_batch};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     AnnotateAble, JsonObject, ListResourcesResult, PaginatedRequestParams, RawResource,
@@ -16,10 +15,10 @@ use serde_json::json;
 
 use crate::help::{AGENT_GUIDE, help_index, known_tools, tool_help, tool_help_index};
 use crate::schema::{
-    BatchEndpoint, BatchOp, BatchParams, BatchResponse, DefineEdgeParams, DefineNodeParams,
-    EdgeCreateParams, EdgeDeleteParams, EdgeFindParams, EdgeUpdateParams, ExportParams, FileFormat,
-    FileFormatParams, NodeCreateParams, NodeDeleteParams, NodeFindParams, NodeUpdateParams,
-    PathParams, QueryParams, ToolHelpParams, json_error, parse_fields, to_object, value_map_to_raw,
+    BatchParams, DefineEdgeParams, DefineNodeParams, EdgeCreateParams, EdgeDeleteParams,
+    EdgeFindParams, EdgeUpdateParams, ExportParams, FileFormat, FileFormatParams, NodeCreateParams,
+    NodeDeleteParams, NodeFindParams, NodeUpdateParams, PathParams, QueryParams, ToolHelpParams,
+    json_error, parse_fields, to_object, value_map_to_raw,
 };
 use crate::server::GrmMcpServer;
 
@@ -66,53 +65,16 @@ impl GrmMcpServer {
         Parameters(params): Parameters<BatchParams>,
     ) -> Result<Json<JsonObject>, McpError> {
         let mut state = self.state.lock().await;
-        let snapshot = params.atomic.then(|| state.snapshot());
-        let mut summary = BatchSummary::new(
-            params.atomic,
-            matches!(params.response, BatchResponse::Detailed),
-            params.ops.len(),
-        );
-        let mut refs = BTreeMap::<String, i64>::new();
-
-        for (index, op) in params.ops.into_iter().enumerate() {
-            if op.is_delete() && !params.allow_deletes {
-                summary.record_error(
-                    index,
-                    format!("{} requires allow_deletes=true on grm_batch", op.op_name()),
-                );
-                if params.atomic {
-                    if let Some(snapshot) = snapshot {
-                        state.restore(snapshot);
-                    }
-                    summary.applied = false;
-                    return Ok(Json(to_object(summary.into_value())?));
-                }
-                continue;
-            }
-
-            let result = apply_batch_op(&mut state, &mut refs, op).await;
-            match result {
-                Ok(applied) => summary.record(applied),
-                Err(err) => {
-                    summary.record_error(index, err.to_string());
-                    if params.atomic {
-                        if let Some(snapshot) = snapshot {
-                            state.restore(snapshot);
-                        }
-                        summary.applied = false;
-                        return Ok(Json(to_object(summary.into_value())?));
-                    }
-                }
-            }
-        }
-
-        if summary.applied || summary.has_successes() {
+        let outcome = apply_session_batch(&mut state, params.0)
+            .await
+            .map_err(to_mcp_error)?;
+        if outcome.should_persist {
             self.persist_autocommit(&state)
                 .await
                 .map_err(to_mcp_error)?;
         }
 
-        Ok(Json(to_object(summary.into_value())?))
+        Ok(Json(to_object(outcome.value)?))
     }
 
     #[tool(
@@ -452,229 +414,6 @@ impl ServerHandler for GrmMcpServer {
 
 pub(crate) fn to_mcp_error(err: GrmError) -> McpError {
     McpError::internal_error(err.to_string(), None)
-}
-
-struct BatchApplied {
-    op: &'static str,
-    model: String,
-    id: Option<i64>,
-    local_ref: Option<String>,
-}
-
-struct BatchSummary {
-    applied: bool,
-    atomic: bool,
-    detailed: bool,
-    operation_count: usize,
-    counts: BTreeMap<String, BTreeMap<String, usize>>,
-    errors: Vec<serde_json::Value>,
-    ids: Vec<serde_json::Value>,
-}
-
-impl BatchSummary {
-    fn new(atomic: bool, detailed: bool, operation_count: usize) -> Self {
-        Self {
-            applied: true,
-            atomic,
-            detailed,
-            operation_count,
-            counts: BTreeMap::new(),
-            errors: Vec::new(),
-            ids: Vec::new(),
-        }
-    }
-
-    fn record(&mut self, applied: BatchApplied) {
-        *self
-            .counts
-            .entry(applied.op.to_string())
-            .or_default()
-            .entry(applied.model.clone())
-            .or_default() += 1;
-
-        if self.detailed {
-            if let Some(id) = applied.id {
-                let mut value = json!({
-                    "op": applied.op,
-                    "model": applied.model,
-                    "id": id,
-                });
-                if let Some(local_ref) = applied.local_ref {
-                    value["ref"] = json!(local_ref);
-                }
-                self.ids.push(value);
-            }
-        }
-    }
-
-    fn record_error(&mut self, index: usize, message: String) {
-        self.applied = false;
-        self.errors.push(json!({
-            "index": index,
-            "message": message,
-            "recovery": "Inspect the operation at this index, call grm_schema_list if model fields or ids are uncertain, then retry the failed operation."
-        }));
-    }
-
-    fn has_successes(&self) -> bool {
-        !self.counts.is_empty()
-    }
-
-    fn into_value(self) -> serde_json::Value {
-        let mut value = json!({
-            "applied": self.applied,
-            "atomic": self.atomic,
-            "operation_count": self.operation_count,
-            "counts": self.counts,
-            "errors": self.errors,
-        });
-        if self.detailed {
-            value["ids"] = json!(self.ids);
-        }
-        value
-    }
-}
-
-async fn apply_batch_op(
-    state: &mut grm_rs::SessionState,
-    refs: &mut BTreeMap<String, i64>,
-    op: BatchOp,
-) -> GrmResult<BatchApplied> {
-    let op_name = op.op_name();
-    match op {
-        BatchOp::SchemaDefineNode(params) => {
-            let model = RuntimeNodeModel::new(
-                params.name.clone(),
-                params.id_field,
-                state.node_id_type(),
-                parse_fields(params.fields)?,
-            )?;
-            state.register_model(model)?;
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.name,
-                id: None,
-                local_ref: None,
-            })
-        }
-        BatchOp::SchemaDefineEdge(params) => {
-            let model = RuntimeRelModel::new(
-                params.name.clone(),
-                params.from_model,
-                params.to_model,
-                params.id_field,
-                state.rel_id_type(),
-                parse_fields(params.fields)?,
-            )?;
-            state.register_rel_model(model)?;
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.name,
-                id: None,
-                local_ref: None,
-            })
-        }
-        BatchOp::NodeCreate(params) => {
-            if let Some(local_ref) = &params.local_ref {
-                if refs.contains_key(local_ref) {
-                    return Err(GrmError::Constraint(format!(
-                        "duplicate batch ref '{local_ref}'"
-                    )));
-                }
-            }
-            let props = value_map_to_raw(params.props)?;
-            let node = state.create_instance(&params.model, &props).await?;
-            if let Some(local_ref) = &params.local_ref {
-                refs.insert(local_ref.clone(), node.id);
-            }
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.model,
-                id: Some(node.id),
-                local_ref: params.local_ref,
-            })
-        }
-        BatchOp::NodeUpdate(params) => {
-            let props = value_map_to_raw(params.props)?;
-            let node = state
-                .update_node_instance(&params.model, &params.id.to_string(), &props)
-                .await?;
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.model,
-                id: Some(node.id),
-                local_ref: None,
-            })
-        }
-        BatchOp::NodeDelete(params) => {
-            state
-                .delete_node_instance(&params.model, &params.id.to_string())
-                .await?;
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.model,
-                id: Some(params.id),
-                local_ref: None,
-            })
-        }
-        BatchOp::EdgeCreate(params) => {
-            let from = resolve_batch_endpoint(&params.from, refs, "from")?;
-            let to = resolve_batch_endpoint(&params.to, refs, "to")?;
-            let props = value_map_to_raw(params.props)?;
-            let edge = state
-                .create_relationship_instance(
-                    &params.model,
-                    &from.to_string(),
-                    &to.to_string(),
-                    &props,
-                )
-                .await?;
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.model,
-                id: Some(edge.id),
-                local_ref: None,
-            })
-        }
-        BatchOp::EdgeUpdate(params) => {
-            let props = value_map_to_raw(params.props)?;
-            let edge = state
-                .update_relationship_instance(&params.model, &params.id.to_string(), &props)
-                .await?;
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.model,
-                id: Some(edge.id),
-                local_ref: None,
-            })
-        }
-        BatchOp::EdgeDelete(params) => {
-            state
-                .delete_relationship_instance(&params.model, &params.id.to_string())
-                .await?;
-            Ok(BatchApplied {
-                op: op_name,
-                model: params.model,
-                id: Some(params.id),
-                local_ref: None,
-            })
-        }
-    }
-}
-
-fn resolve_batch_endpoint(
-    endpoint: &BatchEndpoint,
-    refs: &BTreeMap<String, i64>,
-    field: &str,
-) -> GrmResult<i64> {
-    match endpoint {
-        BatchEndpoint::Id(id) => Ok(*id),
-        BatchEndpoint::Ref(local_ref) => refs.get(local_ref).copied().ok_or_else(|| {
-            GrmError::Constraint(format!(
-                "{field} ref '{local_ref}' was not created earlier in this batch"
-            ))
-        }),
-    }
 }
 
 fn compact_query_doc() -> String {
