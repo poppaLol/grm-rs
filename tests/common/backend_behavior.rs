@@ -8,31 +8,79 @@ use grm_rs::{
 };
 use serde_json::{Value, json};
 
+pub const BEHAVIOR_RUN_ID_PROP: &str = "grm_behavior_run_id";
+
+#[derive(Debug, Clone, Copy)]
+pub enum NativeQueryExpectation {
+    Unsupported,
+    Supported,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackendBehaviorConfig {
+    pub run_id: String,
+    pub native_query: NativeQueryExpectation,
+}
+
+impl BackendBehaviorConfig {
+    pub fn in_memory() -> Self {
+        Self {
+            run_id: unique_smoke_id(),
+            native_query: NativeQueryExpectation::Unsupported,
+        }
+    }
+}
+
 pub async fn run_shared_backend_behavior<B>(backend: B) -> Result<()>
 where
     B: BackendIdentity + Clone,
 {
-    capabilities_and_id_type_reporting(&backend).await?;
-    create_find_update_and_traverse(backend.clone()).await?;
-    delete_visibility_and_incident_relationships(backend.clone()).await?;
-    transaction_visibility(backend.clone()).await?;
-    rollback_discards_writes_updates_and_deletes(backend.clone()).await?;
-    execute_graph_row_shape(backend.clone()).await?;
-    traversal_query_returning_node_and_relationship(backend.clone()).await?;
-    unsupported_native_query_behavior(backend).await?;
-    Ok(())
+    run_shared_backend_behavior_with_config(backend, BackendBehaviorConfig::in_memory()).await
 }
 
-async fn capabilities_and_id_type_reporting<B>(backend: &B) -> Result<()>
+pub async fn run_shared_backend_behavior_with_config<B>(
+    backend: B,
+    config: BackendBehaviorConfig,
+) -> Result<()>
 where
     B: BackendIdentity + Clone,
 {
+    capabilities_and_id_type_reporting(&backend, &config).await?;
+    create_find_update_and_traverse(backend.clone(), &config).await?;
+    delete_visibility_and_incident_relationships(backend.clone(), &config).await?;
+    transaction_visibility(backend.clone(), &config).await?;
+    rollback_discards_writes_updates_and_deletes(backend.clone(), &config).await?;
+    execute_graph_row_shape(backend.clone(), &config).await?;
+    traversal_query_returning_node_and_relationship(backend.clone(), &config).await?;
+    native_query_behavior(backend, &config).await?;
+    Ok(())
+}
+
+async fn capabilities_and_id_type_reporting<B>(
+    backend: &B,
+    config: &BackendBehaviorConfig,
+) -> Result<()>
+where
+    B: BackendIdentity + Clone,
+{
+    let capabilities = backend.capabilities();
+    assert!(capabilities.graph_query);
+    assert!(capabilities.transactions);
+    assert!(capabilities.read_your_writes);
+    assert!(capabilities.rollback);
+    assert_eq!(
+        capabilities.string_query,
+        matches!(config.native_query, NativeQueryExpectation::Supported)
+    );
     assert_eq!(backend.node_id_type(), BackendIdType::Int64);
     assert_eq!(backend.rel_id_type(), BackendIdType::Int64);
     Ok(())
 }
 
-async fn create_find_update_and_traverse<B>(backend: B) -> Result<()>
+async fn create_find_update_and_traverse<B>(
+    backend: B,
+    config: &BackendBehaviorConfig,
+) -> Result<()>
 where
     B: GraphBackend + Clone,
 {
@@ -41,19 +89,25 @@ where
     let user = tx
         .create_node(
             vec!["GrmBehaviorUser".to_string()],
-            props([
-                ("name", json!("Alice")),
-                ("smoke_id", json!(smoke_id.clone())),
-            ]),
+            props_with_run(
+                config,
+                [
+                    ("name", json!("Alice")),
+                    ("smoke_id", json!(smoke_id.clone())),
+                ],
+            ),
         )
         .await?;
     let post = tx
         .create_node(
             vec!["GrmBehaviorPost".to_string()],
-            props([
-                ("title", json!("Shared Backend Behavior")),
-                ("smoke_id", json!(smoke_id.clone())),
-            ]),
+            props_with_run(
+                config,
+                [
+                    ("title", json!("Shared Backend Behavior")),
+                    ("smoke_id", json!(smoke_id.clone())),
+                ],
+            ),
         )
         .await?;
     let rel = tx
@@ -61,7 +115,7 @@ where
             user.id,
             post.id,
             "GRM_BEHAVIOR_AUTHORED",
-            props([("smoke_id", json!(smoke_id.clone()))]),
+            props_with_run(config, [("smoke_id", json!(smoke_id.clone()))]),
         )
         .await?;
 
@@ -113,19 +167,33 @@ where
     tx.commit().await
 }
 
-async fn delete_visibility_and_incident_relationships<B>(backend: B) -> Result<()>
+async fn delete_visibility_and_incident_relationships<B>(
+    backend: B,
+    config: &BackendBehaviorConfig,
+) -> Result<()>
 where
     B: GraphBackend + Clone,
 {
     let mut tx = backend.begin_tx().await?;
     let left = tx
-        .create_node(vec!["GrmBehaviorDeleteLeft".to_string()], props([]))
+        .create_node(
+            vec!["GrmBehaviorDeleteLeft".to_string()],
+            props_with_run(config, []),
+        )
         .await?;
     let right = tx
-        .create_node(vec!["GrmBehaviorDeleteRight".to_string()], props([]))
+        .create_node(
+            vec!["GrmBehaviorDeleteRight".to_string()],
+            props_with_run(config, []),
+        )
         .await?;
     let rel = tx
-        .create_relationship(left.id, right.id, "GRM_BEHAVIOR_DELETE", props([]))
+        .create_relationship(
+            left.id,
+            right.id,
+            "GRM_BEHAVIOR_DELETE",
+            props_with_run(config, []),
+        )
         .await?;
     tx.commit().await?;
 
@@ -140,7 +208,12 @@ where
 
     let mut tx = backend.begin_tx().await?;
     let rel = tx
-        .create_relationship(left.id, right.id, "GRM_BEHAVIOR_DELETE", props([]))
+        .create_relationship(
+            left.id,
+            right.id,
+            "GRM_BEHAVIOR_DELETE",
+            props_with_run(config, []),
+        )
         .await?;
     tx.delete_node(left.id).await?;
     assert!(tx.find_node_by_id(left.id).await?.is_none());
@@ -172,7 +245,7 @@ where
     verify.commit().await
 }
 
-async fn transaction_visibility<B>(backend: B) -> Result<()>
+async fn transaction_visibility<B>(backend: B, config: &BackendBehaviorConfig) -> Result<()>
 where
     B: GraphBackend + Clone,
 {
@@ -180,7 +253,7 @@ where
     let created = tx
         .create_node(
             vec!["GrmBehaviorVisibility".to_string()],
-            props([("name", json!("Read Your Writes"))]),
+            props_with_run(config, [("name", json!("Read Your Writes"))]),
         )
         .await?;
     assert!(tx.find_node_by_id(created.id).await?.is_some());
@@ -195,7 +268,10 @@ where
     later.commit().await
 }
 
-async fn rollback_discards_writes_updates_and_deletes<B>(backend: B) -> Result<()>
+async fn rollback_discards_writes_updates_and_deletes<B>(
+    backend: B,
+    config: &BackendBehaviorConfig,
+) -> Result<()>
 where
     B: GraphBackend + Clone,
 {
@@ -203,18 +279,21 @@ where
     let user = setup
         .create_node(
             vec!["GrmBehaviorRollbackUser".to_string()],
-            props([("name", json!("Original"))]),
+            props_with_run(config, [("name", json!("Original"))]),
         )
         .await?;
     let post = setup
-        .create_node(vec!["GrmBehaviorRollbackPost".to_string()], props([]))
+        .create_node(
+            vec!["GrmBehaviorRollbackPost".to_string()],
+            props_with_run(config, []),
+        )
         .await?;
     let rel = setup
         .create_relationship(
             user.id,
             post.id,
             "GRM_BEHAVIOR_ROLLBACK",
-            props([("weight", json!(1))]),
+            props_with_run(config, [("weight", json!(1))]),
         )
         .await?;
     setup.commit().await?;
@@ -223,7 +302,7 @@ where
     let transient = tx
         .create_node(
             vec!["GrmBehaviorRollbackTransient".to_string()],
-            props([("name", json!("Transient"))]),
+            props_with_run(config, [("name", json!("Transient"))]),
         )
         .await?;
     tx.update_node(user.id, props([("name", json!("Changed"))]))
@@ -251,11 +330,11 @@ where
     verify.commit().await
 }
 
-async fn execute_graph_row_shape<B>(backend: B) -> Result<()>
+async fn execute_graph_row_shape<B>(backend: B, config: &BackendBehaviorConfig) -> Result<()>
 where
     B: GraphBackend + Clone,
 {
-    let (query, root, rel, end) = seed_graph_query_fixture(backend.clone()).await?;
+    let (query, root, rel, end) = seed_graph_query_fixture(backend.clone(), config).await?;
 
     let mut tx = backend.begin_tx().await?;
     let result = tx.execute_graph(&query).await?;
@@ -280,11 +359,15 @@ where
     tx.commit().await
 }
 
-async fn traversal_query_returning_node_and_relationship<B>(backend: B) -> Result<()>
+async fn traversal_query_returning_node_and_relationship<B>(
+    backend: B,
+    config: &BackendBehaviorConfig,
+) -> Result<()>
 where
     B: GraphBackend + Clone,
 {
-    let (mut node_query, _root, rel, end) = seed_graph_query_fixture(backend.clone()).await?;
+    let (mut node_query, _root, rel, end) =
+        seed_graph_query_fixture(backend.clone(), config).await?;
 
     let mut tx = backend.begin_tx().await?;
     let node_result = tx.execute_graph(&node_query).await?;
@@ -304,22 +387,32 @@ where
     tx.commit().await
 }
 
-async fn unsupported_native_query_behavior<B>(backend: B) -> Result<()>
+async fn native_query_behavior<B>(backend: B, config: &BackendBehaviorConfig) -> Result<()>
 where
     B: GraphBackend + Clone,
 {
-    let err = backend
-        .execute_query("RETURN 1", json!({}))
-        .await
-        .expect_err("in-memory backend should not support native string queries");
-    assert!(
-        matches!(err, GrmError::Backend(_) | GrmError::NotSupported(_)),
-        "expected a clear unsupported native-query error, got {err:?}"
-    );
+    match config.native_query {
+        NativeQueryExpectation::Unsupported => {
+            let err = backend
+                .execute_query("RETURN 1", json!({}))
+                .await
+                .expect_err("backend should not support native string queries");
+            assert!(
+                matches!(err, GrmError::Backend(_) | GrmError::NotSupported(_)),
+                "expected a clear unsupported native-query error, got {err:?}"
+            );
+        }
+        NativeQueryExpectation::Supported => {
+            backend.execute_query("RETURN 1", json!({})).await?;
+        }
+    }
     Ok(())
 }
 
-async fn seed_graph_query_fixture<B>(backend: B) -> Result<(GraphQuery, VarId, VarId, VarId)>
+async fn seed_graph_query_fixture<B>(
+    backend: B,
+    config: &BackendBehaviorConfig,
+) -> Result<(GraphQuery, VarId, VarId, VarId)>
 where
     B: GraphBackend + Clone,
 {
@@ -328,26 +421,32 @@ where
     let user = tx
         .create_node(
             vec!["GrmBehaviorQueryUser".to_string()],
-            props([
-                ("name", json!("Query User")),
-                ("smoke_id", json!(smoke_id.clone())),
-            ]),
+            props_with_run(
+                config,
+                [
+                    ("name", json!("Query User")),
+                    ("smoke_id", json!(smoke_id.clone())),
+                ],
+            ),
         )
         .await?;
     let post = tx
         .create_node(
             vec!["GrmBehaviorQueryPost".to_string()],
-            props([
-                ("title", json!("Graph Row Shape")),
-                ("smoke_id", json!(smoke_id.clone())),
-            ]),
+            props_with_run(
+                config,
+                [
+                    ("title", json!("Graph Row Shape")),
+                    ("smoke_id", json!(smoke_id.clone())),
+                ],
+            ),
         )
         .await?;
     tx.create_relationship(
         user.id,
         post.id,
         "GRM_BEHAVIOR_QUERY",
-        props([("smoke_id", json!(smoke_id.clone()))]),
+        props_with_run(config, [("smoke_id", json!(smoke_id.clone()))]),
     )
     .await?;
     tx.commit().await?;
@@ -390,6 +489,15 @@ fn props<const N: usize>(entries: [(&str, Value); N]) -> BTreeMap<String, Value>
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
         .collect()
+}
+
+fn props_with_run<const N: usize>(
+    config: &BackendBehaviorConfig,
+    entries: [(&str, Value); N],
+) -> BTreeMap<String, Value> {
+    let mut props = props(entries);
+    props.insert(BEHAVIOR_RUN_ID_PROP.to_string(), json!(config.run_id));
+    props
 }
 
 fn ids(ids: impl IntoIterator<Item = i64>) -> BTreeSet<i64> {
