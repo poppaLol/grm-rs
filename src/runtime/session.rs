@@ -1857,6 +1857,23 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.autocommit = None;
     }
 
+    pub fn write_startup_autocommit_off(&mut self) -> Result<()> {
+        writeln!(
+            self.writer,
+            "Autocommit: off. Changes are in memory until session.save or session.autocommit is enabled."
+        )?;
+        Ok(())
+    }
+
+    pub fn write_startup_autocommit_on(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        writeln!(
+            self.writer,
+            "Autocommit: on -> {}. Successful edits will be persisted automatically.",
+            path.as_ref().display()
+        )?;
+        Ok(())
+    }
+
     pub fn compact_autocommit(&mut self) -> Result<SessionCompactSummary> {
         if self.autocommit.is_none() {
             return Err(crate::GrmError::Constraint(
@@ -1884,6 +1901,21 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             "Welcome to GRM-RS CLI.\nScript loaded. Entering interactive session. Type 'session.help' for commands.",
         )
         .await
+    }
+
+    pub async fn continue_loaded_interactive(&mut self) -> Result<()> {
+        self.run_interactive_loop(
+            "Welcome to GRM-RS CLI.\nLoaded graph session ready. Type 'session.help' for commands.",
+        )
+        .await
+    }
+
+    pub fn load_session_json(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        self.load_session_file(SessionFileFormat::Json, path.as_ref())
+    }
+
+    pub fn load_session_binary(&mut self, path: impl AsRef<Path>) -> Result<()> {
+        self.load_session_file(SessionFileFormat::Binary, path.as_ref())
     }
 
     pub async fn run_script(&mut self) -> Result<()> {
@@ -2800,44 +2832,8 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         match args[0] {
-            "--json" => {
-                let source = self.state.load_from_json_with_source(args[1])?;
-                self.checkpoint_autocommit()?;
-                match source {
-                    LoadSource::Primary => {
-                        writeln!(self.writer, "Loaded session from JSON file '{}'.", args[1])?;
-                    }
-                    LoadSource::Backup => {
-                        let backup = backup_path(args[1]);
-                        writeln!(
-                            self.writer,
-                            "Recovered session from backup JSON file '{}'.",
-                            backup.display()
-                        )?;
-                    }
-                }
-            }
-            "--bin" => {
-                let source = self.state.load_from_binary_with_source(args[1])?;
-                self.checkpoint_autocommit()?;
-                match source {
-                    LoadSource::Primary => {
-                        writeln!(
-                            self.writer,
-                            "Loaded session from binary file '{}'.",
-                            args[1]
-                        )?;
-                    }
-                    LoadSource::Backup => {
-                        let backup = backup_path(args[1]);
-                        writeln!(
-                            self.writer,
-                            "Recovered session from backup binary file '{}'.",
-                            backup.display()
-                        )?;
-                    }
-                }
-            }
+            "--json" => self.load_session_file(SessionFileFormat::Json, Path::new(args[1]))?,
+            "--bin" => self.load_session_file(SessionFileFormat::Binary, Path::new(args[1]))?,
             _ => {
                 return Err(crate::GrmError::Constraint(
                     "usage: session.load --json <path> | session.load --bin <path>".into(),
@@ -3635,6 +3631,49 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             ))
         })?;
         target.pending_entries = 0;
+        Ok(())
+    }
+
+    fn load_session_file(&mut self, format: SessionFileFormat, path: &Path) -> Result<()> {
+        let source = match format {
+            SessionFileFormat::Json => self.state.load_from_json_with_source(path)?,
+            SessionFileFormat::Binary => self.state.load_from_binary_with_source(path)?,
+        };
+        self.checkpoint_autocommit()?;
+
+        match (format, source) {
+            (SessionFileFormat::Json, LoadSource::Primary) => {
+                writeln!(
+                    self.writer,
+                    "Loaded session from JSON file '{}'.",
+                    path.display()
+                )?;
+            }
+            (SessionFileFormat::Json, LoadSource::Backup) => {
+                let backup = backup_path(path);
+                writeln!(
+                    self.writer,
+                    "Recovered session from backup JSON file '{}'.",
+                    backup.display()
+                )?;
+            }
+            (SessionFileFormat::Binary, LoadSource::Primary) => {
+                writeln!(
+                    self.writer,
+                    "Loaded session from binary file '{}'.",
+                    path.display()
+                )?;
+            }
+            (SessionFileFormat::Binary, LoadSource::Backup) => {
+                let backup = backup_path(path);
+                writeln!(
+                    self.writer,
+                    "Recovered session from backup binary file '{}'.",
+                    backup.display()
+                )?;
+            }
+        }
+
         Ok(())
     }
 
