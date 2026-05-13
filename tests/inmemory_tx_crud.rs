@@ -303,3 +303,279 @@ async fn tx_both_returns_neighbors_from_outgoing_and_incoming() -> Result<()> {
     tx.commit().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn tx_created_nodes_and_relationships_are_visible_to_graph_query_before_commit() -> Result<()>
+{
+    let backend = InMemoryBackend::new();
+    let mut tx = backend.begin_tx().await?;
+
+    let user = tx
+        .create_node(
+            vec!["User".to_string()],
+            BTreeMap::from([("name".to_string(), json!("Draft"))]),
+        )
+        .await?;
+    let post = tx
+        .create_node(vec!["Post".to_string()], Default::default())
+        .await?;
+    tx.create_relationship(user.id, post.id, "Authored", Default::default())
+        .await?;
+
+    let rows = tx.execute_graph(&authored_post_query("Draft")).await?;
+
+    assert_eq!(rows.rows.len(), 1);
+    assert!(
+        tx.working_copy.is_none(),
+        "graph query should read transaction overlay without materialization"
+    );
+
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tx_updated_node_property_is_visible_to_property_lookup_before_commit() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let user_id = {
+        let mut tx = backend.begin_tx().await?;
+        let user = tx
+            .create_node(
+                vec!["User".to_string()],
+                BTreeMap::from([("name".to_string(), json!("Before"))]),
+            )
+            .await?;
+        tx.commit().await?;
+        user.id
+    };
+
+    let mut tx = backend.begin_tx().await?;
+    tx.update_node(
+        user_id,
+        BTreeMap::from([("name".to_string(), json!("After"))]),
+    )
+    .await?;
+
+    assert!(
+        tx.find_nodes_by_property("name", &json!("Before"))
+            .await?
+            .is_empty()
+    );
+    let after = tx.find_nodes_by_property("name", &json!("After")).await?;
+
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].id, user_id);
+    assert!(
+        tx.working_copy.is_none(),
+        "property lookup should merge delta over indexed base store"
+    );
+
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tx_updated_node_property_is_visible_to_graph_query_before_commit() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let (user_id, _post_id) = committed_user_post(&backend).await?;
+
+    let mut tx = backend.begin_tx().await?;
+    tx.update_node(
+        user_id,
+        BTreeMap::from([("name".to_string(), json!("After"))]),
+    )
+    .await?;
+
+    assert!(
+        tx.execute_graph(&authored_post_query("Alice"))
+            .await?
+            .rows
+            .is_empty(),
+        "graph query root selection should hide the base property after tx update"
+    );
+    let rows = tx.execute_graph(&authored_post_query("After")).await?;
+
+    assert_eq!(rows.rows.len(), 1);
+    assert!(
+        tx.working_copy.is_none(),
+        "graph query should merge updated root properties without materialization"
+    );
+
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn property_lookup_finds_unlabeled_node_without_materialization() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let node_id = {
+        let mut tx = backend.begin_tx().await?;
+        let node = tx
+            .create_node(
+                Vec::new(),
+                BTreeMap::from([("name".to_string(), json!("Unlabeled"))]),
+            )
+            .await?;
+        tx.commit().await?;
+        node.id
+    };
+
+    let mut tx = backend.begin_tx().await?;
+    let rows = tx
+        .find_nodes_by_property("name", &json!("Unlabeled"))
+        .await?;
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, node_id);
+    assert!(
+        tx.working_copy.is_none(),
+        "unlabeled property lookup should use the label-independent property index"
+    );
+
+    tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tx_deleted_node_hides_node_and_incident_relationships_before_commit() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let (user_id, post_id) = committed_user_post(&backend).await?;
+
+    let mut tx = backend.begin_tx().await?;
+    tx.delete_node(user_id).await?;
+
+    assert!(tx.find_node_by_id(user_id).await?.is_none());
+    assert!(tx.outgoing(user_id, Some("Authored")).await?.is_empty());
+    assert!(tx.incoming(post_id, Some("Authored")).await?.is_empty());
+    assert!(
+        tx.execute_graph(&authored_post_query("Alice"))
+            .await?
+            .rows
+            .is_empty(),
+        "graph query should not traverse relationships incident to deleted nodes"
+    );
+    assert!(tx.working_copy.is_none());
+
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tx_deleted_relationship_disappears_from_adjacency_before_commit() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let (user_id, _post_id, rel_id) = committed_user_post_with_rel(&backend).await?;
+
+    let mut tx = backend.begin_tx().await?;
+    tx.delete_relationship(rel_id).await?;
+
+    assert!(tx.outgoing(user_id, Some("Authored")).await?.is_empty());
+    assert!(
+        tx.execute_graph(&authored_post_query("Alice"))
+            .await?
+            .rows
+            .is_empty(),
+        "graph query should not traverse deleted relationships"
+    );
+    assert!(tx.working_copy.is_none());
+
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn rollback_discards_overlay_writes_updates_and_deletes() -> Result<()> {
+    let backend = InMemoryBackend::new();
+    let (user_id, _post_id, rel_id) = committed_user_post_with_rel(&backend).await?;
+
+    let mut tx = backend.begin_tx().await?;
+    tx.update_node(
+        user_id,
+        BTreeMap::from([("name".to_string(), json!("RolledBack"))]),
+    )
+    .await?;
+    tx.delete_relationship(rel_id).await?;
+    tx.create_node(
+        vec!["User".to_string()],
+        BTreeMap::from([("name".to_string(), json!("Transient"))]),
+    )
+    .await?;
+    tx.rollback().await?;
+
+    let mut verify = backend.begin_tx().await?;
+    assert_eq!(
+        verify
+            .find_node_by_id(user_id)
+            .await?
+            .unwrap()
+            .props
+            .get("name"),
+        Some(&json!("Alice"))
+    );
+    assert_eq!(verify.outgoing(user_id, Some("Authored")).await?.len(), 1);
+    assert!(
+        verify
+            .find_nodes_by_property("name", &json!("Transient"))
+            .await?
+            .is_empty()
+    );
+    verify.commit().await?;
+
+    Ok(())
+}
+
+async fn committed_user_post(backend: &InMemoryBackend) -> Result<(i64, i64)> {
+    let (user_id, post_id, _) = committed_user_post_with_rel(backend).await?;
+    Ok((user_id, post_id))
+}
+
+async fn committed_user_post_with_rel(backend: &InMemoryBackend) -> Result<(i64, i64, i64)> {
+    let mut tx = backend.begin_tx().await?;
+    let user = tx
+        .create_node(
+            vec!["User".to_string()],
+            BTreeMap::from([("name".to_string(), json!("Alice"))]),
+        )
+        .await?;
+    let post = tx
+        .create_node(vec!["Post".to_string()], Default::default())
+        .await?;
+    let rel = tx
+        .create_relationship(user.id, post.id, "Authored", Default::default())
+        .await?;
+    tx.commit().await?;
+
+    Ok((user.id, post.id, rel.id))
+}
+
+fn authored_post_query(name: &str) -> GraphQuery {
+    let root = VarId(0);
+    let rel = VarId(1);
+    let end = VarId(2);
+
+    GraphQuery {
+        matches: vec![
+            MatchClause::Node(NodeMatch {
+                var: root,
+                labels: &["User"],
+                id_filter: None,
+                property_filters: vec![PropertyFilter {
+                    key: "name",
+                    op: CompareOp::Eq,
+                    value: json!(name),
+                }],
+            }),
+            MatchClause::Hop(HopMatch {
+                start: root,
+                rel_type: Some("Authored"),
+                rel_var: rel,
+                dir: Direction::Out,
+                end,
+                end_labels: &["Post"],
+            }),
+        ],
+        where_: vec![],
+        ret: Return::Node(end),
+        limit: None,
+        offset: None,
+    }
+}

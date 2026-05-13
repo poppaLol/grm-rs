@@ -36,18 +36,21 @@ pub struct GraphStore {
     pub nodes: BTreeMap<i64, StoredNode>,
     pub rels: BTreeMap<i64, StoredRel>,
     pub nodes_by_label: BTreeMap<String, BTreeSet<i64>>,
-    // `node_props` is a derived cache, not source-of-truth graph data.
+    // `node_props` and `node_props_any` are derived caches, not source-of-truth
+    // graph data.
     //
     // Node writes update `nodes` and `nodes_by_label` immediately, then mark this
     // property index dirty. Property-indexed reads must go through
-    // `node_ids_by_label_property`, which rebuilds the cache first when dirty.
-    // This preserves read-your-writes and transaction isolation while avoiding
-    // high-cardinality property-index churn on insert-heavy workloads.
+    // `node_ids_by_label_property` or `node_ids_by_property`, which rebuild the
+    // cache first when dirty. This preserves read-your-writes and transaction
+    // isolation while avoiding high-cardinality property-index churn on
+    // insert-heavy workloads.
     //
-    // Do not read `node_props` directly from new code; doing so can observe a
-    // stale cache. If these fields become private later, this is the first one
-    // that should be hidden behind methods.
+    // Do not read `node_props`/`node_props_any` directly from new code; doing so
+    // can observe a stale cache. If these fields become private later, they
+    // should be hidden behind methods first.
     pub node_props: BTreeMap<(String, String, ValueKey), BTreeSet<i64>>,
+    pub node_props_any: BTreeMap<(String, ValueKey), BTreeSet<i64>>,
     pub node_props_dirty: bool,
     pub rels_by_type: BTreeMap<String, BTreeSet<i64>>,
     pub outgoing: BTreeMap<(i64, String), BTreeSet<i64>>,
@@ -65,6 +68,7 @@ impl Default for GraphStore {
             rels: BTreeMap::new(),
             nodes_by_label: BTreeMap::new(),
             node_props: BTreeMap::new(),
+            node_props_any: BTreeMap::new(),
             node_props_dirty: false,
             rels_by_type: BTreeMap::new(),
             outgoing: BTreeMap::new(),
@@ -84,6 +88,7 @@ impl GraphStore {
             rels: self.rels.clone(),
             nodes_by_label: self.nodes_by_label.clone(),
             node_props: self.node_props.clone(),
+            node_props_any: self.node_props_any.clone(),
             node_props_dirty: self.node_props_dirty,
             rels_by_type: self.rels_by_type.clone(),
             outgoing: self.outgoing.clone(),
@@ -96,6 +101,7 @@ impl GraphStore {
     pub fn rebuild_indexes(&mut self) {
         self.nodes_by_label.clear();
         self.node_props.clear();
+        self.node_props_any.clear();
         self.rels_by_type.clear();
         self.outgoing.clear();
         self.incoming.clear();
@@ -138,6 +144,7 @@ impl GraphStore {
 
     pub fn rebuild_node_property_index(&mut self) {
         self.node_props.clear();
+        self.node_props_any.clear();
         for node in self.nodes.values().cloned().collect::<Vec<_>>() {
             self.index_node_props(&node);
         }
@@ -238,6 +245,36 @@ impl GraphStore {
             .unwrap_or_default()
     }
 
+    pub fn node_ids_by_property(&mut self, key: &str, value: &Value) -> Vec<i64> {
+        // This shares the label-scoped property index used by graph queries, but
+        // dedupes nodes that have multiple labels. Unlabeled nodes are not in the
+        // label-scoped index, so they are checked directly below.
+        if self.node_props_dirty {
+            self.rebuild_node_property_index();
+        }
+        let Some(value_key) = ValueKey::from_value(value) else {
+            return self
+                .nodes
+                .values()
+                .filter(|node| {
+                    node.props
+                        .get(key)
+                        .is_some_and(|node_value| node_value == value)
+                })
+                .map(|node| node.id)
+                .collect();
+        };
+
+        self.node_props_any
+            .get(&(key.to_string(), value_key))
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn property_value_is_indexable(value: &Value) -> bool {
+        ValueKey::from_value(value).is_some()
+    }
+
     pub fn relationship_ids_by_type(&self, rel_type: &str) -> Vec<i64> {
         self.rels_by_type
             .get(rel_type)
@@ -255,6 +292,14 @@ impl GraphStore {
     }
 
     pub fn index_node_props(&mut self, node: &StoredNode) {
+        for (key, value) in &node.props {
+            if let Some(value_key) = ValueKey::from_value(value) {
+                self.node_props_any
+                    .entry((key.clone(), value_key))
+                    .or_default()
+                    .insert(node.id);
+            }
+        }
         for label in &node.labels {
             for (key, value) in &node.props {
                 if let Some(value_key) = ValueKey::from_value(value) {
@@ -278,6 +323,11 @@ impl GraphStore {
                         node.id,
                     );
                 }
+            }
+        }
+        for (key, value) in &node.props {
+            if let Some(value_key) = ValueKey::from_value(value) {
+                remove_index_entry(&mut self.node_props_any, &(key.clone(), value_key), node.id);
             }
         }
     }

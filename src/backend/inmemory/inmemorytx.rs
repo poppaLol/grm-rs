@@ -54,6 +54,51 @@ fn stored_node_matches_filters(node: &StoredNode, filters: &[PropertyFilter]) ->
     true
 }
 
+fn base_node_candidate_ids(
+    store: &mut GraphStore,
+    labels: &'static [&'static str],
+    filters: &[PropertyFilter],
+) -> Vec<i64> {
+    let eq_filters = filters
+        .iter()
+        .filter(|filter| {
+            filter.op == CompareOp::Eq && GraphStore::property_value_is_indexable(&filter.value)
+        })
+        .collect::<Vec<_>>();
+
+    let mut best: Option<Vec<i64>> = None;
+    if labels.is_empty() {
+        for filter in eq_filters {
+            keep_smallest(
+                &mut best,
+                store.node_ids_by_property(filter.key, &filter.value),
+            );
+        }
+    } else {
+        for label in labels {
+            keep_smallest(&mut best, store.node_ids_by_label(label));
+            for filter in &eq_filters {
+                keep_smallest(
+                    &mut best,
+                    store.node_ids_by_label_property(label, filter.key, &filter.value),
+                );
+            }
+        }
+    }
+
+    best.unwrap_or_else(|| store.nodes.keys().copied().collect())
+}
+
+fn keep_smallest(best: &mut Option<Vec<i64>>, candidate: Vec<i64>) {
+    if best
+        .as_ref()
+        .map(|current| candidate.len() < current.len())
+        .unwrap_or(true)
+    {
+        *best = Some(candidate);
+    }
+}
+
 /// Pure function to select bindings for return - no side effects
 fn select_bindings_for_return(q: &GraphQuery, bindings: Vec<Binding>) -> Vec<Binding> {
     let ret_var = q.return_var();
@@ -443,11 +488,20 @@ impl InMemoryTx {
         if self.delta.deleted_rels.contains(&id) {
             return None;
         }
-        self.delta
+        let rel = self
+            .delta
             .rels
             .get(&id)
             .cloned()
-            .or_else(|| self.store.lock().unwrap().rels.get(&id).cloned())
+            .or_else(|| self.store.lock().unwrap().rels.get(&id).cloned())?;
+
+        if self.delta.deleted_nodes.contains(&rel.from)
+            || self.delta.deleted_nodes.contains(&rel.to)
+        {
+            return None;
+        }
+
+        Some(rel)
     }
 
     pub fn visible_nodes_by_property(&self, key: &str, value: &Value) -> Vec<StoredNode> {
@@ -461,14 +515,15 @@ impl InMemoryTx {
         }
 
         let mut nodes = {
-            let store = self.store.lock().unwrap();
+            let mut store = self.store.lock().unwrap();
             store
-                .nodes
-                .values()
+                .node_ids_by_property(key, value)
+                .into_iter()
+                .filter_map(|id| store.nodes.get(&id))
                 .filter(|node| {
                     !self.delta.deleted_nodes.contains(&node.id)
                         && !self.delta.nodes.contains_key(&node.id)
-                        && node.props.get(key).map(|v| v == value).unwrap_or(false)
+                        && node.props.get(key).is_some_and(|v| v == value)
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -482,6 +537,27 @@ impl InMemoryTx {
                 .cloned(),
         );
         nodes
+    }
+
+    fn base_nodes_matching(
+        &self,
+        labels: &'static [&'static str],
+        filters: &[PropertyFilter],
+    ) -> Vec<StoredNode> {
+        let mut store = self.store.lock().unwrap();
+        let candidate_ids = base_node_candidate_ids(&mut store, labels, filters);
+
+        candidate_ids
+            .into_iter()
+            .filter_map(|id| store.nodes.get(&id))
+            .filter(|node| {
+                !self.delta.deleted_nodes.contains(&node.id)
+                    && !self.delta.nodes.contains_key(&node.id)
+                    && labels_match(&node.labels, labels)
+                    && stored_node_matches_filters(node, filters)
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn visible_nodes_matching(
@@ -500,20 +576,7 @@ impl InMemoryTx {
                 .collect();
         }
 
-        let mut nodes = {
-            let store = self.store.lock().unwrap();
-            store
-                .nodes
-                .values()
-                .filter(|node| {
-                    !self.delta.deleted_nodes.contains(&node.id)
-                        && !self.delta.nodes.contains_key(&node.id)
-                        && labels_match(&node.labels, labels)
-                        && stored_node_matches_filters(node, filters)
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-        };
+        let mut nodes = self.base_nodes_matching(labels, filters);
 
         nodes.extend(
             self.delta
@@ -537,10 +600,17 @@ impl InMemoryTx {
             return materialized_neighbor_pairs(store, node, rel_type, dir);
         }
 
+        if self.delta.deleted_nodes.contains(&node) {
+            return Vec::new();
+        }
+
         let mut seen_rel_ids = BTreeSet::new();
         let mut pairs = Vec::new();
         let base_rel_ids = {
             let store = self.store.lock().unwrap();
+            if !self.delta.nodes.contains_key(&node) && !store.nodes.contains_key(&node) {
+                return Vec::new();
+            }
             match dir {
                 Direction::Out => store.outgoing_relationship_ids(node, rel_type),
                 Direction::In => store.incoming_relationship_ids(node, rel_type),
@@ -595,12 +665,20 @@ impl InMemoryTx {
                 .collect();
         }
 
+        if self.delta.deleted_nodes.contains(&node) {
+            return BTreeSet::new();
+        }
+
         let mut ids = {
             let store = self.store.lock().unwrap();
+            if !self.delta.nodes.contains_key(&node) && !store.nodes.contains_key(&node) {
+                return BTreeSet::new();
+            }
             let mut ids = store.outgoing_relationship_ids(node, None);
             ids.extend(store.incoming_relationship_ids(node, None));
             ids.into_iter().collect::<BTreeSet<_>>()
         };
+        ids.retain(|id| self.visible_rel(*id).is_some());
         ids.extend(
             self.delta
                 .rels
