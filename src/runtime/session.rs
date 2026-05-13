@@ -3,13 +3,18 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::backend::{BinaryPersistedGraphStore, GraphStore, PersistedGraphStore};
+use crate::backend::{
+    BinaryPersistedGraphStore, ExecutionPlan, GraphStore, PersistedGraphStore, PlanStep,
+    PlanStepKind,
+};
 use crate::dsl::{
     CompareOp, Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, ReturnKind, VarGen,
+    VarId,
 };
 use crate::fsutil::{
     backup_path, log_path, write_file_atomically, write_file_atomically_with_backup,
@@ -225,6 +230,16 @@ enum SessionQueryResult {
         rows: Vec<StoredRel>,
     },
     Graph(Box<SessionGraphResult>),
+}
+
+impl SessionQueryResult {
+    fn row_count(&self) -> usize {
+        match self {
+            Self::Nodes { rows, .. } => rows.len(),
+            Self::Edges { rows, .. } => rows.len(),
+            Self::Graph(graph) => graph.rows.len(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1037,6 +1052,183 @@ impl SessionState {
         Ok(rels)
     }
 
+    fn explain_node_find_query(
+        &self,
+        model_name: &str,
+        query: &NodeFindQuery,
+    ) -> Result<ExecutionPlan> {
+        let model = self
+            .catalog
+            .get_node_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+
+        if query.traversals.is_empty() {
+            let prop_filters = self.parse_model_predicates(&query.predicates, model)?;
+            validate_node_order_fields(model, &query.order)?;
+
+            let var = VarId(0);
+            let labels = vec![model.label.clone()];
+            let mut steps = Vec::new();
+            if let Some(id) = query.id_filter {
+                steps.push(PlanStep::new(PlanStepKind::NodeById {
+                    var,
+                    labels: labels.clone(),
+                    id,
+                }));
+            } else if let Some((key, _, _)) =
+                prop_filters.iter().find(|(_, op, _)| *op == CompareOp::Eq)
+            {
+                steps.push(PlanStep::new(PlanStepKind::NodePropertySeek {
+                    var,
+                    labels: labels.clone(),
+                    key: key.clone(),
+                }));
+            } else {
+                steps.push(PlanStep::new(PlanStepKind::NodeLabelScan {
+                    var,
+                    labels: labels.clone(),
+                }));
+            }
+
+            let filter_keys = prop_filters
+                .iter()
+                .map(|(key, _, _)| key.clone())
+                .collect::<Vec<_>>();
+            if query.id_filter.is_some() && !filter_keys.is_empty()
+                || query.id_filter.is_none() && filter_keys.len() > 1
+                || query.id_filter.is_none()
+                    && filter_keys.len() == 1
+                    && !prop_filters.iter().any(|(_, op, _)| *op == CompareOp::Eq)
+            {
+                steps.push(PlanStep::new(PlanStepKind::NodeFilter {
+                    var,
+                    labels: labels.clone(),
+                    id: None,
+                    keys: filter_keys,
+                }));
+            }
+
+            steps.push(PlanStep::new(PlanStepKind::Return {
+                var,
+                kind: ReturnKind::Node,
+            }));
+            return Ok(ExecutionPlan::new(steps));
+        }
+
+        let runtime_plan = self.build_runtime_graph_query(model, query)?;
+        let end_filters =
+            self.parse_model_predicates(&query.end_predicates, &runtime_plan.end_model)?;
+        let edge_filters =
+            self.parse_rel_predicates(&query.edge_predicates, &runtime_plan.return_rel_model)?;
+
+        match runtime_plan.graph_query.return_kind() {
+            ReturnKind::Node => {
+                let return_model = if query.return_mode == SessionTraversalReturn::Root {
+                    model
+                } else {
+                    &runtime_plan.end_model
+                };
+                validate_node_order_fields(return_model, &query.order)?;
+            }
+            ReturnKind::Rel => {
+                validate_rel_order_fields(&runtime_plan.return_rel_model, &query.order)?;
+            }
+        }
+
+        let mut plan = ExecutionPlan::for_graph_query(&runtime_plan.graph_query);
+        let return_step = plan.steps.pop();
+        let root_filters = self.parse_model_predicates(&query.predicates, model)?;
+        if !root_filters.is_empty() {
+            plan.steps.push(PlanStep::new(PlanStepKind::NodeFilter {
+                var: runtime_plan.root_var,
+                labels: vec![model.label.clone()],
+                id: query.id_filter,
+                keys: root_filters
+                    .iter()
+                    .map(|(key, _, _)| key.clone())
+                    .collect::<Vec<_>>(),
+            }));
+        }
+        if !end_filters.is_empty() {
+            plan.steps.push(PlanStep::new(PlanStepKind::NodeFilter {
+                var: runtime_plan.end_var,
+                labels: vec![runtime_plan.end_model.label.clone()],
+                id: None,
+                keys: end_filters
+                    .iter()
+                    .map(|(key, _, _)| key.clone())
+                    .collect::<Vec<_>>(),
+            }));
+        }
+        if !edge_filters.is_empty() {
+            plan.steps
+                .push(PlanStep::new(PlanStepKind::RelationshipFilter {
+                    var: runtime_plan.return_rel_var,
+                    rel_type: runtime_plan.return_rel_model.rel_type.clone(),
+                    keys: edge_filters
+                        .iter()
+                        .map(|(key, _, _)| key.clone())
+                        .collect::<Vec<_>>(),
+                }));
+        }
+        if let Some(return_step) = return_step {
+            plan.steps.push(return_step);
+        }
+        Ok(plan)
+    }
+
+    fn explain_edge_find_query(
+        &self,
+        model_name: &str,
+        query: &EdgeFindQuery,
+    ) -> Result<ExecutionPlan> {
+        let model = self
+            .catalog
+            .get_rel_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        let prop_filters = self.parse_rel_predicates(&query.predicates, model)?;
+        validate_rel_order_fields(model, &query.order)?;
+
+        let var = VarId(0);
+        let mut steps = Vec::new();
+        if let Some(id) = query.id_filter {
+            steps.push(PlanStep::new(PlanStepKind::RelationshipById {
+                var,
+                rel_type: model.rel_type.clone(),
+                id,
+            }));
+        } else if query.from_filter.is_some() || query.to_filter.is_some() {
+            steps.push(PlanStep::new(PlanStepKind::RelationshipEndpointSeek {
+                var,
+                rel_type: model.rel_type.clone(),
+                from: query.from_filter,
+                to: query.to_filter,
+            }));
+        } else {
+            steps.push(PlanStep::new(PlanStepKind::RelationshipTypeScan {
+                var,
+                rel_type: model.rel_type.clone(),
+            }));
+        }
+
+        let filter_keys = prop_filters
+            .iter()
+            .map(|(key, _, _)| key.clone())
+            .collect::<Vec<_>>();
+        if !filter_keys.is_empty() {
+            steps.push(PlanStep::new(PlanStepKind::RelationshipFilter {
+                var,
+                rel_type: model.rel_type.clone(),
+                keys: filter_keys,
+            }));
+        }
+        steps.push(PlanStep::new(PlanStepKind::Return {
+            var,
+            kind: ReturnKind::Rel,
+        }));
+        Ok(ExecutionPlan::new(steps))
+    }
+
     fn parse_model_predicates(
         &self,
         predicates: &[SessionPredicate],
@@ -1817,6 +2009,13 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionCommand::NodeFind { model_name, terms } => {
                 self.handle_node_find_parsed(&model_name, &terms).await?
             }
+            SessionCommand::SessionExplainNodeFind { model_name, terms } => {
+                self.handle_session_explain_node_find(&model_name, &terms)?
+            }
+            SessionCommand::SessionProfileNodeFind { model_name, terms } => {
+                self.handle_session_profile_node_find(&model_name, &terms)
+                    .await?
+            }
             SessionCommand::NodeUpdate {
                 model_name,
                 id,
@@ -1837,6 +2036,12 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             }
             SessionCommand::EdgeFind { model_name, terms } => {
                 self.handle_edge_find_parsed(&model_name, &terms)?
+            }
+            SessionCommand::SessionExplainEdgeFind { model_name, terms } => {
+                self.handle_session_explain_edge_find(&model_name, &terms)?
+            }
+            SessionCommand::SessionProfileEdgeFind { model_name, terms } => {
+                self.handle_session_profile_edge_find(&model_name, &terms)?
             }
             SessionCommand::EdgeUpdate {
                 model_name,
@@ -1922,6 +2127,22 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         writeln!(
             self.writer,
+            "  session.explain node.find <ModelName> [node.find terms except format=...]"
+        )?;
+        writeln!(
+            self.writer,
+            "  session.explain edge.find <LinkName> [edge.find terms except format=...]"
+        )?;
+        writeln!(
+            self.writer,
+            "  session.profile node.find <ModelName> [node.find terms except format=...]"
+        )?;
+        writeln!(
+            self.writer,
+            "  session.profile edge.find <LinkName> [edge.find terms except format=...]"
+        )?;
+        writeln!(
+            self.writer,
             "  edge.update <LinkName> <id> [field=value ...]"
         )?;
         writeln!(self.writer, "  edge.delete <LinkName> <id>")?;
@@ -1960,6 +2181,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             self.writer,
             "  edge.find Authored from=1 authoredOn>=2026-04-10 order=authoredOn:desc,to:asc"
         )?;
+        writeln!(
+            self.writer,
+            "  session.explain node.find User name=\"Alice Jones\" via=out:Authored:Post"
+        )?;
+        writeln!(self.writer, "  session.profile edge.find Authored from=1")?;
         writeln!(self.writer, "  session.save --json <path>")?;
         writeln!(self.writer, "  session.save --bin <path>")?;
         writeln!(self.writer, "  session.load --json <path>")?;
@@ -2378,6 +2604,31 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.render_query_result(result, query.format)
     }
 
+    fn handle_session_explain_node_find(
+        &mut self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> Result<()> {
+        reject_introspection_format_terms(terms)?;
+        let query = self.state.parse_node_find_terms(model_name, terms)?;
+        let plan = self.state.explain_node_find_query(model_name, &query)?;
+        self.render_explain("node.find", model_name, &plan)
+    }
+
+    async fn handle_session_profile_node_find(
+        &mut self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> Result<()> {
+        reject_introspection_format_terms(terms)?;
+        let query = self.state.parse_node_find_terms(model_name, terms)?;
+        let plan = self.state.explain_node_find_query(model_name, &query)?;
+        let started = Instant::now();
+        let result = self.state.execute_node_query(model_name, &query).await?;
+        let elapsed = started.elapsed();
+        self.render_profile("node.find", model_name, &plan, result.row_count(), elapsed)
+    }
+
     async fn handle_edge_create_parsed(
         &mut self,
         model_name: &str,
@@ -2485,6 +2736,35 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionQueryResult::Edges { model, rows: rels },
             query.format,
         )
+    }
+
+    fn handle_session_explain_edge_find(
+        &mut self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> Result<()> {
+        reject_introspection_format_terms(terms)?;
+        let filters = collect_query_terms(terms);
+        let query = self.state.parse_edge_find_query(model_name, &filters)?;
+        let plan = self.state.explain_edge_find_query(model_name, &query)?;
+        self.render_explain("edge.find", model_name, &plan)
+    }
+
+    fn handle_session_profile_edge_find(
+        &mut self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> Result<()> {
+        reject_introspection_format_terms(terms)?;
+        let filters = collect_query_terms(terms);
+        let query = self.state.parse_edge_find_query(model_name, &filters)?;
+        let plan = self.state.explain_edge_find_query(model_name, &query)?;
+        let started = Instant::now();
+        let rels = self
+            .state
+            .find_relationships_with_query(model_name, &query)?;
+        let elapsed = started.elapsed();
+        self.render_profile("edge.find", model_name, &plan, rels.len(), elapsed)
     }
 
     fn handle_session_save(&mut self, args: &[&str]) -> Result<()> {
@@ -2682,6 +2962,38 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 )),
             },
         }
+    }
+
+    fn render_explain(&mut self, command: &str, target: &str, plan: &ExecutionPlan) -> Result<()> {
+        writeln!(self.writer, "Current logical plan for {command} {target}")?;
+        self.render_plan_steps(plan)
+    }
+
+    fn render_profile(
+        &mut self,
+        command: &str,
+        target: &str,
+        plan: &ExecutionPlan,
+        row_count: usize,
+        elapsed: Duration,
+    ) -> Result<()> {
+        writeln!(self.writer, "Profile for {command} {target}")?;
+        self.render_plan_steps(plan)?;
+        writeln!(self.writer, "Result rows: {row_count}")?;
+        writeln!(self.writer, "Elapsed: {}", format_profile_duration(elapsed))?;
+        writeln!(
+            self.writer,
+            "Per-step metrics: not available in this first-phase profile."
+        )?;
+        Ok(())
+    }
+
+    fn render_plan_steps(&mut self, plan: &ExecutionPlan) -> Result<()> {
+        writeln!(self.writer, "Plan steps:")?;
+        for (index, step) in plan.steps.iter().enumerate() {
+            writeln!(self.writer, "  {}. {}", index + 1, step)?;
+        }
+        Ok(())
     }
 
     fn render_default_query_result(&mut self, result: SessionQueryResult) -> Result<()> {
@@ -4709,6 +5021,26 @@ fn collect_query_terms(terms: &[QueryTerm]) -> BTreeMap<String, String> {
         .iter()
         .map(|term| (term.key.clone(), term.value.clone()))
         .collect()
+}
+
+fn reject_introspection_format_terms(terms: &[QueryTerm]) -> Result<()> {
+    if terms.iter().any(|term| term.key == "format") {
+        return Err(crate::GrmError::Constraint(
+            "format= is not supported with session.explain or session.profile; introspection output is always text"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn format_profile_duration(duration: Duration) -> String {
+    if duration.as_secs() > 0 {
+        format!("{:.3}s", duration.as_secs_f64())
+    } else if duration.as_millis() > 0 {
+        format!("{:.3}ms", duration.as_secs_f64() * 1_000.0)
+    } else {
+        format!("{}us", duration.as_micros())
+    }
 }
 
 impl SessionFileFormat {

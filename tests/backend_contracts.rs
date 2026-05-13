@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use grm_rs::backend::{ExecutionPlan, GraphBackend, PlanStepKind};
 use grm_rs::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, VarId};
 use grm_rs::{
-    BackendIdType, BackendIdentity, CompareOp, ExecutionPlan, GraphBackend, GraphTx, GrmError,
-    InMemoryBackend, KernelValue, PlanStepKind, PropertyFilter, Result, ReturnKind,
+    BackendIdType, BackendIdentity, CompareOp, GraphTx, GrmError, InMemoryBackend, KernelValue,
+    PropertyFilter, Result, ReturnKind,
 };
 use serde_json::json;
 

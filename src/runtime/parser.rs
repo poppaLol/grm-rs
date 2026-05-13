@@ -48,6 +48,14 @@ pub enum SessionCommand {
         model_name: String,
         terms: Vec<QueryTerm>,
     },
+    SessionExplainNodeFind {
+        model_name: String,
+        terms: Vec<QueryTerm>,
+    },
+    SessionProfileNodeFind {
+        model_name: String,
+        terms: Vec<QueryTerm>,
+    },
     NodeUpdate {
         model_name: String,
         id: String,
@@ -62,6 +70,14 @@ pub enum SessionCommand {
         assignments: Vec<KeyValueArg>,
     },
     EdgeFind {
+        model_name: String,
+        terms: Vec<QueryTerm>,
+    },
+    SessionExplainEdgeFind {
+        model_name: String,
+        terms: Vec<QueryTerm>,
+    },
+    SessionProfileEdgeFind {
         model_name: String,
         terms: Vec<QueryTerm>,
     },
@@ -158,6 +174,8 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
             model_name: required_positional(command, args, 0)?.to_string(),
             terms: parse_query_terms(&args[1..], trimmed)?,
         }),
+        "session.explain" => parse_session_introspection(command, args, trimmed, false),
+        "session.profile" => parse_session_introspection(command, args, trimmed, true),
         "edge.update" | "edge.edit" => Ok(SessionCommand::EdgeUpdate {
             model_name: required_positional(command, args, 0)?.to_string(),
             id: required_positional(command, args, 1)?.to_string(),
@@ -191,6 +209,42 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
         _ => Ok(SessionCommand::Unknown {
             raw: trimmed.to_string(),
         }),
+    }
+}
+
+fn parse_session_introspection(
+    command: &str,
+    args: &[ParsedToken],
+    input: &str,
+    profile: bool,
+) -> Result<SessionCommand> {
+    let nested = required_positional(command, args, 0)?;
+    match nested {
+        "node.find" => {
+            let model_name = required_positional(command, args, 1)?.to_string();
+            let terms = parse_query_terms(&args[2..], input)?;
+            if profile {
+                Ok(SessionCommand::SessionProfileNodeFind { model_name, terms })
+            } else {
+                Ok(SessionCommand::SessionExplainNodeFind { model_name, terms })
+            }
+        }
+        "edge.find" => {
+            let model_name = required_positional(command, args, 1)?.to_string();
+            let terms = parse_query_terms(&args[2..], input)?;
+            if profile {
+                Ok(SessionCommand::SessionProfileEdgeFind { model_name, terms })
+            } else {
+                Ok(SessionCommand::SessionExplainEdgeFind { model_name, terms })
+            }
+        }
+        _ => Err(constraint_at(
+            input,
+            args.first().map(|token| token.start).unwrap_or(input.len()),
+            format!(
+                "usage: {command} node.find <ModelName> [terms...] | {command} edge.find <LinkName> [terms...]"
+            ),
+        )),
     }
 }
 
