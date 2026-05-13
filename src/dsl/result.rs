@@ -11,10 +11,10 @@ pub struct QueryRow {
     ///
     /// Backend contract:
     /// - keys are kernel `VarId`s introduced by `GraphQuery::bound_vars()`
+    /// - every returned row must include all variables bound by the executed
+    ///   graph query
     /// - every returned row must include `GraphQuery::return_var()`
     /// - the returned value variant must match `GraphQuery::return_kind()`
-    /// - backends may include additional bound variables, but should not omit
-    ///   variables matched along the executed path
     pub values: BTreeMap<VarId, Value>,
 }
 
