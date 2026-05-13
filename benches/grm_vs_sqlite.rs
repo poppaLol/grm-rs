@@ -623,7 +623,9 @@ fn bench_tx_overlay_reads(c: &mut Criterion) {
         let data = dataset(rows);
         let grm = populate_grm_repo_bulk(&rt, &data);
         let lookup_name = format!("user-{:06}", rows / 2);
+        let overlay_name = format!("overlay-user-{rows}");
         let user_id = rows as i64 / 2 + 1;
+        let existing_rel_id = user_id;
         let graph_query = authored_post_query(lookup_name.clone());
         let group_name = format!("tx_overlay_reads_{}", size_label(rows));
         let mut group = c.benchmark_group(group_name);
@@ -639,10 +641,48 @@ fn bench_tx_overlay_reads(c: &mut Criterion) {
             });
         });
 
+        group.bench_function("property_lookup_after_tx_update", |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut tx = grm.begin_tx().await.unwrap();
+                    tx.update_node(
+                        user_id,
+                        BTreeMap::from([("name".to_string(), json!(overlay_name.clone()))]),
+                    )
+                    .await
+                    .unwrap();
+                    let rows = tx
+                        .find_nodes_by_property("name", &json!(overlay_name.clone()))
+                        .await;
+                    tx.rollback().await.unwrap();
+                    black_box(rows.unwrap())
+                })
+            });
+        });
+
         group.bench_function("one_hop_outgoing_authored", |b| {
             b.iter(|| {
                 rt.block_on(async {
                     let mut tx = grm.begin_tx().await.unwrap();
+                    let rows = tx.outgoing(user_id, Some("Authored")).await;
+                    tx.rollback().await.unwrap();
+                    black_box(rows.unwrap())
+                })
+            });
+        });
+
+        group.bench_function("one_hop_after_create_delete_overlay", |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut tx = grm.begin_tx().await.unwrap();
+                    tx.delete_relationship(existing_rel_id).await.unwrap();
+                    let post = tx
+                        .create_node(vec!["Post".to_string()], Default::default())
+                        .await
+                        .unwrap();
+                    tx.create_relationship(user_id, post.id, "Authored", Default::default())
+                        .await
+                        .unwrap();
                     let rows = tx.outgoing(user_id, Some("Authored")).await;
                     tx.rollback().await.unwrap();
                     black_box(rows.unwrap())

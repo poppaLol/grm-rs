@@ -69,6 +69,9 @@ The lookup and traversal benchmarks bulk-load fixtures through one lower-level
 transaction so setup time does not dominate indexed read measurements.
 The `tx_overlay_reads_*` group measures read transactions over existing committed
 data so whole-store materialization regressions are visible in Criterion output.
+It also includes dirty-overlay cases for a property lookup after a transaction
+local node update and a one-hop traversal after a transaction local relationship
+delete plus create.
 A 100,000-user Criterion suite is available through `scripts/benchmarks.sh stress`;
 it is intentionally opt-in and should be treated as a stress test, not the
 default benchmark scope.
@@ -94,6 +97,46 @@ This matters for insert benchmarks: the `insert_*` cases measure write cost
 without forcing the first later property-index rebuild. The `property_lookup_*`
 cases measure steady-state indexed reads after setup has already paid any lazy
 rebuild cost during warmup.
+
+## Transaction Overlay Read-View Snapshot
+
+The in-memory transaction overlay optimization should be validated with:
+
+```bash
+cargo bench --bench grm_vs_sqlite tx_overlay_reads_10k
+```
+
+On the benchmark run used for this PR, the 10,000-row overlay read cases moved:
+
+- `property_lookup_name_eq`: `1.4278 ms` before to `687.69 ns` after
+- `one_hop_outgoing_authored`: `355.38 ns` before to `350.93 ns` after
+- `graph_query_user_authored_post`: `459.27 us` before to `751.69 ns` after
+
+The dirty-overlay cases added with the optimization measured:
+
+- `property_lookup_after_tx_update`: `1.5906 us`
+- `one_hop_after_create_delete_overlay`: `847.03 ns`
+
+Numbers vary by machine and Criterion sample settings; the important signal is
+that property lookup and graph-query root selection no longer scale like
+whole-store scans inside a transaction.
+
+## Stress Bulk Insert Snapshot
+
+The 10,000-row insert stress comparison should be validated with:
+
+```bash
+GRM_BENCH_STRESS=1 cargo bench --bench grm_vs_sqlite insert_10k
+```
+
+On the same PR branch, the 10,000-user/post/authored-edge insert comparison was:
+
+- `grm_repo_bulk_transactions`: `60.282 ms`
+- `sqlite_in_memory_transaction`: `21.126 ms`
+
+Criterion reported no meaningful GRM insert change from the existing baseline
+(`-0.6232%` middle estimate). SQLite remains faster for this bulk insert shape,
+at roughly `2.9x` the GRM throughput.
 
 ## Planned Files
 
