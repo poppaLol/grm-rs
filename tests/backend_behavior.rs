@@ -23,6 +23,7 @@ async fn neo4j_backend_satisfies_shared_behavior_when_env_is_set() -> Result<()>
     let graph = Graph::new(&config.uri, &config.user, &config.password)
         .await
         .expect("connect Neo4j graph for cleanup");
+    // Comment cleanup calls while debugging if you want to inspect behavior-test data in Neo4j.
     cleanup_behavior_graph(&graph, &run_id).await;
 
     let backend = Neo4jBackend::connect(config)
@@ -37,6 +38,7 @@ async fn neo4j_backend_satisfies_shared_behavior_when_env_is_set() -> Result<()>
     )
     .await;
 
+    // Comment cleanup calls while debugging if you want to inspect behavior-test data in Neo4j.
     cleanup_behavior_graph(&graph, &run_id).await;
     result
 }
