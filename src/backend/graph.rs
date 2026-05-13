@@ -36,7 +36,8 @@ pub trait GraphTx {
     /// Execute GRM's kernel graph query.
     ///
     /// Row contract:
-    /// - each row is keyed by bound `VarId`
+    /// - each row is keyed by kernel `VarId`
+    /// - each row contains every variable returned by `GraphQuery::bound_vars()`
     /// - each row contains `GraphQuery::return_var()`
     /// - the returned value variant matches `GraphQuery::return_kind()`
     ///

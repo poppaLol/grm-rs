@@ -52,7 +52,10 @@ The current CLI is useful, but there are several major limitations:
 - autocommit appends change-log entries and checkpoints them into the session file
 - `session.compact` manually checkpoints the current autocommit target and clears the replay log
 - persistence still relies on snapshots plus a replay log rather than a backend-level WAL
-- the indexed in-memory transaction overlay/read-view is still incomplete; graph execution, traversal, deletes, and some scans can still fall back to snapshot-oriented or scan-heavy paths
+- the indexed in-memory transaction overlay/read-view now covers the shared
+  graph execution, traversal, property lookup, delete, rollback, and transaction
+  visibility contract, though future optimizer work can still improve planning
+  and cost behavior
 - lazy property indexes reduce write-time churn, but the first later property-indexed read can still pay the rebuild cost
 - runtime schema now has shared session abstractions used by CLI, MCP, and Python, but is not yet a deeper engine/backend-level schema abstraction
 - backend identity is exposed in more places, but session/query/binding paths are still mostly `i64`-centric
@@ -82,16 +85,20 @@ link here instead of copying the current/future ordering.
 14. Backend contract groundwork for query rows, transaction semantics, current
     `i64` backend IDs, lightweight capabilities, and minimal execution-plan
     vocabulary
+15. Shared backend behavior suite covering in-memory and ignored/env-gated
+    Neo4j runs, including CRUD, traversal direction semantics, transaction
+    visibility, rollback, delete visibility, row-shape mapping, and native
+    query support expectations
+16. Indexed in-memory transaction overlay/read-view coverage for graph
+    execution, traversal, property lookup, node/relationship deletes, rollback,
+    and commit visibility
 
 ### Now
 
-1. Finish the indexed in-memory transaction overlay/read-view beyond the current simple write paths
-2. Harden the live Neo4j backend path with shared in-memory/Neo4j behavior tests
-3. Expand the backend contract tests into reusable in-memory/Neo4j behavior suites
-4. Continue Python and MCP surface parity beyond the completed import/export, traversal, and batch work, especially around remaining schema/CRUD polish and shared error behavior
-5. Persistence durability improvements for the local in-memory backend, including safer autocommit and WAL evaluation
-6. Session-core cleanup and runtime/schema refactor prep
-7. Demo scenarios that show ORM-like typed usage, query-like workflows, and equivalent MCP workflows
+1. Continue Python and MCP surface parity beyond the completed import/export, traversal, and batch work, especially around remaining schema/CRUD polish and shared error behavior
+2. Persistence durability improvements for the local in-memory backend, including safer autocommit and WAL evaluation
+3. Session-core cleanup and runtime/schema refactor prep
+4. Demo scenarios that show ORM-like typed usage, query-like workflows, and equivalent MCP workflows
 
 ### Next
 
@@ -217,6 +224,35 @@ Current state:
 - this preserves read-your-writes semantics while reducing write-time index churn
 - insert benchmarks cover `250`, `1k`, and opt-in `10k` data sizes
 - `scripts/benchmarks.sh profile-insert` profiles the GRM bulk insert Criterion benchmark with flamegraph
+
+### Backend Behavior Tests
+
+Status:
+shared behavior groundwork completed for the current in-memory backend and the
+live Neo4j backend.
+
+The reusable backend behavior suite lives in `tests/common/backend_behavior.rs`
+and is wired through `tests/backend_behavior.rs`.
+
+Default local test runs do not require Neo4j:
+
+```bash
+cargo test --test backend_behavior
+```
+
+To run the ignored Neo4j behavior test, provide a Bolt endpoint and credentials:
+
+```bash
+NEO4J_URI=host.docker.internal:7687 \
+NEO4J_USER=neo4j \
+NEO4J_PASSWORD=... \
+cargo test --test backend_behavior neo4j_backend_satisfies_shared_behavior_when_env_is_set -- --ignored --nocapture
+```
+
+The Neo4j behavior test uses unique `grm_behavior_run_id` values and cleans up
+only its own smoke data. While debugging, the cleanup calls in
+`tests/backend_behavior.rs` can be commented out temporarily to inspect the
+test graph manually.
 
 Measured direction:
 
