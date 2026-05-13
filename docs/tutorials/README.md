@@ -6,10 +6,13 @@ The README is the front door for the project, and the roadmap explains where the
 project is going. Detailed command references and end-to-end walkthroughs should
 live here as the tutorial set grows.
 
+Available tutorials:
+
+- [CLI sessions](cli-session.md): define schema, create data, traverse,
+  explain/profile, save, and export
+
 Planned tutorials:
 
-- CLI sessions: define schema, create data, traverse, explain/profile, save, and
-  load
 - Rust typed models: derives, repositories, typed IDs, transactions, and
   traversal
 - Python sessions: runtime schema and graph workflows
