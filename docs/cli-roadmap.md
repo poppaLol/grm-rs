@@ -28,6 +28,11 @@ The `grm session` CLI already supports a useful local workflow:
   - `format=jsonl`
   - `format=table`
   - `format=graph`
+- first-phase query introspection:
+  - `session.explain node.find <ModelName> [terms...]`
+  - `session.explain edge.find <LinkName> [terms...]`
+  - `session.profile node.find <ModelName> [terms...]`
+  - `session.profile edge.find <LinkName> [terms...]`
 - traversal-oriented `node.find` queries with chained `via=...` hops
 - coloured CLI output and improved script summaries
 - in-memory lookup indexes for labels, properties, relationship types, and adjacency
@@ -41,9 +46,11 @@ This means a user can now:
 2. create and query data interactively
 3. traverse related persisted data from the session query surface
 4. choose between default, `jsonl`, `table`, and `graph` find output
-5. get colour-aware interactive output on supported terminals
-6. reload later with schema and data ready to use
-7. rely on indexed local lookup paths while keeping insert performance measurable
+5. inspect the current logical plan for CLI find queries without running them
+6. profile CLI find queries with plan, result count, and total elapsed time
+7. get colour-aware interactive output on supported terminals
+8. reload later with schema and data ready to use
+9. rely on indexed local lookup paths while keeping insert performance measurable
 
 ## Current Drawbacks
 
@@ -92,6 +99,8 @@ link here instead of copying the current/future ordering.
 16. Indexed in-memory transaction overlay/read-view coverage for graph
     execution, traversal, property lookup, node/relationship deletes, rollback,
     and commit visibility
+17. First-phase CLI `session.explain` and `session.profile` for current
+    `node.find` and `edge.find` query shapes
 
 ### Now
 

@@ -166,6 +166,26 @@ pub enum PlanStepKind {
         id: Option<i64>,
         keys: Vec<String>,
     },
+    RelationshipById {
+        var: VarId,
+        rel_type: String,
+        id: i64,
+    },
+    RelationshipTypeScan {
+        var: VarId,
+        rel_type: String,
+    },
+    RelationshipEndpointSeek {
+        var: VarId,
+        rel_type: String,
+        from: Option<i64>,
+        to: Option<i64>,
+    },
+    RelationshipFilter {
+        var: VarId,
+        rel_type: String,
+        keys: Vec<String>,
+    },
     ExpandOut {
         from: VarId,
         rel: VarId,
@@ -227,6 +247,49 @@ impl fmt::Display for PlanStepKind {
                 if let Some(id) = id {
                     write!(f, " id={id}")?;
                 }
+                if !keys.is_empty() {
+                    write!(f, " {}", keys.join(","))?;
+                }
+                Ok(())
+            }
+            Self::RelationshipById { var, rel_type, id } => {
+                write!(
+                    f,
+                    "RelationshipById {} :{} id={}",
+                    fmt_var(*var),
+                    rel_type,
+                    id
+                )
+            }
+            Self::RelationshipTypeScan { var, rel_type } => {
+                write!(f, "RelationshipTypeScan {} :{}", fmt_var(*var), rel_type)
+            }
+            Self::RelationshipEndpointSeek {
+                var,
+                rel_type,
+                from,
+                to,
+            } => {
+                write!(
+                    f,
+                    "RelationshipEndpointSeek {} :{}",
+                    fmt_var(*var),
+                    rel_type
+                )?;
+                if let Some(from) = from {
+                    write!(f, " from={from}")?;
+                }
+                if let Some(to) = to {
+                    write!(f, " to={to}")?;
+                }
+                Ok(())
+            }
+            Self::RelationshipFilter {
+                var,
+                rel_type,
+                keys,
+            } => {
+                write!(f, "RelationshipFilter {} :{}", fmt_var(*var), rel_type)?;
                 if !keys.is_empty() {
                     write!(f, " {}", keys.join(","))?;
                 }

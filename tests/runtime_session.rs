@@ -845,6 +845,124 @@ async fn node_find_traversal_supports_edge_filters_and_return_edge() {
 }
 
 #[tokio::test]
+async fn session_explain_node_find_renders_flat_logical_plan_without_mutating() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nsession.explain node.find User name=Alice\nnode.find User\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (state, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert_eq!(
+        state.find_nodes("User", &Default::default()).unwrap().len(),
+        1
+    );
+    assert!(output.contains("Current logical plan for node.find User"));
+    assert!(output.contains("NodePropertySeek v0 User.name"));
+    assert!(output.contains("Return Node v0"));
+    assert!(output.contains("1 nodes matched model 'User'."));
+}
+
+#[tokio::test]
+async fn session_explain_node_find_renders_traversal_logical_plan() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain node.find User name=Alice via=out:Authored:Post\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Current logical plan for node.find User"));
+    assert!(output.contains("NodeLabelScan v0 User"));
+    assert!(output.contains("ExpandOut v0 -[v1:Authored]-> v2"));
+    assert!(output.contains("NodeFilter v0 User name"));
+    assert!(output.contains("Return Node v2"));
+}
+
+#[tokio::test]
+async fn session_profile_node_find_reports_count_and_elapsed_time() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nnode.create User name=Bob\nsession.profile node.find User name=Alice\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Profile for node.find User"));
+    assert!(output.contains("NodePropertySeek v0 User.name"));
+    assert!(output.contains("Result rows: 1"));
+    assert!(output.contains("Elapsed: "));
+    assert!(output.contains("Per-step metrics: not available"));
+}
+
+#[tokio::test]
+async fn session_explain_and_profile_edge_find_render_logical_plan() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain edge.find Authored from=1\nsession.profile edge.find Authored from=1\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Current logical plan for edge.find Authored"));
+    assert!(output.contains("RelationshipEndpointSeek v0 :Authored from=1"));
+    assert!(output.contains("Return Rel v0"));
+    assert!(output.contains("Profile for edge.find Authored"));
+    assert!(output.contains("Result rows: 1"));
+    assert!(output.contains("Elapsed: "));
+}
+
+#[tokio::test]
+async fn session_explain_edge_find_property_filter_uses_type_scan_then_filter() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain edge.find Authored year=2024\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("RelationshipTypeScan v0 :Authored"));
+    assert!(output.contains("RelationshipFilter v0 :Authored year"));
+    assert!(!output.contains("RelationshipPropertySeek"));
+}
+
+#[tokio::test]
+async fn session_explain_rejects_format_terms() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nsession.explain node.find User format=jsonl\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("format= is not supported with session.explain or session.profile"));
+}
+
+#[tokio::test]
 async fn node_find_supports_jsonl_format() {
     let input = Cursor::new(
         "model.define User userId name:string:required age:int:required\nnode.create User name=Alice age=42\nnode.find User age>=21 format=jsonl\nsession.exit\n",
