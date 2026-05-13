@@ -97,6 +97,54 @@ fn parser_builds_structured_edge_find_terms() {
 }
 
 #[test]
+fn parser_builds_session_explain_node_find_command() {
+    let command = parse_command_line(
+        r#"session.explain node.find User name="Alice Jones" via=out:Authored:Post"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        command,
+        SessionCommand::SessionExplainNodeFind {
+            model_name: "User".into(),
+            terms: vec![
+                QueryTerm {
+                    key: "name".into(),
+                    value: "Alice Jones".into(),
+                },
+                QueryTerm {
+                    key: "via".into(),
+                    value: "out:Authored:Post".into(),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
+fn parser_builds_session_profile_edge_find_command() {
+    let command =
+        parse_command_line("session.profile edge.find Authored from=1 year>=2024").unwrap();
+
+    assert_eq!(
+        command,
+        SessionCommand::SessionProfileEdgeFind {
+            model_name: "Authored".into(),
+            terms: vec![
+                QueryTerm {
+                    key: "from".into(),
+                    value: "1".into(),
+                },
+                QueryTerm {
+                    key: "year>=".into(),
+                    value: "2024".into(),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
 fn parser_preserves_multi_field_order_term_as_single_query_control() {
     let command = parse_command_line("node.find User active=true order=age:desc,name:asc").unwrap();
 

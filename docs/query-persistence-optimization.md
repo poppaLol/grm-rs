@@ -70,34 +70,41 @@ implementation understandable.
 
 ## Explain And Profile
 
-GRM should grow `session.explain` and `session.profile` style introspection for
-query execution.
+GRM now has first-phase `session.explain` and `session.profile` introspection
+for the current CLI `node.find` and `edge.find` query shapes.
 
 Current groundwork is intentionally internal: backend contracts now document the
 `QueryResult`/`QueryRow` shape, transaction visibility expectations, practical
 error categories, current backend-assigned `i64` IDs, and lightweight capability
 hints. A small execution-plan vocabulary (`NodeById`, `NodeLabelScan`,
 `NodePropertySeek`, `NodeCheck`, `NodeFilter`, `ExpandOut`, `ExpandIn`,
-`ExpandBoth`, `Return`) gives later planner and profile work stable words to use
-in tests and logs. This does not add CLI `session.explain` or
-`session.profile` commands yet.
+`ExpandBoth`, `Return`) gives planner and profile work stable words to use in
+tests and logs. The edge find surface also uses relationship-oriented logical
+steps such as `RelationshipEndpointSeek`, `RelationshipTypeScan`,
+`RelationshipFilter`, and `RelationshipById`.
 
-`session.explain` should show the selected logical or physical plan without
-running the query. `session.profile` should run the query and report
-per-operator row counts and timings.
+`session.explain` shows the current logical plan without running the query.
+`session.profile` runs the same query path as `node.find` or `edge.find` and
+reports the plan, result row count, and total elapsed time. Per-operator row
+counts and timings are intentionally future work; this is not a cost-based
+optimizer and does not reorder hops.
 
 Example shape for the current CLI query language:
 
 ```text
 session.profile node.find User name="user-000500" via=out:Authored:Post
 
-Plan:
-1. NodeIndexSeek User.name = "user-000500"   rows=1   time=1.2us
-2. ExpandOut Authored                        rows=1   time=0.4us
-3. NodeById Post                             rows=1   time=0.7us
-4. Return Node                               rows=1   time=0.2us
+Profile for node.find User
+Plan steps:
+  1. NodeLabelScan v0 User
+  2. ExpandOut v0 -[v1:Authored]-> v2
+  3. NodeCheck v2 Post
+  4. NodeFilter v0 User name
+  5. Return Node v2
 
-Total: 2.8us
+Result rows: 1
+Elapsed: 1.234ms
+Per-step metrics: not available in this first-phase profile.
 ```
 
 This gives users a way to understand query behavior and gives maintainers a way
@@ -207,8 +214,10 @@ Regression checks:
 
 1. Define a compact internal plan representation for CLI queries, `GraphQuery`,
    and future Cypher-like input.
-2. Add `session.explain` for plan inspection.
-3. Add `session.profile` with per-operator row counts and timings.
+2. Add `session.explain` for plan inspection. Complete for current CLI
+   `node.find` and `edge.find` shapes.
+3. Add `session.profile` with plan, result count, and total elapsed time.
+   Per-operator row counts and timings remain future work.
 4. Implement simple cost-based anchor selection and hop ordering.
 5. Add non-materializing aggregation operators for counts and degree queries.
 6. Finish indexed transaction overlay/read-view paths that avoid whole-store
