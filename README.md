@@ -85,15 +85,15 @@ In the CLI, the same shape can be explored at runtime:
 ```text
 model.define User userId name:string:required
 model.define Post postId title:string:required
-link.define Authored User Post authoredId year:int:required
+link.define AUTHORED User Post authoredId year:int:required
 
 node.create User name="Alice"
 node.create Post title="Graph Notes"
-edge.create Authored from=1 to=2 year=2026
+edge.create AUTHORED from=1 to=2 year=2026
 
-node.find User name=Alice via=out:Authored:Post
-session.explain node.find User name=Alice via=out:Authored:Post
-session.profile node.find User name=Alice via=out:Authored:Post
+node.find User name=Alice via=out:AUTHORED:Post
+session.explain node.find User name=Alice via=out:AUTHORED:Post
+session.profile node.find User name=Alice via=out:AUTHORED:Post
 ```
 
 The CLI can save and reload a workspace, export interchange JSON, and run
