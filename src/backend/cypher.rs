@@ -2,9 +2,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::dsl::{
-    CompareOp, Direction, GraphQuery, MatchClause, NodeMatch, PropertyFilter, Return, VarId,
-};
+use crate::dsl::{CompareOp, Direction, GraphQuery, MatchClause, NodeMatch, PropertyFilter, VarId};
 use crate::{GrmError, Result};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,9 +33,14 @@ pub fn graph_query_to_cypher(q: &GraphQuery) -> Result<CypherQuery> {
     let node_matches = collect_node_matches(q);
     let pattern = build_match_pattern(q, &node_matches)?;
     let predicates = build_predicates(q, &node_matches, &mut translator);
-    let return_clause = match q.ret {
-        Return::Node(var) | Return::Rel(var) => format!("RETURN {}", var_name(var)),
-    };
+    let return_clause = format!(
+        "RETURN {}",
+        q.bound_vars()
+            .into_iter()
+            .map(var_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     let mut text = format!("MATCH {pattern}");
     if !predicates.is_empty() {

@@ -329,19 +329,46 @@ impl Neo4jTx {
 }
 
 fn graph_query_row(q: &GraphQuery, row: Row) -> Result<QueryRow> {
-    let (var, value) = match q.ret {
+    let rel_vars = q
+        .matches
+        .iter()
+        .filter_map(|clause| match clause {
+            crate::dsl::MatchClause::Hop(hop) => Some(hop.rel_var),
+            crate::dsl::MatchClause::Node(_) => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let mut values = BTreeMap::new();
+    for var in q.bound_vars() {
+        let name = var_name(var);
+        let value = if rel_vars.contains(&var) {
+            let rel: Relation = row.get(&name).map_err(neo4j_value_err)?;
+            KernelValue::Rel(rel_value(rel)?)
+        } else {
+            let node: Node = row.get(&name).map_err(neo4j_value_err)?;
+            KernelValue::Node(node_value(node)?)
+        };
+        values.insert(var, value);
+    }
+
+    match q.ret {
         Return::Node(var) => {
-            let node: Node = row.get(&var_name(var)).map_err(neo4j_value_err)?;
-            (var, KernelValue::Node(node_value(node)?))
+            if !matches!(values.get(&var), Some(KernelValue::Node(_))) {
+                return Err(GrmError::Mapping(format!(
+                    "Neo4j GraphQuery row return var {var:?} was not a node"
+                )));
+            }
         }
         Return::Rel(var) => {
-            let rel: Relation = row.get(&var_name(var)).map_err(neo4j_value_err)?;
-            (var, KernelValue::Rel(rel_value(rel)?))
+            if !matches!(values.get(&var), Some(KernelValue::Rel(_))) {
+                return Err(GrmError::Mapping(format!(
+                    "Neo4j GraphQuery row return var {var:?} was not a relationship"
+                )));
+            }
         }
-    };
-    Ok(QueryRow {
-        values: BTreeMap::from([(var, value)]),
-    })
+    }
+
+    Ok(QueryRow { values })
 }
 
 fn single_value_row(row: Row) -> Result<QueryRow> {

@@ -91,7 +91,7 @@ fn translates_one_hop_outgoing_traversal_returning_end_node() {
 
     assert_eq!(
         cypher.text,
-        "MATCH (v0:`User`)-[v1:`AUTHORED`]->(v2:`Post`) WHERE v0.`name` CONTAINS $p0 AND v2.`title` <> $p1 RETURN v2"
+        "MATCH (v0:`User`)-[v1:`AUTHORED`]->(v2:`Post`) WHERE v0.`name` CONTAINS $p0 AND v2.`title` <> $p1 RETURN v0, v1, v2"
     );
     assert_eq!(
         cypher.params,
@@ -137,7 +137,7 @@ fn translates_incoming_any_relationship_returning_relationship() {
 
     assert_eq!(
         cypher.text,
-        "MATCH (v0:`Post`)<-[v1]-(v2:`User`) RETURN v1 LIMIT 3"
+        "MATCH (v0:`Post`)<-[v1]-(v2:`User`) RETURN v0, v1, v2 LIMIT 3"
     );
     assert_eq!(cypher.params, params([]));
 }
