@@ -3,8 +3,11 @@ use std::fs;
 use std::io::Cursor;
 
 use grm_rs::{
-    BackendIdType, CliSession, QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
-    RuntimeValueType, SessionModelCatalog, SessionState,
+    BackendIdType, BatchRequest, CliSession, DefineEdgeRequest, DefineNodeRequest, EdgeFindRequest,
+    ExplainRequest, FieldSpec, FieldValueType, GraphTx, NodeFindRequest, PredicateOp,
+    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, RuntimeValueType, SessionBatchResponse, SessionFindResult,
+    SessionModelCatalog, SessionState, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
 use serde_json::{Value, json};
 
@@ -939,6 +942,228 @@ async fn session_state_explain_and_profile_return_structured_values() {
     assert!(profile["elapsed"]["micros"].as_u64().is_some());
     assert!(profile["elapsed"]["display"].as_str().is_some());
     assert!(profile["per_step_metrics"].is_null());
+}
+
+#[tokio::test]
+async fn typed_node_find_traversal_matches_cli_terms_and_supports_introspection() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create User name=Bob\nnode.create Post title=Hello\nedge.create Authored from=1 to=3 year=2024\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (state, _, _) = session.into_parts();
+    let typed = NodeFindRequest {
+        model: "User".to_string(),
+        predicates: vec![PropertyPredicate {
+            field: "name".to_string(),
+            op: PredicateOp::Eq,
+            value: json!("Alice"),
+        }],
+        traversals: vec![TraversalStepRequest {
+            direction: TraversalDirection::Out,
+            edge_model: Some("Authored".to_string()),
+            end_model: "Post".to_string(),
+        }],
+        return_mode: Some(TraversalReturn::End),
+        ..Default::default()
+    };
+    let terms = vec![
+        QueryTerm {
+            key: "name".to_string(),
+            value: "Alice".to_string(),
+        },
+        QueryTerm {
+            key: "via".to_string(),
+            value: "out:Authored:Post".to_string(),
+        },
+    ];
+
+    let typed_rows = match state.node_find(typed.clone()).await.unwrap() {
+        SessionFindResult::Nodes(nodes) => nodes,
+        SessionFindResult::Edges(_) => panic!("expected node rows"),
+    };
+    let cli_rows = match state.find_nodes_with_terms("User", &terms).await.unwrap() {
+        SessionFindResult::Nodes(nodes) => nodes,
+        SessionFindResult::Edges(_) => panic!("expected node rows"),
+    };
+    assert_eq!(typed_rows.len(), cli_rows.len());
+    assert_eq!(typed_rows[0].id, cli_rows[0].id);
+    assert_eq!(typed_rows[0].props, cli_rows[0].props);
+    assert_eq!(typed_rows[0].props["title"], json!("Hello"));
+
+    let typed_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(typed.clone()),
+        })
+        .unwrap();
+    let cli_explain = state.explain_node_find_terms("User", &terms).unwrap();
+    assert_eq!(typed_explain["plan"], cli_explain["plan"]);
+
+    let profile = state
+        .profile(ProfileRequest {
+            query: QueryRequest::NodeFind(typed),
+        })
+        .await
+        .unwrap();
+    assert_eq!(profile["command"], "node.find");
+    assert_eq!(profile["result_rows"], 1);
+}
+
+#[tokio::test]
+async fn typed_node_find_allows_format_as_model_property() {
+    let mut state = SessionState::new();
+    state
+        .define_node(DefineNodeRequest {
+            name: "Document".to_string(),
+            id_field: "documentId".to_string(),
+            fields: vec![FieldSpec {
+                name: "format".to_string(),
+                value_type: FieldValueType::String,
+                required: true,
+            }],
+        })
+        .unwrap();
+    state
+        .create_instance(
+            "Document",
+            &BTreeMap::from([("format".to_string(), "jsonl".to_string())]),
+        )
+        .await
+        .unwrap();
+
+    let rows = match state
+        .node_find(NodeFindRequest {
+            model: "Document".to_string(),
+            predicates: vec![PropertyPredicate {
+                field: "format".to_string(),
+                op: PredicateOp::Eq,
+                value: json!("jsonl"),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+    {
+        SessionFindResult::Nodes(nodes) => nodes,
+        SessionFindResult::Edges(_) => panic!("expected node rows"),
+    };
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].props["format"], json!("jsonl"));
+}
+
+#[tokio::test]
+async fn typed_edge_find_allows_from_and_to_as_relationship_properties() {
+    let mut state = SessionState::new();
+    state
+        .define_node(DefineNodeRequest {
+            name: "User".to_string(),
+            id_field: "userId".to_string(),
+            fields: vec![],
+        })
+        .unwrap();
+    state
+        .define_node(DefineNodeRequest {
+            name: "Post".to_string(),
+            id_field: "postId".to_string(),
+            fields: vec![],
+        })
+        .unwrap();
+    state
+        .define_edge(DefineEdgeRequest {
+            name: "Authored".to_string(),
+            from_model: "User".to_string(),
+            to_model: "Post".to_string(),
+            id_field: "authoredId".to_string(),
+            fields: vec![FieldSpec {
+                name: "from".to_string(),
+                value_type: FieldValueType::String,
+                required: true,
+            }],
+        })
+        .unwrap();
+
+    let user = state
+        .create_instance("User", &BTreeMap::new())
+        .await
+        .unwrap();
+    let post = state
+        .create_instance("Post", &BTreeMap::new())
+        .await
+        .unwrap();
+    let mut tx = state.client().transaction().await.unwrap();
+    tx.tx_mut()
+        .unwrap()
+        .create_relationship(
+            user.id,
+            post.id,
+            "Authored",
+            BTreeMap::from([("from".to_string(), json!("imported"))]),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let property_rows = state
+        .edge_find(EdgeFindRequest {
+            model: "Authored".to_string(),
+            predicates: vec![PropertyPredicate {
+                field: "from".to_string(),
+                op: PredicateOp::Eq,
+                value: json!("imported"),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(property_rows.len(), 1);
+    assert_eq!(property_rows[0].props["from"], json!("imported"));
+
+    let endpoint_rows = state
+        .edge_find(EdgeFindRequest {
+            model: "Authored".to_string(),
+            from: Some(user.id),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(endpoint_rows.len(), 1);
+}
+
+#[test]
+fn typed_schema_requests_use_stable_field_json_shape() {
+    let value = serde_json::to_value(DefineNodeRequest {
+        name: "User".to_string(),
+        id_field: "userId".to_string(),
+        fields: vec![FieldSpec {
+            name: "age".to_string(),
+            value_type: FieldValueType::Int,
+            required: false,
+        }],
+    })
+    .unwrap();
+
+    assert_eq!(value["fields"][0]["name"], json!("age"));
+    assert_eq!(value["fields"][0]["type"], json!("int"));
+    assert!(value["fields"][0].get("value_type").is_none());
+}
+
+#[test]
+fn typed_batch_request_has_flat_ordered_batch_shape() {
+    let value = serde_json::to_value(BatchRequest {
+        atomic: true,
+        allow_deletes: false,
+        response: SessionBatchResponse::Summary,
+        ops: vec![],
+    })
+    .unwrap();
+
+    assert_eq!(value["atomic"], json!(true));
+    assert_eq!(value["allow_deletes"], json!(false));
+    assert_eq!(value["response"], json!("summary"));
+    assert!(value["ops"].as_array().is_some());
+    assert!(value["ops"].get("ops").is_none());
 }
 
 #[tokio::test]
