@@ -8,9 +8,11 @@ use std::path::PathBuf;
 
 use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
 use grm_rs::{
-    apply_session_batch, GraphClient, Neo4jBackend, Neo4jConfig, QueryTerm, RuntimeField,
-    RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionBatchParams, SessionFindResult,
-    SessionModelCatalog, SessionState, StoredNode, StoredRel,
+    apply_session_batch, ExplainRequest, GraphClient, Neo4jBackend, Neo4jConfig, NodeFindRequest,
+    OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
+    QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
+    SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState, StoredNode,
+    StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -261,7 +263,8 @@ impl PySession {
             return Ok(items.into());
         }
 
-        let terms = build_node_find_terms(
+        let request = build_node_find_request(
+            model_name,
             filters,
             via,
             end_filters,
@@ -271,7 +274,7 @@ impl PySession {
             limit,
             offset,
         )?;
-        let result = block_on(py, self.state.find_nodes_with_terms(model_name, &terms))?;
+        let result = block_on(py, self.state.node_find(request))?;
         let items = PyList::empty_bound(py);
         match result {
             SessionFindResult::Nodes(nodes) => {
@@ -306,7 +309,8 @@ impl PySession {
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> PyResult<PyObject> {
-        let terms = build_node_find_terms(
+        let request = build_node_find_request(
+            model_name,
             filters,
             via,
             end_filters,
@@ -318,7 +322,9 @@ impl PySession {
         )?;
         let value = self
             .state
-            .explain_node_find_terms(model_name, &terms)
+            .explain(ExplainRequest {
+                query: QueryRequest::NodeFind(request),
+            })
             .map_err(grm_err)?;
         json_value_to_py(py, &value)
     }
@@ -341,7 +347,8 @@ impl PySession {
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> PyResult<PyObject> {
-        let terms = build_node_find_terms(
+        let request = build_node_find_request(
+            model_name,
             filters,
             via,
             end_filters,
@@ -351,7 +358,12 @@ impl PySession {
             limit,
             offset,
         )?;
-        let value = block_on(py, self.state.profile_node_find_terms(model_name, &terms))?;
+        let value = block_on(
+            py,
+            self.state.profile(ProfileRequest {
+                query: QueryRequest::NodeFind(request),
+            }),
+        )?;
         json_value_to_py(py, &value)
     }
 
@@ -817,7 +829,8 @@ fn extract_string_map(input: Option<&Bound<'_, PyDict>>) -> PyResult<BTreeMap<St
     clippy::too_many_arguments,
     reason = "keeps Python node_find keyword handling explicit and close to the PyO3 signature"
 )]
-fn build_node_find_terms(
+fn build_node_find_request(
+    model_name: &str,
     filters: Option<&Bound<'_, PyDict>>,
     via: Option<&Bound<'_, PyAny>>,
     end_filters: Option<&Bound<'_, PyDict>>,
@@ -826,64 +839,55 @@ fn build_node_find_terms(
     order: Option<&str>,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> PyResult<Vec<QueryTerm>> {
-    let mut terms = Vec::new();
-    append_filter_terms(&mut terms, "", filters)?;
-    append_via_terms(&mut terms, via)?;
-    append_filter_terms(&mut terms, "end.", end_filters)?;
-    append_filter_terms(&mut terms, "edge.", edge_filters)?;
-
-    if let Some(return_) = return_ {
-        terms.push(QueryTerm {
-            key: "return".to_string(),
-            value: return_.to_string(),
-        });
-    }
-    if let Some(order) = order {
-        terms.push(QueryTerm {
-            key: "order".to_string(),
-            value: order.to_string(),
-        });
-    }
-    if let Some(limit) = limit {
-        terms.push(QueryTerm {
-            key: "limit".to_string(),
-            value: limit.to_string(),
-        });
-    }
-    if let Some(offset) = offset {
-        terms.push(QueryTerm {
-            key: "offset".to_string(),
-            value: offset.to_string(),
-        });
-    }
-
-    Ok(terms)
+) -> PyResult<NodeFindRequest> {
+    Ok(NodeFindRequest {
+        model: model_name.to_string(),
+        predicates: collect_filter_predicates(filters)?,
+        end_predicates: collect_filter_predicates(end_filters)?,
+        edge_predicates: collect_filter_predicates(edge_filters)?,
+        traversals: collect_via_steps(via)?,
+        order: parse_python_order(order)?,
+        limit,
+        offset,
+        id: None,
+        return_mode: return_.map(parse_python_return).transpose()?,
+    })
 }
 
-fn append_filter_terms(
-    terms: &mut Vec<QueryTerm>,
-    prefix: &str,
+fn collect_filter_predicates(
     filters: Option<&Bound<'_, PyDict>>,
-) -> PyResult<()> {
-    for (key, value) in extract_string_map(filters)? {
-        terms.push(QueryTerm {
-            key: format!("{prefix}{key}"),
-            value,
+) -> PyResult<Vec<PropertyPredicate>> {
+    let mut predicates = Vec::new();
+    let Some(filters) = filters else {
+        return Ok(predicates);
+    };
+
+    for (key, value) in filters {
+        let raw_key = key
+            .extract::<String>()
+            .map_err(|_| PyTypeError::new_err("mapping keys must be strings"))?;
+        let (field, op) = split_python_predicate_key(&raw_key)?;
+        predicates.push(PropertyPredicate {
+            field: field.to_string(),
+            op,
+            value: py_any_to_json_value(&value)?,
         });
     }
-    Ok(())
+    Ok(predicates)
 }
 
 fn build_terms_from_filters(filters: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<QueryTerm>> {
     let mut terms = Vec::new();
-    append_filter_terms(&mut terms, "", filters)?;
+    for (key, value) in extract_string_map(filters)? {
+        terms.push(QueryTerm { key, value });
+    }
     Ok(terms)
 }
 
-fn append_via_terms(terms: &mut Vec<QueryTerm>, via: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+fn collect_via_steps(via: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<TraversalStepRequest>> {
+    let mut steps = Vec::new();
     let Some(via) = via else {
-        return Ok(());
+        return Ok(steps);
     };
 
     for item in via.iter().map_err(|_| {
@@ -896,13 +900,84 @@ fn append_via_terms(terms: &mut Vec<QueryTerm>, via: Option<&Bound<'_, PyAny>>) 
         let direction = required_traversal_string(step, "dir")?;
         let link = required_traversal_string(step, "link")?;
         let model = required_traversal_string(step, "model")?;
-        terms.push(QueryTerm {
-            key: "via".to_string(),
-            value: format!("{direction}:{link}:{model}"),
+        steps.push(TraversalStepRequest {
+            direction: parse_python_direction(&direction)?,
+            edge_model: if link == "*" { None } else { Some(link) },
+            end_model: model,
         });
     }
 
-    Ok(())
+    Ok(steps)
+}
+
+fn split_python_predicate_key(raw_key: &str) -> PyResult<(&str, PredicateOp)> {
+    for (suffix, op) in [
+        ("!", PredicateOp::Ne),
+        (">=", PredicateOp::Ge),
+        ("<=", PredicateOp::Le),
+        (">", PredicateOp::Gt),
+        ("<", PredicateOp::Lt),
+        ("~", PredicateOp::Contains),
+    ] {
+        if let Some(field) = raw_key.strip_suffix(suffix) {
+            if !field.is_empty() {
+                return Ok((field, op));
+            }
+        }
+    }
+    Ok((raw_key, PredicateOp::Eq))
+}
+
+fn parse_python_direction(raw: &str) -> PyResult<TraversalDirection> {
+    match raw {
+        "out" | "outgoing" => Ok(TraversalDirection::Out),
+        "in" | "incoming" => Ok(TraversalDirection::In),
+        "both" => Ok(TraversalDirection::Both),
+        _ => Err(PyTypeError::new_err(
+            "via direction must be one of: out, in, both",
+        )),
+    }
+}
+
+fn parse_python_return(raw: &str) -> PyResult<TraversalReturn> {
+    match raw {
+        "end" => Ok(TraversalReturn::End),
+        "root" => Ok(TraversalReturn::Root),
+        "edge" | "rel" => Ok(TraversalReturn::Edge),
+        _ => Err(PyTypeError::new_err(
+            "return must be one of: root, end, edge",
+        )),
+    }
+}
+
+fn parse_python_order(raw: Option<&str>) -> PyResult<Vec<OrderSpec>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut order = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for segment in raw.split(',') {
+        let Some((field, direction)) = segment.split_once(':') else {
+            return Err(PyTypeError::new_err(
+                "order must use order=<field>:asc|desc[,<field>:asc|desc ...]",
+            ));
+        };
+        if !seen.insert(field.to_string()) {
+            return Err(PyTypeError::new_err(format!(
+                "duplicate order field '{field}'"
+            )));
+        }
+        let direction = match direction {
+            "asc" => OrderDirection::Asc,
+            "desc" => OrderDirection::Desc,
+            _ => return Err(PyTypeError::new_err("order direction must be asc or desc")),
+        };
+        order.push(OrderSpec {
+            field: field.to_string(),
+            direction,
+        });
+    }
+    Ok(order)
 }
 
 fn required_traversal_string(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<String> {
