@@ -823,6 +823,33 @@ impl SessionState {
         }
     }
 
+    pub fn explain_node_find_terms(&self, model_name: &str, terms: &[QueryTerm]) -> Result<Value> {
+        reject_introspection_format_terms(terms)?;
+        let query = self.parse_node_find_terms(model_name, terms)?;
+        let plan = self.explain_node_find_query(model_name, &query)?;
+        Ok(explain_value("node.find", model_name, &plan))
+    }
+
+    pub async fn profile_node_find_terms(
+        &self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> Result<Value> {
+        reject_introspection_format_terms(terms)?;
+        let query = self.parse_node_find_terms(model_name, terms)?;
+        let plan = self.explain_node_find_query(model_name, &query)?;
+        let started = Instant::now();
+        let result = self.execute_node_query(model_name, &query).await?;
+        let elapsed = started.elapsed();
+        Ok(profile_value(
+            "node.find",
+            model_name,
+            &plan,
+            result.row_count(),
+            elapsed,
+        ))
+    }
+
     fn find_nodes_with_query(
         &self,
         model_name: &str,
@@ -1024,6 +1051,31 @@ impl SessionState {
     ) -> Result<Vec<StoredRel>> {
         let query = self.parse_edge_find_query(model_name, filters)?;
         self.find_relationships_with_query(model_name, &query)
+    }
+
+    pub fn explain_edge_find_terms(&self, model_name: &str, terms: &[QueryTerm]) -> Result<Value> {
+        reject_introspection_format_terms(terms)?;
+        let filters = collect_query_terms(terms);
+        let query = self.parse_edge_find_query(model_name, &filters)?;
+        let plan = self.explain_edge_find_query(model_name, &query)?;
+        Ok(explain_value("edge.find", model_name, &plan))
+    }
+
+    pub fn profile_edge_find_terms(&self, model_name: &str, terms: &[QueryTerm]) -> Result<Value> {
+        reject_introspection_format_terms(terms)?;
+        let filters = collect_query_terms(terms);
+        let query = self.parse_edge_find_query(model_name, &filters)?;
+        let plan = self.explain_edge_find_query(model_name, &query)?;
+        let started = Instant::now();
+        let rels = self.find_relationships_with_query(model_name, &query)?;
+        let elapsed = started.elapsed();
+        Ok(profile_value(
+            "edge.find",
+            model_name,
+            &plan,
+            rels.len(),
+            elapsed,
+        ))
     }
 
     fn find_relationships_with_query(
@@ -5070,6 +5122,45 @@ fn reject_introspection_format_terms(terms: &[QueryTerm]) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn explain_value(command: &str, target: &str, plan: &ExecutionPlan) -> Value {
+    json!({
+        "command": command,
+        "target": target,
+        "plan": plan_value(plan),
+    })
+}
+
+fn profile_value(
+    command: &str,
+    target: &str,
+    plan: &ExecutionPlan,
+    row_count: usize,
+    elapsed: Duration,
+) -> Value {
+    json!({
+        "command": command,
+        "target": target,
+        "plan": plan_value(plan),
+        "result_rows": row_count,
+        "elapsed": {
+            "micros": elapsed.as_micros(),
+            "display": format_profile_duration(elapsed),
+        },
+        "per_step_metrics": null,
+    })
+}
+
+fn plan_value(plan: &ExecutionPlan) -> Value {
+    json!({
+        "steps": plan
+            .steps
+            .iter()
+            .map(|step| step.to_string())
+            .collect::<Vec<_>>(),
+        "text": plan.to_string(),
+    })
 }
 
 fn format_profile_duration(duration: Duration) -> String {
