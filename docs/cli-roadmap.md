@@ -69,10 +69,17 @@ Related notes:
 evolving quickly. The next architecture step is to move stable semantics into
 shared runtime/session modules that Python and MCP can use directly.
 
+The future service boundary should be typed graph operations, not CLI command
+text. CLI commands can remain a human-friendly adapter, and Python or MCP may
+parse text where that is ergonomic, but shared runtime semantics should be
+expressed as structured schema, CRUD, traversal/query, explain/profile, batch,
+and durability/admin request objects.
+
 Near-term work:
 
 - separate command routing from session/domain behavior
 - make runtime schema a stronger library concept
+- route adapters through typed runtime requests wherever practical
 - keep parser, rendering, persistence, import/export, and batch semantics in
   clearer modules
 - preserve the CLI's dotted command style while reducing CLI-specific coupling

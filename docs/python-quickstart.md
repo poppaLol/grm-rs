@@ -26,6 +26,11 @@ maturin develop
 
 `maturin develop` compiles the Rust extension and installs it into the active virtualenv, so `import grm_rs` works immediately in that environment.
 
+Python methods are adapter conveniences over GRM's shared typed runtime
+operations. In particular, structured `node_find(...)` traversal and
+`explain_node_find(...)`/`profile_node_find(...)` calls are represented inside
+the runtime as typed request objects rather than CLI command strings.
+
 ## Use The Extension From Python
 
 Example:
