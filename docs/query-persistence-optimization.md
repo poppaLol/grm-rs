@@ -180,6 +180,44 @@ Persistence should stay honest about its durability class:
 - clear interrupted-write and recovery behavior
 - broader multi-process or network-filesystem claims only after targeted tests
 
+## Index And WAL Implications
+
+Index work should keep a hard line between durable truth and derived
+acceleration. Nodes, relationships, runtime schema, and explicit index
+definitions are source-of-truth data. Label indexes, property lookup tables,
+adjacency indexes, and any future GraphBLAS-style sparse matrices are derived
+structures that should be rebuildable from the durable graph state plus replayed
+operation deltas.
+
+The first user-facing index feature should be explicit node property indexes.
+They align with the existing in-memory property lookup path, give users a
+familiar SQLite-like performance concept, and create the right metadata shape for
+later uniqueness constraints. CLI index commands should persist index
+definitions, while the index contents can initially be rebuilt on load and
+maintained in memory during writes.
+
+Future edge indexes may take a GraphBLAS-like shape: one sparse adjacency matrix
+per relationship type, with traversal, reachability, and graph-shaped
+aggregation expressed as sparse matrix or mask operations. RedisGraph is useful
+prior art here: it showed that property graphs backed by sparse matrices can be
+technically competitive, but its end-of-life also warns that a broad graph
+database product can carry high query-language, modeling, support, and adoption
+costs. GRM should borrow the graph-native execution ideas without prematurely
+committing to a large general-purpose graph database surface.
+
+The WAL should record graph and schema operations, not raw derived index pages:
+
+- create or drop an index definition
+- register schema/model changes
+- upsert or delete nodes
+- upsert or delete relationships
+
+On recovery, GRM should replay those operations, then rebuild or validate derived
+indexes. Persisted index files can become checkpoint artifacts later if rebuild
+time becomes expensive, but they should remain disposable: if an index file is
+missing, stale, or damaged, recovery should prefer rebuilding it from the graph
+snapshot and WAL over treating the graph as corrupt.
+
 ## Benchmark Additions
 
 Extend the benchmark suite to cover optimizer and persistence decisions directly.
@@ -199,6 +237,8 @@ Persistence benchmarks:
 
 - autocommit append cost
 - WAL or replay-log recovery cost
+- index-definition replay and index rebuild cost
+- indexed insert/update/delete maintenance cost
 - checkpoint or compact cost after many small writes
 - load time after snapshot plus replay log
 - file size growth across repeated mutation sequences
@@ -222,8 +262,10 @@ Regression checks:
 5. Add non-materializing aggregation operators for counts and degree queries.
 6. Finish indexed transaction overlay/read-view paths that avoid whole-store
    materialization.
-7. Evaluate WAL/autocommit changes once operation deltas are stable.
-8. Add benchmarks that compare naive, planned, and persistence-aware execution.
+7. Add explicit node property index definitions and CLI-facing index metadata.
+8. Evaluate WAL/autocommit changes once operation deltas are stable.
+9. Add benchmarks that compare naive, planned, indexed, and persistence-aware
+   execution.
 
 ## Working Principle
 
