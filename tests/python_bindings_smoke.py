@@ -334,9 +334,19 @@ def main() -> None:
 
         try:
             session.explain_node_find("User", {"format": "jsonl"})
-            raise AssertionError("explain_node_find should reject format terms")
+            raise AssertionError("explain_node_find should reject unknown fields")
         except GrmError as exc:
-            assert "format= is not supported with session.explain or session.profile" in str(exc)
+            assert "unknown field 'format' for model 'User'" in str(exc)
+
+        session.model_create(
+            "Document",
+            "documentId",
+            [
+                {"name": "format", "type": "string", "required": True},
+            ],
+        )
+        session.node_create("Document", {"format": "jsonl"})
+        assert len(session.node_find("Document", {"format": "jsonl"}, limit=1)) == 1
 
         try:
             session.node_find("User", via=[{"dir": "out", "model": "Post"}])
@@ -371,7 +381,7 @@ def main() -> None:
 
         reloaded = Session()
         reloaded.load_json(str(autocommit_path))
-        assert len(reloaded.model_list()) == 2
+        assert len(reloaded.model_list()) == 3
         assert reloaded.node_find("User") == []
 
 
