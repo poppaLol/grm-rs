@@ -50,8 +50,26 @@ session.model_create(
         {"name": "age", "type": "int", "required": False},
     ],
 )
+session.model_create(
+    "Post",
+    "postId",
+    [
+        {"name": "title", "type": "string", "required": True},
+    ],
+)
+session.link_create(
+    "AUTHORED",
+    "User",
+    "Post",
+    "authoredId",
+    [
+        {"name": "year", "type": "int", "required": True},
+    ],
+)
 
 alice = session.node_create("User", {"name": "Alice", "age": 42})
+post = session.node_create("Post", {"title": "Hello"})
+edge = session.edge_create("AUTHORED", alice["id"], post["id"], {"year": 2024})
 users = session.node_find("User", {"name": "Alice"})
 ```
 
@@ -63,7 +81,7 @@ posts = session.node_find(
     "User",
     {"name": "Alice"},
     via=[
-        {"dir": "out", "link": "Authored", "model": "Post"},
+        {"dir": "out", "link": "AUTHORED", "model": "Post"},
     ],
 )
 
@@ -71,12 +89,26 @@ authored_edges = session.node_find(
     "User",
     {"name": "Alice"},
     via=[
-        {"dir": "out", "link": "Authored", "model": "Post"},
+        {"dir": "out", "link": "AUTHORED", "model": "Post"},
     ],
     end_filters={"title": "Hello"},
     edge_filters={"year": 2024},
     return_="edge",
 )
+```
+
+Explain and profile use the same query arguments and return structured plan
+data:
+
+```python
+plan = session.explain_node_find(
+    "User",
+    {"name": "Alice"},
+    via=[{"dir": "out", "link": "AUTHORED", "model": "Post"}],
+)
+
+profile = session.profile_edge_find("AUTHORED", {"from": alice["id"]})
+assert profile["result_rows"] >= 0
 ```
 
 Batch operations share the same runtime semantics as MCP `grm_batch`, including
@@ -90,7 +122,7 @@ result = session.batch(
         {"op": "node_create", "args": {"model": "Post", "props": {"title": "Hello"}, "ref": "post"}},
         {
             "op": "edge_create",
-            "args": {"model": "Authored", "from": "bob", "to": "post", "props": {"year": 2026}},
+            "args": {"model": "AUTHORED", "from": "bob", "to": "post", "props": {"year": 2026}},
         },
     ],
     response="detailed",

@@ -53,7 +53,7 @@ session.model_create(
 )
 
 session.link_create(
-    "Authored",
+    "AUTHORED",
     "User",
     "Post",
     "authoredId",
@@ -64,19 +64,19 @@ session.link_create(
 
 user = session.node_create("User", {"name": "Alice", "age": 42})
 post = session.node_create("Post", {"title": "Hello"})
-edge = session.edge_create("Authored", user["id"], post["id"], {"year": 2024})
+edge = session.edge_create("AUTHORED", user["id"], post["id"], {"year": 2024})
 
 print(user)
 print(edge)
 print(session.node_find("User", {"name": "Alice"}))
-print(session.edge_find("Authored"))
+print(session.edge_find("AUTHORED"))
 
 print(
     session.node_find(
         "User",
         {"name": "Alice"},
         via=[
-            {"dir": "out", "link": "Authored", "model": "Post"},
+            {"dir": "out", "link": "AUTHORED", "model": "Post"},
         ],
     )
 )
@@ -85,13 +85,22 @@ print(
         "User",
         {"name": "Alice"},
         via=[
-            {"dir": "out", "link": "Authored", "model": "Post"},
+            {"dir": "out", "link": "AUTHORED", "model": "Post"},
         ],
         end_filters={"title": "Hello"},
         edge_filters={"year": 2024},
         return_="edge",
     )
 )
+
+plan = session.explain_node_find(
+    "User",
+    {"name": "Alice"},
+    via=[{"dir": "out", "link": "AUTHORED", "model": "Post"}],
+)
+profile = session.profile_edge_find("AUTHORED", {"from": user["id"]})
+print(plan["plan"]["steps"])
+print(profile["result_rows"], profile["elapsed"]["display"])
 
 session.export_json("test-dbs/users.interchange.json")
 portable = session.export_dict()
@@ -117,7 +126,7 @@ result = session.batch(
         {
             "op": "edge_create",
             "args": {
-                "model": "Authored",
+                "model": "AUTHORED",
                 "from": "bob",
                 "to": "post",
                 "props": {"year": 2026},
@@ -136,12 +145,13 @@ print(result["counts"])
 - Supported field types are `string`, `int`, `float`, and `bool`
 - The Python method names mostly mirror the CLI commands with `_` instead of `.`, such as `model_create`, `node_find`, and `edge_update`
 - `session.batch(...)` accepts structured operation dicts for schema, node, and edge creates/updates/deletes; deletes require `allow_deletes=True`, and node creates can define batch-local refs for later edge endpoints
+- `explain_node_find`, `profile_node_find`, `explain_edge_find`, and `profile_edge_find` expose the same first-phase query introspection as CLI `session.explain` / `session.profile`
 - `save_json`, `save_binary`, `load_json`, and `load_binary` persist local workspace snapshots, including storage bookkeeping
 - `export_json`, `export_dict`, and `import_json` use the portable `grm.interchange` graph format described in [`import-export.md`](import-export.md)
 - `import_json` currently requires an empty session; create a fresh `Session()` before importing interchange files
 - Autocommit is off by default; enable it at construction time with `Session(autocommit=True, autocommit_path="test-dbs/session.json")`
 - When autocommit is enabled, `session.autocommit` is `True` and every successful mutating operation, including `import_json`, persists the session snapshot file
-- Python traversal mirrors CLI `node.find ... via=...` semantics, but uses structured inputs: pass `via=[{"dir": "out", "link": "Authored", "model": "Post"}]`, optional `end_filters`, optional `edge_filters`, and `return_="root"`, `"end"`, or `"edge"`
+- Python traversal mirrors CLI `node.find ... via=...` semantics, but uses structured inputs: pass `via=[{"dir": "out", "link": "AUTHORED", "model": "Post"}]`, optional `end_filters`, optional `edge_filters`, and `return_="root"`, `"end"`, or `"edge"`
 - `node_create`, `node_find`, `edge_create`, and `edge_find` return plain Python dictionaries/lists
 - Rust-side failures are raised as `grm_rs.GrmError`
 - For local scratch session files, prefer keeping them under `test-dbs/`
