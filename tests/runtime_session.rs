@@ -3,8 +3,8 @@ use std::fs;
 use std::io::Cursor;
 
 use grm_rs::{
-    BackendIdType, CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionModelCatalog, SessionState,
+    BackendIdType, CliSession, QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
+    RuntimeValueType, SessionModelCatalog, SessionState,
 };
 use serde_json::{Value, json};
 
@@ -905,6 +905,40 @@ async fn session_profile_node_find_reports_count_and_elapsed_time() {
     assert!(output.contains("Result rows: 1"));
     assert!(output.contains("Elapsed: "));
     assert!(output.contains("Per-step metrics: not available"));
+}
+
+#[tokio::test]
+async fn session_state_explain_and_profile_return_structured_values() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nnode.create User name=Bob\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (state, _, _) = session.into_parts();
+    let terms = vec![QueryTerm {
+        key: "name".to_string(),
+        value: "Alice".to_string(),
+    }];
+
+    let explain = state.explain_node_find_terms("User", &terms).unwrap();
+    assert_eq!(explain["command"], "node.find");
+    assert_eq!(explain["target"], "User");
+    assert!(
+        explain["plan"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step.as_str().unwrap().contains("NodePropertySeek"))
+    );
+
+    let profile = state.profile_node_find_terms("User", &terms).await.unwrap();
+    assert_eq!(profile["result_rows"], 1);
+    assert!(profile["elapsed"]["micros"].as_u64().is_some());
+    assert!(profile["elapsed"]["display"].as_str().is_some());
+    assert!(profile["per_step_metrics"].is_null());
 }
 
 #[tokio::test]
