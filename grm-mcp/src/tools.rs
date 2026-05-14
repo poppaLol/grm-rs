@@ -1,6 +1,9 @@
 use std::io::Cursor;
 
-use grm_rs::{CliSession, GrmError, RuntimeNodeModel, RuntimeRelModel, apply_session_batch};
+use grm_rs::{
+    CliSession, GrmError, RuntimeNodeModel, RuntimeRelModel, apply_session_batch,
+    runtime::{SessionCommand, parse_command_line},
+};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     AnnotateAble, Implementation, JsonObject, ListResourcesResult, PaginatedRequestParams,
@@ -281,6 +284,47 @@ impl GrmMcpServer {
         }))?))
     }
 
+    #[tool(
+        description = "Explain a CLI-compatible node.find or edge.find command and return the current logical plan as structured JSON."
+    )]
+    async fn grm_explain(
+        &self,
+        Parameters(params): Parameters<QueryParams>,
+    ) -> Result<Json<JsonObject>, McpError> {
+        let state = self.state.lock().await;
+        let value = match parse_introspection_command("session.explain", &params.command)? {
+            SessionCommand::SessionExplainNodeFind { model_name, terms } => state
+                .explain_node_find_terms(&model_name, &terms)
+                .map_err(to_mcp_error)?,
+            SessionCommand::SessionExplainEdgeFind { model_name, terms } => state
+                .explain_edge_find_terms(&model_name, &terms)
+                .map_err(to_mcp_error)?,
+            _ => unreachable!("parse_introspection_command returns explain commands only"),
+        };
+        Ok(Json(to_object(value)?))
+    }
+
+    #[tool(
+        description = "Profile a CLI-compatible node.find or edge.find command and return its plan, row count, and elapsed time as structured JSON."
+    )]
+    async fn grm_profile(
+        &self,
+        Parameters(params): Parameters<QueryParams>,
+    ) -> Result<Json<JsonObject>, McpError> {
+        let state = self.state.lock().await;
+        let value = match parse_introspection_command("session.profile", &params.command)? {
+            SessionCommand::SessionProfileNodeFind { model_name, terms } => state
+                .profile_node_find_terms(&model_name, &terms)
+                .await
+                .map_err(to_mcp_error)?,
+            SessionCommand::SessionProfileEdgeFind { model_name, terms } => state
+                .profile_edge_find_terms(&model_name, &terms)
+                .map_err(to_mcp_error)?,
+            _ => unreachable!("parse_introspection_command returns profile commands only"),
+        };
+        Ok(Json(to_object(value)?))
+    }
+
     #[tool(description = "Save the current GRM session snapshot to a JSON or binary session file.")]
     async fn grm_save(
         &self,
@@ -418,6 +462,35 @@ impl ServerHandler for GrmMcpServer {
 
 pub(crate) fn to_mcp_error(err: GrmError) -> McpError {
     McpError::internal_error(err.to_string(), None)
+}
+
+fn parse_introspection_command(kind: &str, command: &str) -> Result<SessionCommand, McpError> {
+    let command = command.trim();
+    let opposite_kind = match kind {
+        "session.explain" => "session.profile",
+        "session.profile" => "session.explain",
+        _ => unreachable!("only explain/profile introspection kinds are supported"),
+    };
+    if command == opposite_kind || command.starts_with(&format!("{opposite_kind} ")) {
+        return Err(McpError::invalid_params(
+            format!("expected {kind} command, got {opposite_kind}"),
+            Some(json!({ "command": command })),
+        ));
+    }
+
+    let command = command.strip_prefix(&format!("{kind} ")).unwrap_or(command);
+    let parsed = parse_command_line(&format!("{kind} {command}")).map_err(to_mcp_error)?;
+
+    match (&parsed, kind) {
+        (SessionCommand::SessionExplainNodeFind { .. }, "session.explain")
+        | (SessionCommand::SessionExplainEdgeFind { .. }, "session.explain")
+        | (SessionCommand::SessionProfileNodeFind { .. }, "session.profile")
+        | (SessionCommand::SessionProfileEdgeFind { .. }, "session.profile") => Ok(parsed),
+        _ => Err(McpError::invalid_params(
+            "expected command to be node.find <ModelName> [terms...] or edge.find <LinkName> [terms...]",
+            Some(json!({ "command": command })),
+        )),
+    }
 }
 
 fn compact_query_doc() -> String {
