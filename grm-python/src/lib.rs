@@ -288,6 +288,73 @@ impl PySession {
         Ok(items.into())
     }
 
+    #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 method signature mirrors the Python API keyword arguments"
+    )]
+    fn explain_node_find(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+        via: Option<&Bound<'_, PyAny>>,
+        end_filters: Option<&Bound<'_, PyDict>>,
+        edge_filters: Option<&Bound<'_, PyDict>>,
+        return_: Option<&str>,
+        order: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let terms = build_node_find_terms(
+            filters,
+            via,
+            end_filters,
+            edge_filters,
+            return_,
+            order,
+            limit,
+            offset,
+        )?;
+        let value = self
+            .state
+            .explain_node_find_terms(model_name, &terms)
+            .map_err(grm_err)?;
+        json_value_to_py(py, &value)
+    }
+
+    #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 method signature mirrors the Python API keyword arguments"
+    )]
+    fn profile_node_find(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+        via: Option<&Bound<'_, PyAny>>,
+        end_filters: Option<&Bound<'_, PyDict>>,
+        edge_filters: Option<&Bound<'_, PyDict>>,
+        return_: Option<&str>,
+        order: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let terms = build_node_find_terms(
+            filters,
+            via,
+            end_filters,
+            edge_filters,
+            return_,
+            order,
+            limit,
+            offset,
+        )?;
+        let value = block_on(py, self.state.profile_node_find_terms(model_name, &terms))?;
+        json_value_to_py(py, &value)
+    }
+
     #[pyo3(signature = (model_name, from_id, to_id, values=None))]
     fn edge_create(
         &mut self,
@@ -356,6 +423,36 @@ impl PySession {
             items.append(stored_rel_to_py(py, &rel)?)?;
         }
         Ok(items.into())
+    }
+
+    #[pyo3(signature = (model_name, filters=None))]
+    fn explain_edge_find(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let terms = build_terms_from_filters(filters)?;
+        let value = self
+            .state
+            .explain_edge_find_terms(model_name, &terms)
+            .map_err(grm_err)?;
+        json_value_to_py(py, &value)
+    }
+
+    #[pyo3(signature = (model_name, filters=None))]
+    fn profile_edge_find(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let terms = build_terms_from_filters(filters)?;
+        let value = self
+            .state
+            .profile_edge_find_terms(model_name, &terms)
+            .map_err(grm_err)?;
+        json_value_to_py(py, &value)
     }
 
     fn save_json(&self, path: &str) -> PyResult<()> {
@@ -776,6 +873,12 @@ fn append_filter_terms(
         });
     }
     Ok(())
+}
+
+fn build_terms_from_filters(filters: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<QueryTerm>> {
+    let mut terms = Vec::new();
+    append_filter_terms(&mut terms, "", filters)?;
+    Ok(terms)
 }
 
 fn append_via_terms(terms: &mut Vec<QueryTerm>, via: Option<&Bound<'_, PyAny>>) -> PyResult<()> {

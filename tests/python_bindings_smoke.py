@@ -307,6 +307,37 @@ def main() -> None:
         assert len(friends_of_friends) == 1
         assert friends_of_friends[0]["id"] == carol["id"]
 
+        explain = session.explain_node_find(
+            "User",
+            {"name": "Alice"},
+            via=[
+                {"dir": "out", "link": "Authored", "model": "Post"},
+            ],
+        )
+        assert explain["command"] == "node.find"
+        assert explain["target"] == "User"
+        assert any("ExpandOut" in step for step in explain["plan"]["steps"])
+        assert "Return Node" in explain["plan"]["text"]
+
+        profile = session.profile_node_find("User", {"name": "Alice"})
+        assert profile["command"] == "node.find"
+        assert profile["target"] == "User"
+        assert profile["result_rows"] == 1
+        assert isinstance(profile["elapsed"]["micros"], int)
+        assert isinstance(profile["elapsed"]["display"], str)
+        assert profile["per_step_metrics"] is None
+
+        edge_profile = session.profile_edge_find("Authored", {"from": user["id"]})
+        assert edge_profile["command"] == "edge.find"
+        assert edge_profile["result_rows"] == 1
+        assert any("RelationshipEndpointSeek" in step for step in edge_profile["plan"]["steps"])
+
+        try:
+            session.explain_node_find("User", {"format": "jsonl"})
+            raise AssertionError("explain_node_find should reject format terms")
+        except GrmError as exc:
+            assert "format= is not supported with session.explain or session.profile" in str(exc)
+
         try:
             session.node_find("User", via=[{"dir": "out", "model": "Post"}])
             raise AssertionError("node_find should reject incomplete traversal dicts")
