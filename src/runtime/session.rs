@@ -19,6 +19,12 @@ use crate::dsl::{
 use crate::fsutil::{
     backup_path, log_path, write_file_atomically, write_file_atomically_with_backup,
 };
+use crate::runtime::{
+    DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest,
+    EdgeUpdateRequest, ExplainRequest, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest,
+    NodeUpdateRequest, OrderDirection, PredicateOp, ProfileRequest, PropertyPredicate,
+    QueryRequest, TraversalDirection, TraversalReturn,
+};
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
 use crate::{
@@ -620,6 +626,72 @@ impl SessionState {
         self.client.backend().rel_id_type()
     }
 
+    pub fn define_node(&mut self, request: DefineNodeRequest) -> Result<()> {
+        let fields = request
+            .fields
+            .into_iter()
+            .map(RuntimeField::try_from)
+            .collect::<Result<Vec<_>>>()?;
+        let model =
+            RuntimeNodeModel::new(request.name, request.id_field, self.node_id_type(), fields)?;
+        self.register_model(model)
+    }
+
+    pub fn define_edge(&mut self, request: DefineEdgeRequest) -> Result<()> {
+        let fields = request
+            .fields
+            .into_iter()
+            .map(RuntimeField::try_from)
+            .collect::<Result<Vec<_>>>()?;
+        let model = RuntimeRelModel::new(
+            request.name,
+            request.from_model,
+            request.to_model,
+            request.id_field,
+            self.rel_id_type(),
+            fields,
+        )?;
+        self.register_rel_model(model)
+    }
+
+    pub async fn node_create(&self, request: NodeCreateRequest) -> Result<StoredNode> {
+        let raw_values = typed_props_to_raw(request.props)?;
+        self.create_instance(&request.model, &raw_values).await
+    }
+
+    pub async fn node_update(&self, request: NodeUpdateRequest) -> Result<StoredNode> {
+        let raw_values = typed_props_to_raw(request.props)?;
+        self.update_node_instance(&request.model, &request.id.to_string(), &raw_values)
+            .await
+    }
+
+    pub async fn node_delete(&self, request: NodeDeleteRequest) -> Result<()> {
+        self.delete_node_instance(&request.model, &request.id.to_string())
+            .await
+    }
+
+    pub async fn edge_create(&self, request: EdgeCreateRequest) -> Result<StoredRel> {
+        let raw_values = typed_props_to_raw(request.props)?;
+        self.create_relationship_instance(
+            &request.model,
+            &request.from.to_string(),
+            &request.to.to_string(),
+            &raw_values,
+        )
+        .await
+    }
+
+    pub async fn edge_update(&self, request: EdgeUpdateRequest) -> Result<StoredRel> {
+        let raw_values = typed_props_to_raw(request.props)?;
+        self.update_relationship_instance(&request.model, &request.id.to_string(), &raw_values)
+            .await
+    }
+
+    pub async fn edge_delete(&self, request: EdgeDeleteRequest) -> Result<()> {
+        self.delete_relationship_instance(&request.model, &request.id.to_string())
+            .await
+    }
+
     pub async fn create_instance(
         &self,
         model_name: &str,
@@ -808,6 +880,17 @@ impl SessionState {
         self.find_nodes_with_query(model_name, &query)
     }
 
+    pub async fn node_find(&self, request: NodeFindRequest) -> Result<SessionFindResult> {
+        let query = self.node_find_query_from_request(&request)?;
+        match self.execute_node_query(&request.model, &query).await? {
+            SessionQueryResult::Nodes { rows, .. } => Ok(SessionFindResult::Nodes(rows)),
+            SessionQueryResult::Edges { rows, .. } => Ok(SessionFindResult::Edges(rows)),
+            SessionQueryResult::Graph(_) => Err(crate::GrmError::NotSupported(
+                "graph format is not supported by structured find results",
+            )),
+        }
+    }
+
     pub async fn find_nodes_with_terms(
         &self,
         model_name: &str,
@@ -848,6 +931,80 @@ impl SessionState {
             result.row_count(),
             elapsed,
         ))
+    }
+
+    pub fn edge_find(&self, request: EdgeFindRequest) -> Result<Vec<StoredRel>> {
+        let query = self.edge_find_query_from_request(&request)?;
+        self.find_relationships_with_query(&request.model, &query)
+    }
+
+    pub fn explain(&self, request: ExplainRequest) -> Result<Value> {
+        match request.query {
+            QueryRequest::NodeFind(node_request) => {
+                let query = self.node_find_query_from_request(&node_request)?;
+                let plan = self.explain_node_find_query(&node_request.model, &query)?;
+                Ok(explain_value("node.find", &node_request.model, &plan))
+            }
+            QueryRequest::EdgeFind(edge_request) => {
+                let query = self.edge_find_query_from_request(&edge_request)?;
+                let plan = self.explain_edge_find_query(&edge_request.model, &query)?;
+                Ok(explain_value("edge.find", &edge_request.model, &plan))
+            }
+            QueryRequest::Traversal(traversal_request) => {
+                let node_request = traversal_request.root;
+                let query = self.node_find_query_from_request(&node_request)?;
+                let plan = self.explain_node_find_query(&node_request.model, &query)?;
+                Ok(explain_value("node.find", &node_request.model, &plan))
+            }
+        }
+    }
+
+    pub async fn profile(&self, request: ProfileRequest) -> Result<Value> {
+        match request.query {
+            QueryRequest::NodeFind(node_request) => {
+                let query = self.node_find_query_from_request(&node_request)?;
+                let plan = self.explain_node_find_query(&node_request.model, &query)?;
+                let started = Instant::now();
+                let result = self.execute_node_query(&node_request.model, &query).await?;
+                let elapsed = started.elapsed();
+                Ok(profile_value(
+                    "node.find",
+                    &node_request.model,
+                    &plan,
+                    result.row_count(),
+                    elapsed,
+                ))
+            }
+            QueryRequest::EdgeFind(edge_request) => {
+                let query = self.edge_find_query_from_request(&edge_request)?;
+                let plan = self.explain_edge_find_query(&edge_request.model, &query)?;
+                let started = Instant::now();
+                let rels = self.find_relationships_with_query(&edge_request.model, &query)?;
+                let elapsed = started.elapsed();
+                Ok(profile_value(
+                    "edge.find",
+                    &edge_request.model,
+                    &plan,
+                    rels.len(),
+                    elapsed,
+                ))
+            }
+            QueryRequest::Traversal(traversal_request) => {
+                let node_request = traversal_request.root;
+                let query = self.node_find_query_from_request(&node_request)?;
+                let plan = self.explain_node_find_query(&node_request.model, &query)?;
+                let started = Instant::now();
+                let result = self.execute_node_query(&node_request.model, &query).await?;
+                let elapsed = started.elapsed();
+                Ok(profile_value(
+                    "node.find",
+                    &node_request.model,
+                    &plan,
+                    result.row_count(),
+                    elapsed,
+                ))
+            }
+        }
     }
 
     fn find_nodes_with_query(
@@ -1397,6 +1554,84 @@ impl SessionState {
         parse_node_find_terms(terms, model, self.node_id_type())
     }
 
+    fn node_find_query_from_request(&self, request: &NodeFindRequest) -> Result<NodeFindQuery> {
+        let model = self
+            .catalog
+            .get_node_model(&request.model)
+            .ok_or(crate::GrmError::NotFound)?;
+
+        let mut query = NodeFindQuery {
+            limit: request.limit,
+            offset: request.offset,
+            id_filter: request.id,
+            return_mode: request
+                .return_mode
+                .map(session_traversal_return)
+                .unwrap_or_default(),
+            order: request
+                .order
+                .iter()
+                .map(|order| SessionOrder {
+                    field: order.field.clone(),
+                    direction: session_sort_direction(order.direction),
+                })
+                .collect(),
+            traversals: request
+                .traversals
+                .iter()
+                .map(|step| SessionTraversalStep {
+                    direction: session_traversal_direction(step.direction),
+                    rel_model_name: step.edge_model.clone(),
+                    end_model_name: step.end_model.clone(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        for predicate in &request.predicates {
+            if predicate.field == "id" || predicate.field == model.id_field_name {
+                if predicate.op != PredicateOp::Eq {
+                    return Err(crate::GrmError::Constraint(format!(
+                        "backend id filter '{}' only supports '='",
+                        predicate.field
+                    )));
+                }
+                query.id_filter = Some(typed_id_value_to_i64(
+                    &predicate.value,
+                    self.node_id_type(),
+                    &predicate.field,
+                )?);
+                continue;
+            }
+            query.predicates.push(session_predicate(predicate)?);
+        }
+        query.end_predicates = request
+            .end_predicates
+            .iter()
+            .map(session_predicate)
+            .collect::<Result<_>>()?;
+        query.edge_predicates = request
+            .edge_predicates
+            .iter()
+            .map(session_predicate)
+            .collect::<Result<_>>()?;
+
+        if query.traversals.is_empty() {
+            if !query.end_predicates.is_empty() || !query.edge_predicates.is_empty() {
+                return Err(crate::GrmError::Constraint(
+                    "traversal filters require at least one traversal step".into(),
+                ));
+            }
+            if query.return_mode != SessionTraversalReturn::End {
+                return Err(crate::GrmError::Constraint(
+                    "return=root|end|edge is only supported with traversal steps".into(),
+                ));
+            }
+        }
+
+        Ok(query)
+    }
+
     fn parse_edge_find_query(
         &self,
         model_name: &str,
@@ -1407,6 +1642,46 @@ impl SessionState {
             .get_rel_model(model_name)
             .ok_or(crate::GrmError::NotFound)?;
         parse_edge_find_query(filters, model, self.rel_id_type(), self.node_id_type())
+    }
+
+    fn edge_find_query_from_request(&self, request: &EdgeFindRequest) -> Result<EdgeFindQuery> {
+        let model = self
+            .catalog
+            .get_rel_model(&request.model)
+            .ok_or(crate::GrmError::NotFound)?;
+
+        let mut query = EdgeFindQuery {
+            limit: request.limit,
+            offset: request.offset,
+            id_filter: request.id,
+            from_filter: request.from,
+            to_filter: request.to,
+            order: request
+                .order
+                .iter()
+                .map(|order| SessionOrder {
+                    field: order.field.clone(),
+                    direction: session_sort_direction(order.direction),
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        for predicate in &request.predicates {
+            match predicate.field.as_str() {
+                field if field == "id" || field == model.id_field_name => {
+                    require_eq_special_filter(predicate)?;
+                    query.id_filter = Some(typed_id_value_to_i64(
+                        &predicate.value,
+                        self.rel_id_type(),
+                        field,
+                    )?);
+                }
+                _ => query.predicates.push(session_predicate(predicate)?),
+            }
+        }
+
+        Ok(query)
     }
 
     fn parse_backend_id(
@@ -4772,6 +5047,76 @@ fn parse_backend_id(raw: &str, id_type: crate::BackendIdType, subject: &str) -> 
             .map_err(|_| crate::GrmError::Constraint(format!("{subject} must be an int id"))),
         crate::BackendIdType::Uuid => Err(crate::GrmError::NotSupported(
             "uuid runtime session ids are not supported by this backend yet",
+        )),
+    }
+}
+
+fn session_predicate(predicate: &PropertyPredicate) -> Result<SessionPredicate> {
+    Ok(SessionPredicate {
+        field: predicate.field.clone(),
+        op: predicate.op.into(),
+        raw_value: typed_value_to_raw(&predicate.value)?,
+    })
+}
+
+fn session_sort_direction(direction: OrderDirection) -> SortDirection {
+    match direction {
+        OrderDirection::Asc => SortDirection::Asc,
+        OrderDirection::Desc => SortDirection::Desc,
+    }
+}
+
+fn session_traversal_direction(direction: TraversalDirection) -> Direction {
+    match direction {
+        TraversalDirection::Out => Direction::Out,
+        TraversalDirection::In => Direction::In,
+        TraversalDirection::Both => Direction::Both,
+    }
+}
+
+fn session_traversal_return(return_mode: TraversalReturn) -> SessionTraversalReturn {
+    match return_mode {
+        TraversalReturn::End => SessionTraversalReturn::End,
+        TraversalReturn::Root => SessionTraversalReturn::Root,
+        TraversalReturn::Edge => SessionTraversalReturn::Edge,
+    }
+}
+
+fn require_eq_special_filter(predicate: &PropertyPredicate) -> Result<()> {
+    if predicate.op == PredicateOp::Eq {
+        return Ok(());
+    }
+    Err(crate::GrmError::Constraint(format!(
+        "special filter '{}' only supports '='",
+        predicate.field
+    )))
+}
+
+fn typed_id_value_to_i64(
+    value: &Value,
+    id_type: crate::BackendIdType,
+    subject: &str,
+) -> Result<i64> {
+    parse_backend_id(&typed_value_to_raw(value)?, id_type, subject)
+}
+
+fn typed_props_to_raw(props: BTreeMap<String, Value>) -> Result<BTreeMap<String, String>> {
+    props
+        .into_iter()
+        .map(|(key, value)| typed_value_to_raw(&value).map(|raw| (key, raw)))
+        .collect()
+}
+
+fn typed_value_to_raw(value: &Value) -> Result<String> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        Value::Number(value) => Ok(value.to_string()),
+        Value::Bool(value) => Ok(value.to_string()),
+        Value::Null => Err(crate::GrmError::Constraint(
+            "null property values are not supported by runtime operations".into(),
+        )),
+        Value::Array(_) | Value::Object(_) => Err(crate::GrmError::Constraint(
+            "structured property values are not supported by runtime operations".into(),
         )),
     }
 }
