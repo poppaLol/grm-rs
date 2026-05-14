@@ -79,7 +79,16 @@ Run a CLI-compatible traversal query:
 
 ```json
 {
-  "command": "node.find User name=\"Alice Jones\" via=out:Authored:Post"
+  "command": "node.find User name=\"Alice Jones\" via=out:AUTHORED:Post"
+}
+```
+
+Call `grm_explain` or `grm_profile` with the same command to get structured
+plan data, row counts, and elapsed time:
+
+```json
+{
+  "command": "node.find User name=\"Alice Jones\" via=out:AUTHORED:Post"
 }
 ```
 
@@ -137,7 +146,7 @@ few ordered schema, node, or edge mutations:
     {
       "op": "edge_create",
       "args": {
-        "model": "Authored",
+        "model": "AUTHORED",
         "from": "user:alice",
         "to": "post:hello",
         "props": {}
@@ -165,14 +174,14 @@ Before defining schema, decide the graph's richness vs sparseness.
 Use richer, more specific node and edge models when concepts have distinct
 fields, constraints, relationship patterns, or query meaning. For example,
 separate `Knife`, `Plate`, and `Fork` node models can make sense when each has
-different fields or participates in different relationships. Separate `Authored`,
-`Purchased`, `LocatedIn`, and `DependsOn` edge models make sense when the
+different fields or participates in different relationships. Separate `AUTHORED`,
+`PURCHASED`, `LOCATEDIN`, and `DEPENDSON` edge models make sense when the
 relationship semantics drive different traversals or properties.
 
 Use sparser, broader node and edge models when instances share one shape and
 differ mainly by property values. For example, a `Kitchenware` node model with a
 `kind` property can be better than many tiny models if all items share the same
-fields and relationships. A `RelatedTo` edge with `kind`, `confidence`, and
+fields and relationships. A `RELATEDTO` edge with `kind`, `confidence`, and
 `source` can be better than many loose edge models when the relationship meaning
 is intentionally broad.
 
