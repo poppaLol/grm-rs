@@ -308,6 +308,73 @@ async fn batch_creates_connected_graph_with_refs_and_counts() {
 }
 
 #[tokio::test]
+async fn explain_and_profile_return_structured_query_introspection() {
+    let import_path = fixture_path("interchange_v1_basic.json");
+    let client = client(&["--import-json", &import_path]).await;
+
+    let explain = call(
+        &client,
+        "grm_explain",
+        json!({
+            "command": "node.find User name=Alice via=out:Authored:Post"
+        }),
+    )
+    .await;
+    assert_eq!(explain["command"], "node.find");
+    assert_eq!(explain["target"], "User");
+    assert!(
+        explain["plan"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step.as_str().unwrap().contains("ExpandOut"))
+    );
+    assert!(
+        explain["plan"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Return Node")
+    );
+
+    let profile = call(
+        &client,
+        "grm_profile",
+        json!({
+            "command": "edge.find Authored from=1"
+        }),
+    )
+    .await;
+    assert_eq!(profile["command"], "edge.find");
+    assert_eq!(profile["target"], "Authored");
+    assert_eq!(profile["result_rows"], 1);
+    assert!(profile["elapsed"]["micros"].as_u64().is_some());
+    assert!(profile["elapsed"]["display"].as_str().is_some());
+    assert!(profile["per_step_metrics"].is_null());
+
+    let error = call_error(
+        &client,
+        "grm_explain",
+        json!({
+            "command": "node.find User format=jsonl"
+        }),
+    )
+    .await;
+    assert!(error.contains("format= is not supported with session.explain or session.profile"));
+
+    let wrong_prefix = call_error(
+        &client,
+        "grm_profile",
+        json!({
+            "command": "session.explain node.find User name=Alice"
+        }),
+    )
+    .await;
+    assert!(wrong_prefix.contains("expected session.profile command"));
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn failed_atomic_batch_leaves_session_unchanged() {
     let client = client(&[]).await;
 

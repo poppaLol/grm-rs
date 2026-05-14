@@ -6,11 +6,12 @@ Recommended agent workflow:
 1. Call grm_help when first using this server in a session.
 2. Call grm_schema_list or read grm://schema before creating or querying data.
 3. Before defining schema, decide the graph's richness vs sparseness.
-4. Prefer structured tools for schema, node, edge, import, export, and persistence operations.
+4. Prefer structured tools for schema, node, edge, introspection, import, export, and persistence operations.
 5. For more than 3 creates or updates, prefer grm_batch.
-6. Use grm_query for traversal queries or exact CLI parity.
-7. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
-8. Verify writes with grm://graph/summary, grm://graph/export, or grm_export.
+6. Use grm_explain or grm_profile to inspect node.find and edge.find plans.
+7. Use grm_query for traversal queries or exact CLI parity.
+8. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
+9. Verify writes with grm://graph/summary, grm://graph/export, or grm_export.
 
 Schema richness vs sparseness:
 - Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.
@@ -30,6 +31,7 @@ pub fn help_index() -> Value {
             "Call grm_schema_list or read grm://schema before creating or querying data.",
             "Before defining schema, decide the graph's richness vs sparseness.",
             "Prefer structured tools over grm_query except for traversal queries or CLI parity.",
+            "Use grm_explain or grm_profile to inspect node.find and edge.find plans.",
             "For more than 3 creates or updates, prefer grm_batch.",
             "After recoverable errors, call grm_tool_help with the tool name before retrying.",
             "Verify writes with grm://graph/summary, grm://graph/export, or grm_export."
@@ -40,8 +42,8 @@ pub fn help_index() -> Value {
                 "Sparse schemas use fewer broader node and edge models when instances share a shape and differ mainly by property values such as kind, type, or category.",
                 "Prefer rich node models when categories carry different data or relationship patterns, for example Knife, Plate, and Fork.",
                 "Prefer sparse node models when categories are mostly values on one shape, for example Kitchenware with kind=knife|plate|fork.",
-                "Prefer rich edge models when relationships mean different things or drive different traversals, for example Authored, Purchased, LocatedIn, and DependsOn.",
-                "Prefer sparse edge models when relationships share meaning and differ mainly by properties, for example RelatedTo with kind, confidence, and source."
+                "Prefer rich edge models when relationships mean different things or drive different traversals, for example AUTHORED, PURCHASED, LOCATEDIN, and DEPENDSON.",
+                "Prefer sparse edge models when relationships share meaning and differ mainly by properties, for example RELATEDTO with kind, confidence, and source."
             ],
             "batching": "After choosing schema granularity, batch related schema and data mutations. For more than 3 related creates or updates, prefer grm_batch so refs, validation, and rollback happen together."
         },
@@ -59,7 +61,7 @@ pub fn help_index() -> Value {
             "batch": ["grm_batch"],
             "nodes": ["grm_node_create", "grm_node_update", "grm_node_delete", "grm_node_find"],
             "edges": ["grm_edge_create", "grm_edge_update", "grm_edge_delete", "grm_edge_find"],
-            "query": ["grm_query"],
+            "query": ["grm_explain", "grm_profile", "grm_query"],
             "persistence": ["grm_save", "grm_load", "grm_import", "grm_export"]
         },
         "value_rules": [
@@ -69,9 +71,14 @@ pub fn help_index() -> Value {
             "Only fields declared in the runtime schema may be supplied."
         ],
         "when_to_use_grm_query": [
-            "Use grm_query for traversal syntax such as via=out:Authored:Post.",
+            "Use grm_query for traversal syntax such as via=out:AUTHORED:Post.",
             "Use grm_query when you want exact CLI-compatible behavior.",
             "Prefer grm_node_find and grm_edge_find for simple model/filter lookups."
+        ],
+        "when_to_use_introspection": [
+            "Use grm_explain to inspect the current logical plan without running the query.",
+            "Use grm_profile to run the same query path and return plan, result_rows, and elapsed time.",
+            "Pass node.find or edge.find command text, for example node.find User name=\"Alice\"."
         ],
         "known_tools": known_tools()
     })
@@ -198,7 +205,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 "Use a sparser, broader edge model with a kind/type/category field when relationships share meaning and differ mostly by property values."
             ],
             "example": {
-                "name": "Contains",
+                "name": "CONTAINS",
                 "from_model": "File",
                 "to_model": "RustItem",
                 "id_field": "containsId",
@@ -280,7 +287,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
             "before_calling": ["Call grm_schema_list to confirm from_model and to_model.", "Call grm_node_find if you do not know endpoint ids."],
             "example": {
-                "model": "Contains",
+                "model": "CONTAINS",
                 "from": 1,
                 "to": 2,
                 "props": {}
@@ -297,7 +304,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "tool": "grm_edge_update",
             "purpose": "Update properties on an existing edge.",
             "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
-            "example": { "model": "Contains", "id": 1, "props": {} },
+            "example": { "model": "CONTAINS", "id": 1, "props": {} },
             "common_errors": [
                 recovery("edge was not found", "Call grm_edge_find to locate the current edge id."),
                 recovery("unknown field", "Call grm_schema_list and update only declared edge fields.")
@@ -307,7 +314,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_edge_delete" => json!({
             "tool": "grm_edge_delete",
             "purpose": "Delete an existing edge by model and backend id.",
-            "example": { "model": "Contains", "id": 1 },
+            "example": { "model": "CONTAINS", "id": 1 },
             "common_errors": [
                 recovery("edge was not found", "Call grm_edge_find to locate the current id.")
             ],
@@ -317,7 +324,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "tool": "grm_edge_find",
             "purpose": "Find edges for a model using endpoint and property filters.",
             "example": {
-                "model": "Contains",
+                "model": "CONTAINS",
                 "filters": { "from": 1, "limit": 10 }
             },
             "filter_syntax": [
@@ -336,7 +343,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "tool": "grm_query",
             "purpose": "Run one CLI-compatible GRM session command. Best for traversal queries.",
             "example": {
-                "command": "node.find User name=\"Alice Jones\" via=out:Authored:Post return=end"
+                "command": "node.find User name=\"Alice Jones\" via=out:AUTHORED:Post return=end"
             },
             "query_notes": [
                 "Traversal uses via=<out|in|both>:<LinkName|*>:<EndModel>.",
@@ -349,7 +356,46 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 recovery("traversal filters require at least one via", "Add a via= traversal or remove end./edge. filters."),
                 recovery("graph format is only supported", "Use format=graph only for traversal-shaped queries.")
             ],
-            "related": ["grm://docs/query-language", "grm_node_find", "grm_edge_find"]
+            "related": ["grm_explain", "grm_profile", "grm://docs/query-language", "grm_node_find", "grm_edge_find"]
+        }),
+        "grm_explain" => json!({
+            "tool": "grm_explain",
+            "purpose": "Return the current logical plan for a CLI-compatible node.find or edge.find command without running it.",
+            "example": {
+                "command": "node.find User name=\"Alice Jones\" via=out:AUTHORED:Post"
+            },
+            "result_shape": {
+                "command": "node.find or edge.find",
+                "target": "Model or link name",
+                "plan": ["steps", "text"]
+            },
+            "common_errors": [
+                recovery("expected command", "Pass node.find <ModelName> [terms...] or edge.find <LinkName> [terms...]."),
+                recovery("format= is not supported", "Remove format=; introspection results are structured JSON."),
+                recovery("unknown field", "Call grm_schema_list and use declared fields.")
+            ],
+            "related": ["grm_profile", "grm_query", "grm://docs/query-language"]
+        }),
+        "grm_profile" => json!({
+            "tool": "grm_profile",
+            "purpose": "Run a CLI-compatible node.find or edge.find query and return the plan, row count, and elapsed time.",
+            "example": {
+                "command": "edge.find AUTHORED from=1"
+            },
+            "result_shape": {
+                "command": "node.find or edge.find",
+                "target": "Model or link name",
+                "plan": ["steps", "text"],
+                "result_rows": "Number of rows returned by the query path.",
+                "elapsed": ["micros", "display"],
+                "per_step_metrics": null
+            },
+            "common_errors": [
+                recovery("expected command", "Pass node.find <ModelName> [terms...] or edge.find <LinkName> [terms...]."),
+                recovery("format= is not supported", "Remove format=; profile results are structured JSON."),
+                recovery("unknown field", "Call grm_schema_list and use declared fields.")
+            ],
+            "related": ["grm_explain", "grm_query", "grm://docs/query-language"]
         }),
         "grm_save" => json!({
             "tool": "grm_save",
@@ -419,6 +465,8 @@ pub fn known_tools() -> Vec<&'static str> {
         "grm_edge_update",
         "grm_edge_delete",
         "grm_edge_find",
+        "grm_explain",
+        "grm_profile",
         "grm_query",
         "grm_save",
         "grm_load",
