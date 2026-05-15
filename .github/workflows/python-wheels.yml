@@ -12,7 +12,7 @@ on:
         description: "Release tag to use when publish_release is enabled"
         required: true
         type: string
-        default: "grm-python-v0.1.0a3"
+        default: "grm-python-v0.1.0a4"
 
 permissions:
   contents: write
