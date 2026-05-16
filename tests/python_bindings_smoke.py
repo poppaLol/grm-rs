@@ -317,7 +317,16 @@ def main() -> None:
         assert explain["command"] == "node.find"
         assert explain["target"] == "User"
         assert any("ExpandOut" in step for step in explain["plan"]["steps"])
+        assert any(
+            step["kind"] == "ExpandOut"
+            and step["access_path"] == "outgoing_adjacency"
+            and step["index"] == "system.edge.outgoing_adjacency"
+            for step in explain["plan"]["details"]
+        )
         assert "Return Node" in explain["plan"]["text"]
+
+        indexes = session.indexes()
+        assert any(index["name"] == "system.node.property" for index in indexes["indexes"])
 
         profile = session.profile_node_find("User", {"name": "Alice"})
         assert profile["command"] == "node.find"

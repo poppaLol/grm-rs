@@ -57,7 +57,7 @@ pub fn help_index() -> Value {
         ],
         "tool_categories": {
             "help": ["grm_help", "grm_tool_help"],
-            "schema": ["grm_schema_list", "grm_schema_define_node", "grm_schema_define_edge"],
+            "schema": ["grm_schema_list", "grm_schema_define_node", "grm_schema_define_edge", "grm_index_list"],
             "batch": ["grm_batch"],
             "nodes": ["grm_node_create", "grm_node_update", "grm_node_delete", "grm_node_find"],
             "edges": ["grm_edge_create", "grm_edge_update", "grm_edge_delete", "grm_edge_find"],
@@ -107,6 +107,16 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "before_calling": ["Call this before creating or querying graph data if model fields are unknown."],
             "example": {},
             "related": ["grm://schema", "grm_help"]
+        }),
+        "grm_index_list" => json!({
+            "tool": "grm_index_list",
+            "purpose": "Return the current automatic system index catalog.",
+            "notes": [
+                "Indexes are backend-maintained derived acceleration structures.",
+                "User-defined indexes and durable index contents are future work."
+            ],
+            "example": {},
+            "related": ["grm_explain", "grm_profile", "grm_schema_list"]
         }),
         "grm_schema_define_node" => json!({
             "tool": "grm_schema_define_node",
@@ -454,6 +464,7 @@ pub fn known_tools() -> Vec<&'static str> {
         "grm_help",
         "grm_tool_help",
         "grm_schema_list",
+        "grm_index_list",
         "grm_batch",
         "grm_schema_define_node",
         "grm_schema_define_edge",
