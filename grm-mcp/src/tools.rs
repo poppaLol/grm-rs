@@ -301,10 +301,14 @@ impl GrmMcpServer {
     ) -> Result<Json<JsonObject>, McpError> {
         let state = self.state.lock().await;
         let value = match parse_introspection_command("session.explain", &params.command)? {
-            SessionCommand::SessionExplainNodeFind { model_name, terms } => state
+            SessionCommand::SessionExplainNodeFind {
+                model_name, terms, ..
+            } => state
                 .explain_node_find_terms(&model_name, &terms)
                 .map_err(to_mcp_error)?,
-            SessionCommand::SessionExplainEdgeFind { model_name, terms } => state
+            SessionCommand::SessionExplainEdgeFind {
+                model_name, terms, ..
+            } => state
                 .explain_edge_find_terms(&model_name, &terms)
                 .map_err(to_mcp_error)?,
             _ => unreachable!("parse_introspection_command returns explain commands only"),
@@ -321,11 +325,15 @@ impl GrmMcpServer {
     ) -> Result<Json<JsonObject>, McpError> {
         let state = self.state.lock().await;
         let value = match parse_introspection_command("session.profile", &params.command)? {
-            SessionCommand::SessionProfileNodeFind { model_name, terms } => state
+            SessionCommand::SessionProfileNodeFind {
+                model_name, terms, ..
+            } => state
                 .profile_node_find_terms(&model_name, &terms)
                 .await
                 .map_err(to_mcp_error)?,
-            SessionCommand::SessionProfileEdgeFind { model_name, terms } => state
+            SessionCommand::SessionProfileEdgeFind {
+                model_name, terms, ..
+            } => state
                 .profile_edge_find_terms(&model_name, &terms)
                 .map_err(to_mcp_error)?,
             _ => unreachable!("parse_introspection_command returns profile commands only"),
