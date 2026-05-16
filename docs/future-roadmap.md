@@ -173,10 +173,16 @@ As traversal and backend support get richer, users will need better introspectio
 
 Future possibilities:
 
-- `explain` output for query planning and execution shape
+- richer `explain` output for query planning and execution shape
 - profiling information for query cost and result shaping
 - clearer debugging for traversal and filtering behavior
 - import/export validation diagnostics
+
+Current explain/profile output already exposes logical plan steps plus
+machine-readable access-path metadata for GRM's automatic system indexes. Those
+indexes are derived backend acceleration structures, not user-defined indexes or
+durable source-of-truth data. User-defined indexes, constraints, and optimizer
+reordering remain future work.
 
 This would build on the existing kernel/query direction and improve trust in the system.
 

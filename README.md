@@ -92,6 +92,7 @@ node.create Post title="Graph Notes"
 edge.create AUTHORED from=1 to=2 year=2026
 
 node.find User name=Alice via=out:AUTHORED:Post
+session.indexes
 session.explain node.find User name=Alice via=out:AUTHORED:Post
 session.profile node.find User name=Alice via=out:AUTHORED:Post
 ```
@@ -184,10 +185,13 @@ flowchart TD
     Cypher --> Neo4j[Neo4j backend]
 ```
 
-The current in-memory backend maintains indexes for labels, properties,
-relationship types, and adjacency. Transaction overlay reads preserve
-read-your-writes behavior without forcing whole-store materialization on the
-important query paths.
+The current in-memory backend maintains system indexes for node ids, node
+labels, exact node-property lookup, relationship ids, relationship types, and
+incoming/outgoing adjacency. These indexes are backend-maintained derived
+acceleration structures, not durable source-of-truth data. `session.indexes`
+exposes the catalog, and structured explain/profile output includes per-step
+access metadata so callers can distinguish index-backed steps from scans or
+filters. User-defined indexes are future work.
 
 Backend behavior is covered by shared tests for the in-memory backend and an
 ignored/env-gated Neo4j suite.
