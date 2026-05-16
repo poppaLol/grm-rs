@@ -467,6 +467,11 @@ impl PySession {
         json_value_to_py(py, &value)
     }
 
+    fn indexes(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let value = self.state.index_catalog_value();
+        json_value_to_py(py, &value)
+    }
+
     fn save_json(&self, path: &str) -> PyResult<()> {
         self.state.save_to_json(path).map_err(grm_err)
     }
