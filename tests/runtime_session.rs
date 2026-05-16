@@ -945,6 +945,231 @@ async fn session_state_explain_and_profile_return_structured_values() {
 }
 
 #[tokio::test]
+async fn session_index_catalog_exposes_system_indexes() {
+    let state = SessionState::new();
+    let catalog = state.index_catalog_value();
+    let indexes = catalog["indexes"].as_array().unwrap();
+
+    assert!(indexes.iter().any(|index| {
+        index["name"] == json!("system.node.label")
+            && index["kind"] == json!("system")
+            && index["entity"] == json!("node")
+            && index["durable"] == json!(false)
+            && index["derived"] == json!(true)
+    }));
+    assert!(indexes.iter().any(|index| {
+        index["name"] == json!("system.edge.outgoing_adjacency")
+            && index["fields"] == json!(["from", "type"])
+    }));
+    assert_eq!(
+        catalog["notes"]["user_defined_indexes"],
+        json!("future_work")
+    );
+}
+
+#[tokio::test]
+async fn session_indexes_command_renders_system_catalog() {
+    let input = Cursor::new("session.indexes\nsession.exit\n");
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Index Catalog"));
+    assert!(output.contains("system.node.label"));
+    assert!(output.contains("system.edge.incoming_adjacency"));
+    assert!(output.contains("user-defined indexes are future work"));
+}
+
+#[tokio::test]
+async fn explain_structured_access_paths_identify_indexes_and_scans() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required age:int:optional\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice age=42\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (state, _, _) = session.into_parts();
+
+    let id_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(NodeFindRequest {
+                model: "User".to_string(),
+                id: Some(1),
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(
+        &id_explain,
+        "NodeById",
+        "node_id_lookup",
+        Some("system.node.id"),
+        false,
+    );
+
+    let property_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(NodeFindRequest {
+                model: "User".to_string(),
+                predicates: vec![PropertyPredicate {
+                    field: "name".to_string(),
+                    op: PredicateOp::Eq,
+                    value: json!("Alice"),
+                }],
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(
+        &property_explain,
+        "NodePropertySeek",
+        "node_property_index",
+        Some("system.node.property"),
+        false,
+    );
+
+    let label_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(NodeFindRequest {
+                model: "User".to_string(),
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(
+        &label_explain,
+        "NodeLabelScan",
+        "node_label_index",
+        Some("system.node.label"),
+        false,
+    );
+
+    let traversal_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(NodeFindRequest {
+                model: "User".to_string(),
+                traversals: vec![TraversalStepRequest {
+                    direction: TraversalDirection::Out,
+                    edge_model: Some("Authored".to_string()),
+                    end_model: "Post".to_string(),
+                }],
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(
+        &traversal_explain,
+        "ExpandOut",
+        "outgoing_adjacency",
+        Some("system.edge.outgoing_adjacency"),
+        false,
+    );
+
+    let bidirectional_traversal_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(NodeFindRequest {
+                model: "User".to_string(),
+                traversals: vec![TraversalStepRequest {
+                    direction: TraversalDirection::Both,
+                    edge_model: Some("Authored".to_string()),
+                    end_model: "Post".to_string(),
+                }],
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(
+        &bidirectional_traversal_explain,
+        "ExpandBoth",
+        "bidirectional_adjacency",
+        None,
+        false,
+    );
+    assert_plan_has_candidate_indexes(
+        &bidirectional_traversal_explain,
+        "ExpandBoth",
+        &[
+            "system.edge.outgoing_adjacency",
+            "system.edge.incoming_adjacency",
+        ],
+    );
+
+    let both_endpoint_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::EdgeFind(EdgeFindRequest {
+                model: "Authored".to_string(),
+                from: Some(1),
+                to: Some(2),
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(
+        &both_endpoint_explain,
+        "RelationshipEndpointSeek",
+        "relationship_endpoint_adjacency",
+        None,
+        false,
+    );
+    assert_plan_has_candidate_indexes(
+        &both_endpoint_explain,
+        "RelationshipEndpointSeek",
+        &[
+            "system.edge.outgoing_adjacency",
+            "system.edge.incoming_adjacency",
+        ],
+    );
+
+    let range_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(NodeFindRequest {
+                model: "User".to_string(),
+                predicates: vec![PropertyPredicate {
+                    field: "age".to_string(),
+                    op: PredicateOp::Gt,
+                    value: json!(40),
+                }],
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(&range_explain, "NodeFilter", "scan", None, true);
+}
+
+fn assert_plan_has_access(
+    explain: &Value,
+    kind: &str,
+    access_path: &str,
+    index: Option<&str>,
+    scan: bool,
+) {
+    let details = explain["plan"]["details"].as_array().unwrap();
+    let step = details
+        .iter()
+        .find(|step| step["kind"] == json!(kind))
+        .unwrap_or_else(|| panic!("missing plan step kind {kind}: {details:#?}"));
+
+    assert_eq!(step["access_path"], json!(access_path));
+    assert_eq!(step["index"], index.map(Value::from).unwrap_or(Value::Null));
+    assert_eq!(step["scan"], json!(scan));
+}
+
+fn assert_plan_has_candidate_indexes(explain: &Value, kind: &str, indexes: &[&str]) {
+    let details = explain["plan"]["details"].as_array().unwrap();
+    let step = details
+        .iter()
+        .find(|step| step["kind"] == json!(kind))
+        .unwrap_or_else(|| panic!("missing plan step kind {kind}: {details:#?}"));
+    assert_eq!(step["indexes"], json!(indexes));
+}
+
+#[tokio::test]
 async fn typed_node_find_traversal_matches_cli_terms_and_supports_introspection() {
     let input = Cursor::new(
         "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create User name=Bob\nnode.create Post title=Hello\nedge.create Authored from=1 to=3 year=2024\nsession.exit\n",

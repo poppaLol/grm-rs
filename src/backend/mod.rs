@@ -18,6 +18,7 @@ pub use inmemory::InMemoryBackend;
 pub use neo4j::{Neo4jBackend, Neo4jConfig, Neo4jTx};
 pub(crate) use persisted::BinaryPersistedGraphStore;
 pub use persisted::PersistedGraphStore;
+pub use plan::{AccessPath, IndexEntity, IndexKind, IndexMetadata, system_index_catalog};
 pub use plan::{BackendCapabilities, ExecutionPlan, PlanStep, PlanStepKind};
 pub use storednode::StoredNode;
 pub use storedrel::StoredRel;

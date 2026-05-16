@@ -1,5 +1,7 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::dsl::{
     CompareOp, Direction, GraphQuery, MatchClause, PropertyFilter, ReturnKind, VarId,
 };
@@ -134,6 +136,127 @@ impl PlanStep {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IndexMetadata {
+    pub name: &'static str,
+    pub kind: IndexKind,
+    pub entity: IndexEntity,
+    pub fields: &'static [&'static str],
+    pub durable: bool,
+    pub derived: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexKind {
+    System,
+    UserDefined,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexEntity {
+    Node,
+    Edge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessPath {
+    NodeIdLookup,
+    NodeLabelIndex,
+    NodePropertyIndex,
+    RelationshipIdLookup,
+    RelationshipTypeIndex,
+    RelationshipEndpointAdjacency,
+    OutgoingAdjacency,
+    IncomingAdjacency,
+    BidirectionalAdjacency,
+    Scan,
+}
+
+impl AccessPath {
+    pub fn index_name(self) -> Option<&'static str> {
+        match self {
+            Self::NodeIdLookup => Some("system.node.id"),
+            Self::NodeLabelIndex => Some("system.node.label"),
+            Self::NodePropertyIndex => Some("system.node.property"),
+            Self::RelationshipIdLookup => Some("system.edge.id"),
+            Self::RelationshipTypeIndex => Some("system.edge.type"),
+            Self::RelationshipEndpointAdjacency => None,
+            Self::OutgoingAdjacency => Some("system.edge.outgoing_adjacency"),
+            Self::IncomingAdjacency => Some("system.edge.incoming_adjacency"),
+            Self::BidirectionalAdjacency => None,
+            Self::Scan => None,
+        }
+    }
+
+    pub fn is_scan(self) -> bool {
+        matches!(self, Self::Scan)
+    }
+}
+
+pub fn system_index_catalog() -> Vec<IndexMetadata> {
+    vec![
+        IndexMetadata {
+            name: "system.node.id",
+            kind: IndexKind::System,
+            entity: IndexEntity::Node,
+            fields: &["id"],
+            durable: false,
+            derived: true,
+        },
+        IndexMetadata {
+            name: "system.node.label",
+            kind: IndexKind::System,
+            entity: IndexEntity::Node,
+            fields: &["label"],
+            durable: false,
+            derived: true,
+        },
+        IndexMetadata {
+            name: "system.node.property",
+            kind: IndexKind::System,
+            entity: IndexEntity::Node,
+            fields: &["label", "property", "value"],
+            durable: false,
+            derived: true,
+        },
+        IndexMetadata {
+            name: "system.edge.id",
+            kind: IndexKind::System,
+            entity: IndexEntity::Edge,
+            fields: &["id"],
+            durable: false,
+            derived: true,
+        },
+        IndexMetadata {
+            name: "system.edge.type",
+            kind: IndexKind::System,
+            entity: IndexEntity::Edge,
+            fields: &["type"],
+            durable: false,
+            derived: true,
+        },
+        IndexMetadata {
+            name: "system.edge.outgoing_adjacency",
+            kind: IndexKind::System,
+            entity: IndexEntity::Edge,
+            fields: &["from", "type"],
+            durable: false,
+            derived: true,
+        },
+        IndexMetadata {
+            name: "system.edge.incoming_adjacency",
+            kind: IndexKind::System,
+            entity: IndexEntity::Edge,
+            fields: &["to", "type"],
+            durable: false,
+            derived: true,
+        },
+    ]
+}
+
 impl fmt::Display for PlanStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.kind.fmt(f)
@@ -208,6 +331,75 @@ pub enum PlanStepKind {
         var: VarId,
         kind: ReturnKind,
     },
+}
+
+impl PlanStepKind {
+    pub fn logical_name(&self) -> &'static str {
+        match self {
+            Self::NodeById { .. } => "NodeById",
+            Self::NodeLabelScan { .. } => "NodeLabelScan",
+            Self::NodePropertySeek { .. } => "NodePropertySeek",
+            Self::NodeCheck { .. } => "NodeCheck",
+            Self::NodeFilter { .. } => "NodeFilter",
+            Self::RelationshipById { .. } => "RelationshipById",
+            Self::RelationshipTypeScan { .. } => "RelationshipTypeScan",
+            Self::RelationshipEndpointSeek { .. } => "RelationshipEndpointSeek",
+            Self::RelationshipFilter { .. } => "RelationshipFilter",
+            Self::ExpandOut { .. } => "ExpandOut",
+            Self::ExpandIn { .. } => "ExpandIn",
+            Self::ExpandBoth { .. } => "ExpandBoth",
+            Self::Return { .. } => "Return",
+        }
+    }
+
+    pub fn access_path(&self) -> Option<AccessPath> {
+        match self {
+            Self::NodeById { .. } => Some(AccessPath::NodeIdLookup),
+            Self::NodeLabelScan { labels, .. } => {
+                if labels.is_empty() {
+                    Some(AccessPath::Scan)
+                } else {
+                    Some(AccessPath::NodeLabelIndex)
+                }
+            }
+            Self::NodePropertySeek { .. } => Some(AccessPath::NodePropertyIndex),
+            Self::RelationshipById { .. } => Some(AccessPath::RelationshipIdLookup),
+            Self::RelationshipTypeScan { .. } => Some(AccessPath::RelationshipTypeIndex),
+            Self::RelationshipEndpointSeek { from, to, .. } => match (from, to) {
+                (Some(_), Some(_)) => Some(AccessPath::RelationshipEndpointAdjacency),
+                (Some(_), None) => Some(AccessPath::OutgoingAdjacency),
+                (None, Some(_)) => Some(AccessPath::IncomingAdjacency),
+                (None, None) => Some(AccessPath::RelationshipTypeIndex),
+            },
+            Self::ExpandOut { .. } => Some(AccessPath::OutgoingAdjacency),
+            Self::ExpandIn { .. } => Some(AccessPath::IncomingAdjacency),
+            Self::ExpandBoth { .. } => Some(AccessPath::BidirectionalAdjacency),
+            Self::NodeFilter { .. } | Self::RelationshipFilter { .. } => Some(AccessPath::Scan),
+            Self::NodeCheck { .. } | Self::Return { .. } => None,
+        }
+    }
+
+    pub fn candidate_index_names(&self) -> Vec<&'static str> {
+        match self {
+            Self::RelationshipEndpointSeek {
+                from: Some(_),
+                to: Some(_),
+                ..
+            } => vec![
+                "system.edge.outgoing_adjacency",
+                "system.edge.incoming_adjacency",
+            ],
+            Self::ExpandBoth { .. } => vec![
+                "system.edge.outgoing_adjacency",
+                "system.edge.incoming_adjacency",
+            ],
+            _ => self
+                .access_path()
+                .and_then(|path| path.index_name())
+                .into_iter()
+                .collect(),
+        }
+    }
 }
 
 impl fmt::Display for PlanStepKind {

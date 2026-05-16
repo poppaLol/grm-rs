@@ -264,6 +264,7 @@ pub enum AdminRequest {
     Export(ExportRequest),
     Import(ImportRequest),
     SchemaList,
+    IndexList,
     Summary,
 }
 

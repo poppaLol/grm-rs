@@ -23,6 +23,7 @@ pub enum SessionCommand {
     Help,
     Exit,
     SessionDescribe,
+    SessionIndexes,
     TxBegin,
     TxCommit,
     ModelDefine {
@@ -125,6 +126,12 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
         "?" | "help" | "session.help" => Ok(SessionCommand::Help),
         "exit" | "session.exit" => Ok(SessionCommand::Exit),
         "session.describe" => Ok(SessionCommand::SessionDescribe),
+        "session.indexes" => {
+            if !args.is_empty() {
+                return Err(GrmError::Constraint("usage: session.indexes".to_string()));
+            }
+            Ok(SessionCommand::SessionIndexes)
+        }
         "tx.begin" | "transaction.begin" => {
             if !args.is_empty() {
                 return Err(GrmError::Constraint("usage: tx.begin".to_string()));
