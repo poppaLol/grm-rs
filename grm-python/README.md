@@ -109,7 +109,15 @@ plan = session.explain_node_find(
 
 profile = session.profile_edge_find("AUTHORED", {"from": alice["id"]})
 assert profile["result_rows"] >= 0
+
+indexes = session.indexes()
+assert indexes["indexes"][0]["kind"] == "system"
 ```
+
+Index catalog entries describe GRM-maintained derived acceleration structures
+such as node-label, exact node-property, relationship-type, and adjacency
+indexes. They are not user-defined indexes, and their contents are not durable
+source-of-truth data.
 
 Batch operations share the same runtime semantics as MCP `grm_batch`, including
 atomic rollback, indexed errors, batch-local refs, and one autocommit snapshot
