@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::backend::{
     BinaryPersistedGraphStore, ExecutionPlan, GraphStore, PersistedGraphStore, PlanStep,
-    PlanStepKind,
+    PlanStepKind, system_index_catalog,
 };
 use crate::dsl::{
     CompareOp, Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, ReturnKind, VarGen,
@@ -20,10 +20,10 @@ use crate::fsutil::{
     backup_path, log_path, write_file_atomically, write_file_atomically_with_backup,
 };
 use crate::runtime::{
-    DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest,
-    EdgeUpdateRequest, ExplainRequest, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest,
-    NodeUpdateRequest, OrderDirection, PredicateOp, ProfileRequest, PropertyPredicate,
-    QueryRequest, TraversalDirection, TraversalReturn,
+    AdminRequest, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
+    EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, NodeCreateRequest, NodeDeleteRequest,
+    NodeFindRequest, NodeUpdateRequest, OrderDirection, PredicateOp, ProfileRequest,
+    PropertyPredicate, QueryRequest, TraversalDirection, TraversalReturn,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -471,6 +471,16 @@ impl SessionState {
             },
             "nodes": self.catalog.list_node_models(),
             "edges": self.catalog.list_rel_models(),
+        })
+    }
+
+    pub fn index_catalog_value(&self) -> Value {
+        json!({
+            "indexes": system_index_catalog(),
+            "notes": {
+                "user_defined_indexes": "future_work",
+                "durability": "system index contents are backend-maintained derived acceleration structures, not durable source-of-truth data",
+            },
         })
     }
 
@@ -955,6 +965,25 @@ impl SessionState {
                 let query = self.node_find_query_from_request(&node_request)?;
                 let plan = self.explain_node_find_query(&node_request.model, &query)?;
                 Ok(explain_value("node.find", &node_request.model, &plan))
+            }
+        }
+    }
+
+    pub fn admin(&self, request: AdminRequest) -> Result<Value> {
+        match request {
+            AdminRequest::SchemaList => Ok(self.schema_value()),
+            AdminRequest::IndexList => Ok(self.index_catalog_value()),
+            AdminRequest::Summary => Ok(self.summary_value()),
+            AdminRequest::Export(request) => {
+                if let Some(path) = request.path {
+                    self.export_to_json(path)?;
+                }
+                self.export_value()
+            }
+            AdminRequest::Save(_) | AdminRequest::Load(_) | AdminRequest::Import(_) => {
+                Err(crate::GrmError::NotSupported(
+                    "state-mutating admin requests are only available through CLI/session methods",
+                ))
             }
         }
     }
@@ -2328,6 +2357,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionCommand::Help => self.write_help()?,
             SessionCommand::Exit => return Ok(true),
             SessionCommand::SessionDescribe => self.write_session_summary()?,
+            SessionCommand::SessionIndexes => self.write_index_catalog()?,
             SessionCommand::TxBegin => self.handle_tx_begin()?,
             SessionCommand::TxCommit => self.handle_tx_commit()?,
             SessionCommand::ModelDefine { args } => {
@@ -2454,6 +2484,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         writeln!(self.writer, "  model.list")?;
         writeln!(self.writer, "  model.show <name>")?;
+        writeln!(self.writer, "  session.indexes")?;
         writeln!(self.writer, "  tx.begin")?;
         writeln!(self.writer, "  tx.commit")?;
         writeln!(
@@ -3809,6 +3840,43 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         Ok(())
+    }
+
+    fn write_index_catalog(&mut self) -> Result<()> {
+        writeln!(self.writer, "Index Catalog")?;
+        writeln!(
+            self.writer,
+            "System indexes are backend-maintained derived acceleration structures; user-defined indexes are future work."
+        )?;
+
+        let headers = vec![
+            "name".into(),
+            "kind".into(),
+            "entity".into(),
+            "fields".into(),
+            "durable".into(),
+            "derived".into(),
+        ];
+        let rows = system_index_catalog()
+            .into_iter()
+            .map(|index| {
+                vec![
+                    index.name.to_string(),
+                    format!("{:?}", index.kind).to_ascii_lowercase(),
+                    format!("{:?}", index.entity).to_ascii_lowercase(),
+                    index.fields.join(","),
+                    index.durable.to_string(),
+                    index.derived.to_string(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        write_table(
+            &mut self.writer,
+            &headers,
+            &[TableHeaderKind::Plain; 6],
+            &rows,
+            &self.colors,
+        )
     }
 
     fn prompt_id_field_name(&mut self) -> Result<String> {
@@ -5504,7 +5572,24 @@ fn plan_value(plan: &ExecutionPlan) -> Value {
             .iter()
             .map(|step| step.to_string())
             .collect::<Vec<_>>(),
+        "details": plan
+            .steps
+            .iter()
+            .map(plan_step_value)
+            .collect::<Vec<_>>(),
         "text": plan.to_string(),
+    })
+}
+
+fn plan_step_value(step: &PlanStep) -> Value {
+    let access_path = step.kind.access_path();
+    json!({
+        "kind": step.kind.logical_name(),
+        "display": step.to_string(),
+        "access_path": access_path,
+        "index": access_path.and_then(|path| path.index_name()),
+        "indexes": step.kind.candidate_index_names(),
+        "scan": access_path.map(|path| path.is_scan()).unwrap_or(false),
     })
 }
 

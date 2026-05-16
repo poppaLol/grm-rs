@@ -122,6 +122,12 @@ fn parser_builds_session_explain_node_find_command() {
 }
 
 #[test]
+fn parser_builds_session_indexes_command() {
+    let command = parse_command_line("session.indexes").unwrap();
+    assert!(matches!(command, SessionCommand::SessionIndexes));
+}
+
+#[test]
 fn parser_builds_session_profile_edge_find_command() {
     let command =
         parse_command_line("session.profile edge.find Authored from=1 year>=2024").unwrap();
