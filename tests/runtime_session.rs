@@ -981,7 +981,36 @@ async fn session_indexes_command_renders_system_catalog() {
     assert!(output.contains("Index Catalog"));
     assert!(output.contains("system.node.label"));
     assert!(output.contains("system.edge.incoming_adjacency"));
-    assert!(output.contains("user-defined indexes are future work"));
+    assert!(!output.contains("durable=false"));
+    assert!(!output.contains("user-defined indexes are future work"));
+}
+
+#[tokio::test]
+async fn verbose_session_commands_render_diagnostic_metadata() {
+    let input = Cursor::new(
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.describe --verbose\nsession.indexes --verbose\nsession.explain --verbose edge.find Authored from=1 to=2\nsession.profile --verbose node.find User name=Alice\nsession.exit\n",
+    );
+    let output = Vec::new();
+    let mut session = CliSession::new(input, output);
+
+    session.run().await.unwrap();
+
+    let (_, _, output) = session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Verbose details:"));
+    assert!(output.contains("backend: in_memory"));
+    assert!(output.contains("system indexes: 7"));
+    assert!(output.contains("durable indexes: 0"));
+    assert!(output.contains("| durable"));
+    assert!(output.contains("durable=false means index contents are not source-of-truth data"));
+    assert!(output.contains("access_path=relationship_endpoint_adjacency"));
+    assert!(
+        output.contains("indexes=system.edge.outgoing_adjacency,system.edge.incoming_adjacency")
+    );
+    assert!(output.contains("access_path=node_property_index"));
+    assert!(output.contains("index=system.node.property"));
+    assert!(output.contains("scan=false"));
 }
 
 #[tokio::test]

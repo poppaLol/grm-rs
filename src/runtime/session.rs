@@ -2356,8 +2356,8 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         match parse_command_line(trimmed)? {
             SessionCommand::Help => self.write_help()?,
             SessionCommand::Exit => return Ok(true),
-            SessionCommand::SessionDescribe => self.write_session_summary()?,
-            SessionCommand::SessionIndexes => self.write_index_catalog()?,
+            SessionCommand::SessionDescribe { verbose } => self.write_session_summary(verbose)?,
+            SessionCommand::SessionIndexes { verbose } => self.write_index_catalog(verbose)?,
             SessionCommand::TxBegin => self.handle_tx_begin()?,
             SessionCommand::TxCommit => self.handle_tx_commit()?,
             SessionCommand::ModelDefine { args } => {
@@ -2398,11 +2398,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionCommand::NodeFind { model_name, terms } => {
                 self.handle_node_find_parsed(&model_name, &terms).await?
             }
-            SessionCommand::SessionExplainNodeFind { model_name, terms } => {
-                self.handle_session_explain_node_find(&model_name, &terms)?
-            }
-            SessionCommand::SessionProfileNodeFind { model_name, terms } => {
-                self.handle_session_profile_node_find(&model_name, &terms)
+            SessionCommand::SessionExplainNodeFind {
+                model_name,
+                terms,
+                verbose,
+            } => self.handle_session_explain_node_find(&model_name, &terms, verbose)?,
+            SessionCommand::SessionProfileNodeFind {
+                model_name,
+                terms,
+                verbose,
+            } => {
+                self.handle_session_profile_node_find(&model_name, &terms, verbose)
                     .await?
             }
             SessionCommand::NodeUpdate {
@@ -2426,12 +2432,16 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             SessionCommand::EdgeFind { model_name, terms } => {
                 self.handle_edge_find_parsed(&model_name, &terms)?
             }
-            SessionCommand::SessionExplainEdgeFind { model_name, terms } => {
-                self.handle_session_explain_edge_find(&model_name, &terms)?
-            }
-            SessionCommand::SessionProfileEdgeFind { model_name, terms } => {
-                self.handle_session_profile_edge_find(&model_name, &terms)?
-            }
+            SessionCommand::SessionExplainEdgeFind {
+                model_name,
+                terms,
+                verbose,
+            } => self.handle_session_explain_edge_find(&model_name, &terms, verbose)?,
+            SessionCommand::SessionProfileEdgeFind {
+                model_name,
+                terms,
+                verbose,
+            } => self.handle_session_profile_edge_find(&model_name, &terms, verbose)?,
             SessionCommand::EdgeUpdate {
                 model_name,
                 id,
@@ -2484,7 +2494,8 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         writeln!(self.writer, "  model.list")?;
         writeln!(self.writer, "  model.show <name>")?;
-        writeln!(self.writer, "  session.indexes")?;
+        writeln!(self.writer, "  session.describe [--verbose]")?;
+        writeln!(self.writer, "  session.indexes [--verbose]")?;
         writeln!(self.writer, "  tx.begin")?;
         writeln!(self.writer, "  tx.commit")?;
         writeln!(
@@ -2517,19 +2528,19 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         )?;
         writeln!(
             self.writer,
-            "  session.explain node.find <ModelName> [node.find terms except format=...]"
+            "  session.explain [--verbose] node.find <ModelName> [node.find terms except format=...]"
         )?;
         writeln!(
             self.writer,
-            "  session.explain edge.find <LinkName> [edge.find terms except format=...]"
+            "  session.explain [--verbose] edge.find <LinkName> [edge.find terms except format=...]"
         )?;
         writeln!(
             self.writer,
-            "  session.profile node.find <ModelName> [node.find terms except format=...]"
+            "  session.profile [--verbose] node.find <ModelName> [node.find terms except format=...]"
         )?;
         writeln!(
             self.writer,
-            "  session.profile edge.find <LinkName> [edge.find terms except format=...]"
+            "  session.profile [--verbose] edge.find <LinkName> [edge.find terms except format=...]"
         )?;
         writeln!(
             self.writer,
@@ -2998,17 +3009,19 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         &mut self,
         model_name: &str,
         terms: &[QueryTerm],
+        verbose: bool,
     ) -> Result<()> {
         reject_introspection_format_terms(terms)?;
         let query = self.state.parse_node_find_terms(model_name, terms)?;
         let plan = self.state.explain_node_find_query(model_name, &query)?;
-        self.render_explain("node.find", model_name, &plan)
+        self.render_explain("node.find", model_name, &plan, verbose)
     }
 
     async fn handle_session_profile_node_find(
         &mut self,
         model_name: &str,
         terms: &[QueryTerm],
+        verbose: bool,
     ) -> Result<()> {
         reject_introspection_format_terms(terms)?;
         let query = self.state.parse_node_find_terms(model_name, terms)?;
@@ -3016,7 +3029,14 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let started = Instant::now();
         let result = self.state.execute_node_query(model_name, &query).await?;
         let elapsed = started.elapsed();
-        self.render_profile("node.find", model_name, &plan, result.row_count(), elapsed)
+        self.render_profile(
+            "node.find",
+            model_name,
+            &plan,
+            result.row_count(),
+            elapsed,
+            verbose,
+        )
     }
 
     async fn handle_edge_create_parsed(
@@ -3132,18 +3152,20 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         &mut self,
         model_name: &str,
         terms: &[QueryTerm],
+        verbose: bool,
     ) -> Result<()> {
         reject_introspection_format_terms(terms)?;
         let filters = collect_query_terms(terms);
         let query = self.state.parse_edge_find_query(model_name, &filters)?;
         let plan = self.state.explain_edge_find_query(model_name, &query)?;
-        self.render_explain("edge.find", model_name, &plan)
+        self.render_explain("edge.find", model_name, &plan, verbose)
     }
 
     fn handle_session_profile_edge_find(
         &mut self,
         model_name: &str,
         terms: &[QueryTerm],
+        verbose: bool,
     ) -> Result<()> {
         reject_introspection_format_terms(terms)?;
         let filters = collect_query_terms(terms);
@@ -3154,7 +3176,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .find_relationships_with_query(model_name, &query)?;
         let elapsed = started.elapsed();
-        self.render_profile("edge.find", model_name, &plan, rels.len(), elapsed)
+        self.render_profile("edge.find", model_name, &plan, rels.len(), elapsed, verbose)
     }
 
     fn handle_session_save(&mut self, args: &[&str]) -> Result<()> {
@@ -3318,9 +3340,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
     }
 
-    fn render_explain(&mut self, command: &str, target: &str, plan: &ExecutionPlan) -> Result<()> {
+    fn render_explain(
+        &mut self,
+        command: &str,
+        target: &str,
+        plan: &ExecutionPlan,
+        verbose: bool,
+    ) -> Result<()> {
         writeln!(self.writer, "Current logical plan for {command} {target}")?;
-        self.render_plan_steps(plan)
+        self.render_plan_steps(plan, verbose)
     }
 
     fn render_profile(
@@ -3330,9 +3358,10 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         plan: &ExecutionPlan,
         row_count: usize,
         elapsed: Duration,
+        verbose: bool,
     ) -> Result<()> {
         writeln!(self.writer, "Profile for {command} {target}")?;
-        self.render_plan_steps(plan)?;
+        self.render_plan_steps(plan, verbose)?;
         writeln!(self.writer, "Result rows: {row_count}")?;
         writeln!(self.writer, "Elapsed: {}", format_profile_duration(elapsed))?;
         writeln!(
@@ -3342,10 +3371,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
-    fn render_plan_steps(&mut self, plan: &ExecutionPlan) -> Result<()> {
+    fn render_plan_steps(&mut self, plan: &ExecutionPlan, verbose: bool) -> Result<()> {
         writeln!(self.writer, "Plan steps:")?;
         for (index, step) in plan.steps.iter().enumerate() {
             writeln!(self.writer, "  {}. {}", index + 1, step)?;
+            if verbose {
+                writeln!(
+                    self.writer,
+                    "     {}",
+                    format_plan_step_access_metadata(step)
+                )?;
+            }
         }
         Ok(())
     }
@@ -3743,7 +3779,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         Ok(())
     }
 
-    fn write_session_summary(&mut self) -> Result<()> {
+    fn write_session_summary(&mut self, verbose: bool) -> Result<()> {
         writeln!(self.writer, "Session Summary")?;
 
         let node_models = self.state.model_list();
@@ -3839,44 +3875,95 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             writeln!(self.writer, "Autocommit: off")?;
         }
 
+        if verbose {
+            let indexes = system_index_catalog();
+            let system_indexes = indexes
+                .iter()
+                .filter(|index| index.kind == crate::backend::IndexKind::System)
+                .count();
+            let derived_indexes = indexes.iter().filter(|index| index.derived).count();
+            let durable_indexes = indexes.iter().filter(|index| index.durable).count();
+
+            writeln!(self.writer, "Verbose details:")?;
+            writeln!(self.writer, "  backend: in_memory")?;
+            writeln!(
+                self.writer,
+                "  node id type: {}",
+                self.state.node_id_type().keyword()
+            )?;
+            writeln!(
+                self.writer,
+                "  edge id type: {}",
+                self.state.rel_id_type().keyword()
+            )?;
+            writeln!(self.writer, "  system indexes: {system_indexes}")?;
+            writeln!(self.writer, "  derived indexes: {derived_indexes}")?;
+            writeln!(self.writer, "  durable indexes: {durable_indexes}")?;
+            writeln!(self.writer, "  user-defined indexes: future work")?;
+        }
+
         Ok(())
     }
 
-    fn write_index_catalog(&mut self) -> Result<()> {
+    fn write_index_catalog(&mut self, verbose: bool) -> Result<()> {
         writeln!(self.writer, "Index Catalog")?;
-        writeln!(
-            self.writer,
-            "System indexes are backend-maintained derived acceleration structures; user-defined indexes are future work."
-        )?;
 
-        let headers = vec![
-            "name".into(),
-            "kind".into(),
-            "entity".into(),
-            "fields".into(),
-            "durable".into(),
-            "derived".into(),
-        ];
+        let headers = if verbose {
+            vec![
+                "name".into(),
+                "kind".into(),
+                "entity".into(),
+                "fields".into(),
+                "durable".into(),
+                "derived".into(),
+            ]
+        } else {
+            vec!["name".into(), "entity".into(), "fields".into()]
+        };
         let rows = system_index_catalog()
             .into_iter()
             .map(|index| {
-                vec![
-                    index.name.to_string(),
-                    format!("{:?}", index.kind).to_ascii_lowercase(),
-                    format!("{:?}", index.entity).to_ascii_lowercase(),
-                    index.fields.join(","),
-                    index.durable.to_string(),
-                    index.derived.to_string(),
-                ]
+                if verbose {
+                    vec![
+                        index.name.to_string(),
+                        format!("{:?}", index.kind).to_ascii_lowercase(),
+                        format!("{:?}", index.entity).to_ascii_lowercase(),
+                        index.fields.join(","),
+                        index.durable.to_string(),
+                        index.derived.to_string(),
+                    ]
+                } else {
+                    vec![
+                        index.name.to_string(),
+                        format!("{:?}", index.entity).to_ascii_lowercase(),
+                        index.fields.join(","),
+                    ]
+                }
             })
             .collect::<Vec<_>>();
+        let header_kinds = vec![TableHeaderKind::Plain; headers.len()];
         write_table(
             &mut self.writer,
             &headers,
-            &[TableHeaderKind::Plain; 6],
+            &header_kinds,
             &rows,
             &self.colors,
-        )
+        )?;
+
+        if verbose {
+            writeln!(self.writer, "Notes:")?;
+            writeln!(
+                self.writer,
+                "  system indexes are backend-maintained derived acceleration structures"
+            )?;
+            writeln!(
+                self.writer,
+                "  durable=false means index contents are not source-of-truth data"
+            )?;
+            writeln!(self.writer, "  user-defined indexes are future work")?;
+        }
+
+        Ok(())
     }
 
     fn prompt_id_field_name(&mut self) -> Result<String> {
@@ -5591,6 +5678,33 @@ fn plan_step_value(step: &PlanStep) -> Value {
         "indexes": step.kind.candidate_index_names(),
         "scan": access_path.map(|path| path.is_scan()).unwrap_or(false),
     })
+}
+
+fn format_plan_step_access_metadata(step: &PlanStep) -> String {
+    let access_path = step
+        .kind
+        .access_path()
+        .and_then(|path| serde_json::to_value(path).ok())
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "none".to_string());
+    let index = step
+        .kind
+        .access_path()
+        .and_then(|path| path.index_name())
+        .unwrap_or("none");
+    let indexes = step.kind.candidate_index_names();
+    let indexes = if indexes.is_empty() {
+        "none".to_string()
+    } else {
+        indexes.join(",")
+    };
+    let scan = step
+        .kind
+        .access_path()
+        .map(|path| path.is_scan())
+        .unwrap_or(false);
+
+    format!("access_path={access_path} index={index} indexes={indexes} scan={scan}")
 }
 
 fn format_profile_duration(duration: Duration) -> String {
