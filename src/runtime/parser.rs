@@ -22,8 +22,12 @@ pub struct QueryTerm {
 pub enum SessionCommand {
     Help,
     Exit,
-    SessionDescribe,
-    SessionIndexes,
+    SessionDescribe {
+        verbose: bool,
+    },
+    SessionIndexes {
+        verbose: bool,
+    },
     TxBegin,
     TxCommit,
     ModelDefine {
@@ -52,10 +56,12 @@ pub enum SessionCommand {
     SessionExplainNodeFind {
         model_name: String,
         terms: Vec<QueryTerm>,
+        verbose: bool,
     },
     SessionProfileNodeFind {
         model_name: String,
         terms: Vec<QueryTerm>,
+        verbose: bool,
     },
     NodeUpdate {
         model_name: String,
@@ -77,10 +83,12 @@ pub enum SessionCommand {
     SessionExplainEdgeFind {
         model_name: String,
         terms: Vec<QueryTerm>,
+        verbose: bool,
     },
     SessionProfileEdgeFind {
         model_name: String,
         terms: Vec<QueryTerm>,
+        verbose: bool,
     },
     EdgeUpdate {
         model_name: String,
@@ -125,13 +133,12 @@ pub fn parse_command_line(input: &str) -> Result<SessionCommand> {
     match command {
         "?" | "help" | "session.help" => Ok(SessionCommand::Help),
         "exit" | "session.exit" => Ok(SessionCommand::Exit),
-        "session.describe" => Ok(SessionCommand::SessionDescribe),
-        "session.indexes" => {
-            if !args.is_empty() {
-                return Err(GrmError::Constraint("usage: session.indexes".to_string()));
-            }
-            Ok(SessionCommand::SessionIndexes)
-        }
+        "session.describe" => Ok(SessionCommand::SessionDescribe {
+            verbose: parse_optional_verbose_flag(command, args)?,
+        }),
+        "session.indexes" => Ok(SessionCommand::SessionIndexes {
+            verbose: parse_optional_verbose_flag(command, args)?,
+        }),
         "tx.begin" | "transaction.begin" => {
             if !args.is_empty() {
                 return Err(GrmError::Constraint("usage: tx.begin".to_string()));
@@ -225,24 +232,41 @@ fn parse_session_introspection(
     input: &str,
     profile: bool,
 ) -> Result<SessionCommand> {
+    let (verbose, args) = strip_optional_verbose_flag(args);
     let nested = required_positional(command, args, 0)?;
     match nested {
         "node.find" => {
             let model_name = required_positional(command, args, 1)?.to_string();
             let terms = parse_query_terms(&args[2..], input)?;
             if profile {
-                Ok(SessionCommand::SessionProfileNodeFind { model_name, terms })
+                Ok(SessionCommand::SessionProfileNodeFind {
+                    model_name,
+                    terms,
+                    verbose,
+                })
             } else {
-                Ok(SessionCommand::SessionExplainNodeFind { model_name, terms })
+                Ok(SessionCommand::SessionExplainNodeFind {
+                    model_name,
+                    terms,
+                    verbose,
+                })
             }
         }
         "edge.find" => {
             let model_name = required_positional(command, args, 1)?.to_string();
             let terms = parse_query_terms(&args[2..], input)?;
             if profile {
-                Ok(SessionCommand::SessionProfileEdgeFind { model_name, terms })
+                Ok(SessionCommand::SessionProfileEdgeFind {
+                    model_name,
+                    terms,
+                    verbose,
+                })
             } else {
-                Ok(SessionCommand::SessionExplainEdgeFind { model_name, terms })
+                Ok(SessionCommand::SessionExplainEdgeFind {
+                    model_name,
+                    terms,
+                    verbose,
+                })
             }
         }
         _ => Err(constraint_at(
@@ -252,6 +276,24 @@ fn parse_session_introspection(
                 "usage: {command} node.find <ModelName> [terms...] | {command} edge.find <LinkName> [terms...]"
             ),
         )),
+    }
+}
+
+fn parse_optional_verbose_flag(command: &str, args: &[ParsedToken]) -> Result<bool> {
+    match args {
+        [] => Ok(false),
+        [arg] if arg.text == "--verbose" => Ok(true),
+        _ => Err(GrmError::Constraint(format!(
+            "usage: {command} [--verbose]"
+        ))),
+    }
+}
+
+fn strip_optional_verbose_flag(args: &[ParsedToken]) -> (bool, &[ParsedToken]) {
+    if args.first().map(|arg| arg.text.as_str()) == Some("--verbose") {
+        (true, &args[1..])
+    } else {
+        (false, args)
     }
 }
 

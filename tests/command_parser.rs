@@ -117,6 +117,7 @@ fn parser_builds_session_explain_node_find_command() {
                     value: "out:Authored:Post".into(),
                 },
             ],
+            verbose: false,
         }
     );
 }
@@ -124,7 +125,32 @@ fn parser_builds_session_explain_node_find_command() {
 #[test]
 fn parser_builds_session_indexes_command() {
     let command = parse_command_line("session.indexes").unwrap();
-    assert!(matches!(command, SessionCommand::SessionIndexes));
+    assert!(matches!(
+        command,
+        SessionCommand::SessionIndexes { verbose: false }
+    ));
+}
+
+#[test]
+fn parser_builds_verbose_session_introspection_commands() {
+    let command = parse_command_line("session.describe --verbose").unwrap();
+    assert!(matches!(
+        command,
+        SessionCommand::SessionDescribe { verbose: true }
+    ));
+
+    let command = parse_command_line("session.indexes --verbose").unwrap();
+    assert!(matches!(
+        command,
+        SessionCommand::SessionIndexes { verbose: true }
+    ));
+
+    let command =
+        parse_command_line("session.explain --verbose node.find User name=Alice").unwrap();
+    assert!(matches!(
+        command,
+        SessionCommand::SessionExplainNodeFind { verbose: true, .. }
+    ));
 }
 
 #[test]
@@ -146,6 +172,7 @@ fn parser_builds_session_profile_edge_find_command() {
                     value: "2024".into(),
                 },
             ],
+            verbose: false,
         }
     );
 }
