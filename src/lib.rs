@@ -11,9 +11,10 @@ pub mod runtime;
 
 // Re-exports for convenient use
 pub use backend::{
-    BackendCapabilities, BackendIdType, BackendIdentity, CypherQuery, ExecutionPlan, GraphBackend,
-    GraphPersistence, GraphTx, InMemoryBackend, Neo4jBackend, Neo4jConfig, Neo4jTx, PlanStep,
-    PlanStepKind, StoredNode, StoredRel, graph_query_to_cypher,
+    AccessPath, BackendCapabilities, BackendIdType, BackendIdentity, CypherQuery, ExecutionPlan,
+    GraphBackend, GraphPersistence, GraphTx, InMemoryBackend, IndexEntity, IndexKind,
+    IndexMetadata, Neo4jBackend, Neo4jConfig, Neo4jTx, PlanStep, PlanStepKind, StoredNode,
+    StoredRel, graph_query_to_cypher, system_index_catalog,
 };
 pub use client::{GraphClient, GraphPersistenceAccess};
 pub use decode::{DecodeFromRow, ResultShape, labels_match, node, rel};
