@@ -61,6 +61,14 @@ impl GrmMcpServer {
     }
 
     #[tool(
+        description = "Inspect GRM's current system index catalog. Indexes are backend-maintained derived metadata, not user-defined or durable source-of-truth data."
+    )]
+    async fn grm_index_list(&self) -> Result<Json<JsonObject>, McpError> {
+        let state = self.state.lock().await;
+        Ok(Json(to_object(state.index_catalog_value())?))
+    }
+
+    #[tool(
         description = "Apply an ordered list of structured schema/node/edge operations. Prefer this for more than 3 creates or updates."
     )]
     async fn grm_batch(
