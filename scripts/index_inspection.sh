@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# Usage: scripts/index_inspection.sh
+# Override setup script with: PLAYGROUND_SCRIPT=path/to/file.grm scripts/index_inspection.sh
 set -euo pipefail
 
 PLAYGROUND_SCRIPT="${PLAYGROUND_SCRIPT:-query_playground.grm}"
