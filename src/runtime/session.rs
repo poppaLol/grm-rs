@@ -5042,6 +5042,11 @@ fn apply_session_log_entry(
         DurableOperation::DeleteRel { id } => {
             store.remove_relationship(*id);
         }
+        DurableOperation::Batch { ops } => {
+            for op in ops {
+                apply_session_log_entry(store, catalog, op)?;
+            }
+        }
     }
 
     Ok(())
