@@ -15,6 +15,7 @@ pub enum DurableOperation {
     DeleteNode { id: i64 },
     UpsertRel { rel: StoredRel },
     DeleteRel { id: i64 },
+    Batch { ops: Vec<DurableOperation> },
 }
 
 pub(crate) fn append_operation(path: &Path, entry: &DurableOperation) -> io::Result<()> {

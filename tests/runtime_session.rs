@@ -2850,6 +2850,47 @@ async fn shared_durability_ignores_truncated_final_wal_record() {
 }
 
 #[test]
+fn shared_durability_ignores_truncated_batch_wal_record() {
+    let json_path = "/tmp/grm-shared-durability-truncated-batch.json";
+    let backup_path = "/tmp/grm-shared-durability-truncated-batch.json.bak";
+    let log_path = "/tmp/grm-shared-durability-truncated-batch.json.log";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+
+    let state = SessionState::new();
+    state
+        .checkpoint_durable(DurabilityFormat::Json, json_path)
+        .unwrap();
+    let model = RuntimeNodeModel::new(
+        "User",
+        "userId",
+        state.node_id_type(),
+        vec![RuntimeField {
+            name: "name".into(),
+            value_type: RuntimeValueType::String,
+            required: true,
+        }],
+    )
+    .unwrap();
+    let batch = DurableOperation::Batch {
+        ops: vec![DurableOperation::RegisterNodeModel { model }],
+    };
+    let bytes = serde_json::to_vec(&batch).unwrap();
+    fs::write(log_path, &bytes[..bytes.len() / 2]).unwrap();
+
+    let mut recovered = SessionState::new();
+    recovered
+        .recover_durable(DurabilityFormat::Json, json_path)
+        .unwrap();
+    assert!(recovered.model("User").is_none());
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+}
+
+#[test]
 fn shared_durability_reports_malformed_complete_wal_record() {
     let json_path = "/tmp/grm-shared-durability-malformed.json";
     let backup_path = "/tmp/grm-shared-durability-malformed.json.bak";
