@@ -80,7 +80,7 @@ impl GrmMcpServer {
             .await
             .map_err(to_mcp_error)?;
         if outcome.should_persist {
-            self.persist_autocommit(&state)
+            self.append_autocommit_ops(&state, &outcome.durable_ops)
                 .await
                 .map_err(to_mcp_error)?;
         }
