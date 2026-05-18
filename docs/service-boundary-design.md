@@ -1,0 +1,338 @@
+# Service Boundary Design Spike
+
+This document captures the intended service boundary for GRM after Shared WAL
+durability core changes. It is a docs-only design spike: the goal is to make
+the future hosted/service contract concrete enough that security work, daemon
+work, SDKs, and packaging can be designed against it without prematurely
+building the service.
+
+## Product Position
+
+GRM's sellable surface is:
+
+> typed, secure, explainable graph memory for applications and agents
+
+It is not:
+
+> learn our database query dialect
+
+The future service contract should be typed graph operations over
+gRPC/protobuf. CLI command text can remain a human adapter. Python helpers, MCP
+tools, and future SDKs can remain ergonomic wrappers. The service boundary
+itself should receive structured request objects for schema operations, node and
+edge CRUD, batch patches, query/traversal, explain/profile, and durability/admin
+work.
+
+This keeps the trusted boundary aligned with GRM's core value: applications and
+agents send typed graph/database requests, not arbitrary script text.
+
+## Protocol Choice
+
+gRPC/protobuf should be the canonical service protocol.
+
+Reasons:
+
+- protobuf defines naturally typed request and response messages
+- client generation is strong across Rust, Python, TypeScript, Go, Java, C#,
+  and other common application languages
+- gRPC fits certificate-based service authentication, including production mTLS
+- OpenTelemetry trace context can flow through gRPC metadata, and RPC metrics
+  can follow standard semantic conventions
+- request validation and authorization can operate on typed fields instead of
+  parsed command strings
+- streaming RPCs can be added later for profile events, watches, WAL replay,
+  backup/restore progress, and recovery reporting
+
+An HTTP/JSON gateway may be useful later for demos, marketplace ergonomics,
+simple hosted examples, or environments where gRPC tooling is inconvenient.
+That gateway should be an adapter over the protobuf contract, not the
+source-of-truth service API.
+
+## Future HTTP Admin/UI Layer
+
+A future browser-based admin UI may expose HTTP and WebSocket endpoints for
+human workflows. That layer could include a command console, graph explorer,
+schema browser, explain/profile views, durability status, backup/restore
+progress, and telemetry dashboards.
+
+This UI layer should remain an adapter over the typed gRPC/protobuf service
+contract. Even if the browser experience includes text input for convenience,
+the trusted backend boundary should still receive typed service requests rather
+than treating browser command text as the canonical API.
+
+## Ports And Deployment Shape
+
+Local daemon defaults can be developer-friendly, such as binding gRPC to
+`127.0.0.1:50051` for explicit local/dev service mode. External binding should
+be explicit rather than accidental.
+
+Production deployments should make host, port, TLS, and certificate settings
+configurable. A hosted GRM service may commonly sit behind TLS on port `443`,
+either directly or through an ingress/proxy/load balancer. Metrics may be
+exposed separately, exported through OpenTelemetry collector configuration, or
+both, depending on deployment shape.
+
+Insecure local/dev modes should be visibly unsafe escape hatches. They should
+not become the default for production-like daemon or hosted configurations.
+
+## Service Surface Sketch
+
+The exact `.proto` package layout can wait for an implementation PR, but the
+first service boundary should organize around explicit operation families.
+
+### SchemaService
+
+Candidate RPCs:
+
+- `DefineNodeModel`
+- `DefineEdgeModel`
+- `ListSchema`
+- `DescribeModel`
+
+This service owns runtime schema definition and inspection. It should expose
+node models, edge/link models, field names, field value types, required flags,
+ID field metadata, and endpoint constraints for edge models.
+
+### NodeService
+
+Candidate RPCs:
+
+- `CreateNode`
+- `UpdateNode`
+- `DeleteNode`
+- `FindNodes`
+
+Node requests should carry the model name, typed property values, IDs where
+needed, optional predicates, ordering, limit, and offset. `FindNodes` should
+remain a structured request rather than a textual `node.find` command.
+
+### EdgeService
+
+Candidate RPCs:
+
+- `CreateEdge`
+- `UpdateEdge`
+- `DeleteEdge`
+- `FindEdges`
+
+Edge requests should carry the edge model/link name, endpoint IDs for create,
+edge IDs for update/delete, typed property values, optional endpoint filters,
+predicates, ordering, limit, and offset.
+
+### BatchService
+
+Candidate RPC:
+
+- `ApplyGraphPatch`
+
+`ApplyGraphPatch` should accept:
+
+- an `atomic` flag
+- an explicit `allow_deletes` or equivalent delete safety control
+- ordered typed operations for schema, node, and edge changes
+- optional client-provided operation references for linking newly created nodes
+- response shape controls for summary versus detailed results
+
+The durable operation grouping should remain explicit. A successful atomic
+patch maps naturally to one durable grouped operation, while non-atomic patches
+may expose per-operation success and failure semantics.
+
+### QueryService
+
+Candidate RPCs:
+
+- `NodeFind`
+- `EdgeFind`
+- `Traversal`
+
+These are structured query requests, not arbitrary textual query strings.
+Traversal should be represented as constrained protobuf messages: root model,
+root predicates, ordered traversal steps, direction, edge model, end model,
+optional edge/end predicates, return mode, ordering, and limits.
+
+The important design constraint is that traversal objects must not grow into a
+hidden scripting language. If GRM later adds richer query capabilities, they
+should remain bounded typed constructs with clear validation, authorization,
+metering, and explainability.
+
+### IntrospectionService
+
+Candidate RPCs:
+
+- `Explain`
+- `Profile`
+- `IndexCatalog`
+- `DescribeSession`
+- `DescribeBackend`
+
+`Explain` should return logical plan shape and access-path metadata without
+executing the request. `Profile` should execute under explicit cost limits and
+return row counts, timing, plan shape, index/access-path metadata, and execution
+status.
+
+`IndexCatalog` should expose derived backend-maintained metadata, not imply that
+user-defined indexes are already part of the product. `DescribeSession` and
+`DescribeBackend` should expose capabilities, backend identity type, durability
+mode, and version information useful for SDKs and operators.
+
+### DurabilityAdminService
+
+Candidate RPCs:
+
+- `Checkpoint`
+- `Recover` / `Open`
+- `Compact`
+- `WalStatus`
+- `Backup` / `Restore` later
+
+This service should stay operationally explicit. Durability/admin RPCs need
+stricter permissions and request limits than normal graph reads and writes.
+Backup/restore can come later; the first design should still reserve space for
+streaming progress and failure reporting.
+
+## Non-Goals
+
+- No cloud service implementation in this PR.
+- No TLS or certificate implementation in this PR.
+- No authorization engine implementation in this PR.
+- No textual query language at the service boundary.
+- No distributed or multi-writer durability claim.
+- No clustering or peering implementation in this PR.
+
+The current embedded runtime should not be reshaped just to satisfy this spike.
+This document is meant to guide the next API-design PR, not force service
+infrastructure into the codebase early.
+
+## Future Clustering And Peering
+
+If GRM later adds clustering, replication, leader election, peering, or remote
+durability coordination, public client APIs and internal peer APIs should be
+separate service families. They should have separate protobuf packages or
+service namespaces, separate authorization policy, and separate certificate
+identity expectations.
+
+Public gRPC APIs should represent application and agent operations. Internal
+peer gRPC APIs should represent node-to-node coordination and should not inherit
+client-facing permissions by accident.
+
+## Security Implications
+
+Typed gRPC is generally easier to secure than a scripting or query language, but
+it is not secure automatically.
+
+Advantages over a textual scripting/query boundary:
+
+- typed messages are easier to validate before execution
+- authorization can be attached to operation families such as schema, node CRUD,
+  edge CRUD, batch patch, query/traversal, explain/profile, and admin
+- request metering can inspect structured fields such as batch length,
+  traversal depth, result limit, requested profile detail, and target model
+- audit records can capture operation type, model/link name, IDs, request ID,
+  client identity, and later actor/tenant
+- parser injection is not the primary trusted-boundary risk
+- there are no arbitrary expressions to sandbox by default
+
+Production service mode should default to encrypted transport. The expected
+production path is certificate-based service authentication, preferably mTLS for
+service-to-service deployments. Local/dev insecure modes may exist, but they
+must be explicit, visibly unsafe escape hatches rather than silent defaults.
+
+Authorization should be designed before marketplace packaging. The permission
+model should distinguish at least:
+
+- schema operations
+- node create, read/find, update, and delete
+- edge create, read/find, update, and delete
+- batch patch
+- query/traversal
+- explain/profile
+- durability/admin operations
+
+Request limits should be first-class service policy, not scattered defensive
+checks. Initial policy dimensions should include:
+
+- maximum batch operation count
+- maximum traversal depth
+- maximum result size and default page size
+- maximum profile cost and profile detail level
+- WAL append pressure and checkpoint pressure
+- maximum serialized request and response size
+- per-client or per-actor concurrency limits later
+
+Auditability should be designed into request handling from the start. A useful
+audit event should include operation family, RPC name, model or link name, IDs
+when present, request ID, status, latency, and later actor, client, tenant, and
+authorization decision metadata.
+
+## OpenTelemetry Implications
+
+gRPC is compatible with trace propagation through request metadata and with
+standard RPC semantic conventions for spans and metrics. A future daemon should
+create spans around service request handling and propagate context into runtime,
+durability, and backend work.
+
+Future spans and metrics should cover:
+
+- request latency and status by RPC and operation family
+- actor/client identity later, recorded carefully as low-cardinality attributes
+  or linked audit metadata
+- WAL append latency, bytes, failures, and queue/pressure signals
+- checkpoint latency, bytes, and failures
+- recovery events, replay count, skipped/truncated WAL records, and duration
+- query/profile execution timing, rows scanned, rows returned, and status
+- index usage and access-path metadata from explain/profile
+- backend call timing and backend error classification
+
+The design should keep observability useful without leaking sensitive graph data
+into high-cardinality span attributes.
+
+## Relationship To Existing Code
+
+The current runtime already points in the right direction. `RuntimeRequest` is a
+typed umbrella over request families that can map naturally onto future protobuf
+messages:
+
+- `RuntimeRequest` maps to the union of service operation families.
+- `SchemaRequest` maps to `SchemaService` requests such as `DefineNodeModel` and
+  `DefineEdgeModel`.
+- `NodeRequest` maps to `NodeService` create/update/delete/find requests.
+- `EdgeRequest` maps to `EdgeService` create/update/delete/find requests.
+- `BatchRequest` maps to `BatchService.ApplyGraphPatch`.
+- `QueryRequest` maps to `QueryService.NodeFind`, `QueryService.EdgeFind`, and
+  `QueryService.Traversal`.
+- `ExplainRequest` maps to `IntrospectionService.Explain`.
+- `ProfileRequest` maps to `IntrospectionService.Profile`.
+- `AdminRequest` maps partly to `IntrospectionService` and partly to
+  `DurabilityAdminService`.
+- `DurableOperation` maps to the internal durable operation log and to future
+  durable grouping semantics for service-side mutation commits.
+
+CLI text syntax should remain an adapter that parses human commands into typed
+requests. Python bindings should continue to expose ergonomic method calls over
+the same request semantics. MCP tools should do the same for agent workflows.
+A future daemon should converge on these typed request semantics rather than
+introducing a separate textual service language.
+
+This convergence matters because it gives GRM one core behavior contract across
+embedded Rust, CLI, Python, MCP, and hosted/service mode.
+
+## Recommended Next PR
+
+The next implementation PR after this design spike should add a service API
+crate, likely named `grm-proto` or `grm-service-api`.
+
+Recommended scope:
+
+- add initial `.proto` files for schema, node, edge, batch, query,
+  introspection, and durability/admin messages
+- generate Rust types from those protobuf definitions
+- include mapping notes between generated types and existing runtime request
+  types
+- optionally add a tiny in-process harness if it helps validate mappings, but do
+  not require a daemon yet
+- leave the embedded runtime behavior untouched except for narrow mapping or
+  documentation changes
+
+That PR should make the service API concrete without forcing transport,
+daemon lifecycle, TLS, certificate management, authorization engines, or hosted
+operations into the repository prematurely.
