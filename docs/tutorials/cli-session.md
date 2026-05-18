@@ -135,20 +135,21 @@ Example shape:
 ```text
 Current logical plan for node.find User
 Plan steps:
-  1. NodeLabelScan v0 User
+  1. NodePropertySeek v0 User.name
   2. ExpandOut v0 -[v1:AUTHORED]-> v2
   3. NodeCheck v2 Post
-  4. NodeFilter v0 User name
-  5. Return Node v2
+  4. Return Node v2
 ```
 
-This is first-phase introspection. It describes the current logical query shape;
-it is not a cost-based optimizer yet.
+Verbose explain also shows the simple planner's chosen anchor, candidate access
+paths, selected access path, and residual filters. This is conservative
+introspection, not a cost-based optimizer.
 
 ## Profile A Query
 
 `session.profile` runs the query and reports the plan, result count, and total
-elapsed time:
+elapsed time. Add `--verbose` to include per-step row counts and elapsed time
+where the in-memory backend can measure them:
 
 ```text
 session.profile node.find User name="Alice" via=out:AUTHORED:Post
@@ -159,14 +160,12 @@ Example shape:
 ```text
 Profile for node.find User
 Plan steps:
-  1. NodeLabelScan v0 User
+  1. NodePropertySeek v0 User.name
   2. ExpandOut v0 -[v1:AUTHORED]-> v2
   3. NodeCheck v2 Post
-  4. NodeFilter v0 User name
-  5. Return Node v2
+  4. Return Node v2
 Result rows: 1
 Elapsed: 123us
-Per-step metrics: not available in this first-phase profile.
 ```
 
 Use `session.explain` when you want to inspect without changing or running the

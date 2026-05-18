@@ -85,9 +85,15 @@ steps such as `RelationshipEndpointSeek`, `RelationshipTypeScan`,
 
 `session.explain` shows the current logical plan without running the query.
 `session.profile` runs the same query path as `node.find` or `edge.find` and
-reports the plan, result row count, and total elapsed time. Per-operator row
-counts and timings are intentionally future work; this is not a cost-based
+reports the plan, result row count, total elapsed time, and verbose per-step
+metrics for the in-memory backend. The planner is deliberately simple: it
+prefers ID lookup, then exact property seek, then adjacency expansion, then
+label/type scan, with residual filters called out. This is not a cost-based
 optimizer and does not reorder hops.
+
+Neo4j-backed paths should expose translated logical intent or backend-specific
+capability notes unless Neo4j can honestly provide physical operator metrics.
+GRM should not invent Neo4j physical timings from its own logical plan.
 
 Example shape for the current CLI query language:
 
@@ -96,15 +102,13 @@ session.profile node.find User name="user-000500" via=out:Authored:Post
 
 Profile for node.find User
 Plan steps:
-  1. NodeLabelScan v0 User
+  1. NodePropertySeek v0 User.name
   2. ExpandOut v0 -[v1:Authored]-> v2
   3. NodeCheck v2 Post
-  4. NodeFilter v0 User name
-  5. Return Node v2
+  4. Return Node v2
 
 Result rows: 1
 Elapsed: 1.234ms
-Per-step metrics: not available in this first-phase profile.
 ```
 
 This gives users a way to understand query behavior and gives maintainers a way
