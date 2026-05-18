@@ -1,3 +1,4 @@
+use grm_rs::{DurabilityFormat, SessionState};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, JsonObject};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
@@ -158,6 +159,59 @@ async fn batch_tool_exposes_structured_operation_objects() {
     }));
 
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn autocommit_batch_uses_shared_wal_recovery_path() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("mcp-session.json");
+    let path_arg = path.to_string_lossy().into_owned();
+    let client = client(&["--autocommit-json", &path_arg]).await;
+
+    call(
+        &client,
+        "grm_batch",
+        json!({
+            "ops": [
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "User",
+                        "id_field": "userId",
+                        "fields": [
+                            { "name": "name", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "model": "User",
+                        "props": { "name": "Alice" }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    client.cancel().await.unwrap();
+
+    let log = std::fs::read_to_string(path.with_extension("json.log")).unwrap();
+    assert!(log.contains("RegisterNodeModel"));
+    assert!(log.contains("UpsertNode"));
+
+    let mut recovered = SessionState::new();
+    recovered
+        .recover_durable(DurabilityFormat::Json, &path)
+        .unwrap();
+    let nodes = recovered
+        .find_nodes(
+            "User",
+            &std::collections::BTreeMap::from([("name".to_string(), "Alice".to_string())]),
+        )
+        .unwrap();
+    assert_eq!(nodes.len(), 1);
 }
 
 #[tokio::test]

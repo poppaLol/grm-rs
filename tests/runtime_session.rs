@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use grm_rs::{
-    BackendIdType, BatchRequest, CliSession, DefineEdgeRequest, DefineNodeRequest, EdgeFindRequest,
-    ExplainRequest, FieldSpec, FieldValueType, GraphTx, NodeFindRequest, PredicateOp,
-    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
-    RuntimeRelModel, RuntimeValueType, SessionBatchResponse, SessionFindResult,
-    SessionModelCatalog, SessionState, TraversalDirection, TraversalReturn, TraversalStepRequest,
+    BackendIdType, BatchRequest, CliSession, DefineEdgeRequest, DefineNodeRequest,
+    DurabilityFormat, DurableOperation, EdgeFindRequest, ExplainRequest, FieldSpec, FieldValueType,
+    GraphTx, NodeFindRequest, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
+    QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
+    SessionBatchResponse, SessionFindResult, SessionModelCatalog, SessionState, TraversalDirection,
+    TraversalReturn, TraversalStepRequest,
 };
 use serde_json::{Value, json};
 
@@ -2710,6 +2711,167 @@ async fn session_load_recovers_from_backup_and_replays_log_entries() {
     assert!(output.contains("Node User userId=1 {name=Alice}"));
     assert!(output.contains("Node User userId=2 {name=Bob}"));
     assert!(fs::metadata(log_path).is_ok());
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+}
+
+#[tokio::test]
+async fn shared_durability_api_recovers_checkpoint_plus_wal_in_order() {
+    let json_path = "/tmp/grm-shared-durability.json";
+    let backup_path = "/tmp/grm-shared-durability.json.bak";
+    let log_path = "/tmp/grm-shared-durability.json.log";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+
+    let mut state = SessionState::new();
+    state
+        .checkpoint_durable(DurabilityFormat::Json, json_path)
+        .unwrap();
+
+    let model = RuntimeNodeModel::new(
+        "User",
+        "userId",
+        state.node_id_type(),
+        vec![RuntimeField {
+            name: "name".into(),
+            value_type: RuntimeValueType::String,
+            required: true,
+        }],
+    )
+    .unwrap();
+    state.register_model(model.clone()).unwrap();
+    state
+        .append_durable_operation(
+            json_path,
+            &DurableOperation::RegisterNodeModel {
+                model: model.clone(),
+            },
+        )
+        .unwrap();
+
+    for name in ["Alice", "Bob"] {
+        let node = state
+            .create_instance("User", &BTreeMap::from([("name".into(), name.into())]))
+            .await
+            .unwrap();
+        state
+            .append_durable_operation(json_path, &DurableOperation::UpsertNode { node })
+            .unwrap();
+    }
+
+    let mut recovered = SessionState::new();
+    recovered
+        .recover_durable(DurabilityFormat::Json, json_path)
+        .unwrap();
+
+    let users = recovered
+        .find_nodes("User", &BTreeMap::new())
+        .unwrap()
+        .into_iter()
+        .map(|node| node.props["name"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(users, vec!["Alice", "Bob"]);
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+}
+
+#[tokio::test]
+async fn shared_durability_ignores_truncated_final_wal_record() {
+    let json_path = "/tmp/grm-shared-durability-truncated.json";
+    let backup_path = "/tmp/grm-shared-durability-truncated.json.bak";
+    let log_path = "/tmp/grm-shared-durability-truncated.json.log";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+
+    let mut state = SessionState::new();
+    state
+        .checkpoint_durable(DurabilityFormat::Json, json_path)
+        .unwrap();
+    let model = RuntimeNodeModel::new(
+        "User",
+        "userId",
+        state.node_id_type(),
+        vec![RuntimeField {
+            name: "name".into(),
+            value_type: RuntimeValueType::String,
+            required: true,
+        }],
+    )
+    .unwrap();
+    state.register_model(model.clone()).unwrap();
+    state
+        .append_durable_operation(json_path, &DurableOperation::RegisterNodeModel { model })
+        .unwrap();
+    let node = state
+        .create_instance("User", &BTreeMap::from([("name".into(), "Alice".into())]))
+        .await
+        .unwrap();
+    state
+        .append_durable_operation(json_path, &DurableOperation::UpsertNode { node })
+        .unwrap();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(log_path)
+        .unwrap()
+        .write_all(br#"{"RegisterNodeModel":"#)
+        .unwrap();
+
+    let mut recovered = SessionState::new();
+    recovered
+        .recover_durable(DurabilityFormat::Json, json_path)
+        .unwrap();
+    assert_eq!(
+        recovered
+            .find_nodes("User", &BTreeMap::from([("name".into(), "Alice".into())]))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let indexes = recovered.index_catalog_value();
+    assert!(
+        indexes["indexes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|index| { index["durable"] == json!(false) })
+    );
+
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+}
+
+#[test]
+fn shared_durability_reports_malformed_complete_wal_record() {
+    let json_path = "/tmp/grm-shared-durability-malformed.json";
+    let backup_path = "/tmp/grm-shared-durability-malformed.json.bak";
+    let log_path = "/tmp/grm-shared-durability-malformed.json.log";
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(backup_path);
+    let _ = fs::remove_file(log_path);
+
+    let state = SessionState::new();
+    state
+        .checkpoint_durable(DurabilityFormat::Json, json_path)
+        .unwrap();
+    fs::write(log_path, b"{bad json}\n").unwrap();
+
+    let mut recovered = SessionState::new();
+    let err = recovered
+        .recover_durable(DurabilityFormat::Json, json_path)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("malformed durable append log record")
+    );
 
     let _ = fs::remove_file(json_path);
     let _ = fs::remove_file(backup_path);
