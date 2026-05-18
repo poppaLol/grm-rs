@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use grm_rs::{GrmError, Result as GrmResult};
+use grm_rs::{DurabilityFormat, GrmError, Result as GrmResult};
 
 #[derive(Debug, Clone, Default)]
 pub struct StartupOptions {
@@ -21,6 +21,15 @@ pub struct AutocommitTarget {
 pub enum SessionFileFormat {
     Json,
     Binary,
+}
+
+impl SessionFileFormat {
+    pub fn durability_format(self) -> DurabilityFormat {
+        match self {
+            Self::Json => DurabilityFormat::Json,
+            Self::Binary => DurabilityFormat::Binary,
+        }
+    }
 }
 
 pub fn parse_startup_options<I>(args: I) -> GrmResult<StartupOptions>
