@@ -349,7 +349,21 @@ async fn explain_and_profile_return_structured_query_introspection() {
     assert_eq!(profile["result_rows"], 1);
     assert!(profile["elapsed"]["micros"].as_u64().is_some());
     assert!(profile["elapsed"]["display"].as_str().is_some());
-    assert!(profile["per_step_metrics"].is_null());
+    let metrics = profile["per_step_metrics"].as_array().unwrap();
+    assert!(metrics.len() >= 2);
+    assert!(metrics.iter().any(|metric| {
+        metric["kind"] == json!("RelationshipEndpointSeek")
+            && metric["access_path"] == json!("outgoing_adjacency")
+            && metric["input_rows"] == json!(0)
+            && metric["output_rows"] == json!(1)
+            && metric["elapsed_micros"].as_u64().is_some()
+    }));
+    assert!(metrics.iter().any(|metric| {
+        metric["kind"] == json!("Return")
+            && metric["input_rows"] == json!(1)
+            && metric["output_rows"] == json!(1)
+            && metric["elapsed_micros"].as_u64().is_some()
+    }));
 
     let error = call_error(
         &client,

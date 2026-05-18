@@ -398,7 +398,14 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 "plan": ["steps", "text"],
                 "result_rows": "Number of rows returned by the query path.",
                 "elapsed": ["micros", "display"],
-                "per_step_metrics": null
+                "per_step_metrics": [{
+                    "step_index": 0,
+                    "kind": "RelationshipEndpointSeek",
+                    "access_path": "outgoing_adjacency",
+                    "input_rows": 0,
+                    "output_rows": 1,
+                    "elapsed_micros": 42
+                }]
             },
             "common_errors": [
                 recovery("expected command", "Pass node.find <ModelName> [terms...] or edge.find <LinkName> [terms...]."),
