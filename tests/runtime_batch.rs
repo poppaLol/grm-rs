@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use grm_rs::{SessionBatchParams, SessionState, apply_session_batch};
+use grm_rs::{DurableOperation, SessionBatchParams, SessionState, apply_session_batch};
 use serde_json::json;
 
 #[tokio::test]
@@ -51,6 +51,11 @@ async fn batch_creates_graph_with_refs_and_details() {
     assert_eq!(outcome.value["applied"], true);
     assert_eq!(outcome.value["counts"]["edge_create"]["Authored"], 1);
     assert_eq!(outcome.value["ids"].as_array().unwrap().len(), 3);
+    assert_eq!(outcome.durable_ops.len(), 1);
+    assert!(matches!(
+        &outcome.durable_ops[0],
+        DurableOperation::Batch { ops } if ops.len() == 6
+    ));
     assert_eq!(
         state
             .find_relationships("Authored", &BTreeMap::new())

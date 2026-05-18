@@ -291,6 +291,11 @@ pub async fn apply_session_batch(
     }
 
     let should_persist = summary.applied || summary.has_successes();
+    let durable_ops = match durable_ops.len() {
+        0 => durable_ops,
+        1 => durable_ops,
+        _ => vec![DurableOperation::Batch { ops: durable_ops }],
+    };
     Ok(SessionBatchOutcome {
         durable_ops,
         value: summary.into_value(),
