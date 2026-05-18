@@ -56,11 +56,17 @@ impl PySession {
         autocommit_format: &str,
     ) -> PyResult<Self> {
         let autocommit = configure_autocommit(autocommit, autocommit_path, autocommit_format)?;
-        let state = SessionState::new();
+        let mut state = SessionState::new();
         if let Some(target) = &autocommit {
-            state
-                .checkpoint_durable(target.format.durability_format(), &target.path)
-                .map_err(grm_err)?;
+            if target.path.exists() {
+                state
+                    .recover_durable(target.format.durability_format(), &target.path)
+                    .map_err(grm_err)?;
+            } else {
+                state
+                    .checkpoint_durable(target.format.durability_format(), &target.path)
+                    .map_err(grm_err)?;
+            }
         }
         Ok(Self { state, autocommit })
     }

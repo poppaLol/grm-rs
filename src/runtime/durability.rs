@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fsutil::log_path;
+use crate::fsutil::{log_path, sync_parent_dir};
 use crate::{RuntimeNodeModel, RuntimeRelModel, StoredNode, StoredRel};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +20,7 @@ pub enum DurableOperation {
 
 pub(crate) fn append_operation(path: &Path, entry: &DurableOperation) -> io::Result<()> {
     let log_path = log_path(path);
+    let log_existed = log_path.exists();
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -33,13 +34,16 @@ pub(crate) fn append_operation(path: &Path, entry: &DurableOperation) -> io::Res
     file.write_all(&line)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
+    if !log_existed {
+        sync_parent_dir(path)?;
+    }
     Ok(())
 }
 
 pub(crate) fn clear_log(path: &Path) -> io::Result<()> {
     let log_path = log_path(path);
     match fs::remove_file(log_path) {
-        Ok(()) => Ok(()),
+        Ok(()) => sync_parent_dir(path),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
