@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use grm_rs::{Result as GrmResult, SessionState};
+use grm_rs::{DurableOperation, Result as GrmResult, SessionState};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use crate::config::{AutocommitTarget, SessionFileFormat, StartupOptions};
+use crate::config::{AutocommitTarget, StartupOptions};
 use crate::tools::to_mcp_error;
 
 #[derive(Clone)]
@@ -30,6 +30,10 @@ impl GrmMcpServer {
         }
         if let Some(path) = &options.import_json {
             state.import_from_json(path)?;
+        }
+
+        if let Some(target) = &options.autocommit {
+            state.checkpoint_durable(target.format.durability_format(), &target.path)?;
         }
 
         Ok(Self {
@@ -57,10 +61,23 @@ impl GrmMcpServer {
             return self.persist_export(state).await;
         };
 
-        match target.format {
-            SessionFileFormat::Json => state.save_to_json(&target.path),
-            SessionFileFormat::Binary => state.save_to_binary(&target.path),
-        }?;
+        state.checkpoint_durable(target.format.durability_format(), &target.path)?;
+
+        self.persist_export(state).await
+    }
+
+    pub(crate) async fn append_autocommit_ops(
+        &self,
+        state: &SessionState,
+        ops: &[DurableOperation],
+    ) -> GrmResult<()> {
+        let Some(target) = &self.autocommit else {
+            return self.persist_export(state).await;
+        };
+
+        for op in ops {
+            state.append_durable_operation(&target.path, op)?;
+        }
 
         self.persist_export(state).await
     }
