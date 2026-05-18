@@ -190,8 +190,10 @@ labels, exact node-property lookup, relationship ids, relationship types, and
 incoming/outgoing adjacency. These indexes are backend-maintained derived
 acceleration structures, not durable source-of-truth data. `session.indexes`
 exposes the catalog, and structured explain/profile output includes per-step
-access metadata so callers can distinguish index-backed steps from scans or
-filters. User-defined indexes are future work.
+access metadata and in-memory profile metrics so callers can distinguish
+index-backed seeks, adjacency expansion, scans, and residual filters.
+User-defined indexes are future work; the current planner is simple rather than
+cost-based.
 
 Backend behavior is covered by shared tests for the in-memory backend and an
 ignored/env-gated Neo4j suite.
