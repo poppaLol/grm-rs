@@ -8,11 +8,11 @@ use std::path::PathBuf;
 
 use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
 use grm_rs::{
-    apply_session_batch, ExplainRequest, GraphClient, Neo4jBackend, Neo4jConfig, NodeFindRequest,
-    OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
-    QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState, StoredNode,
-    StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
+    apply_session_batch, DurabilityFormat, DurableOperation, ExplainRequest, GraphClient,
+    Neo4jBackend, Neo4jConfig, NodeFindRequest, OrderDirection, OrderSpec, PredicateOp,
+    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog,
+    SessionState, StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -56,10 +56,13 @@ impl PySession {
         autocommit_format: &str,
     ) -> PyResult<Self> {
         let autocommit = configure_autocommit(autocommit, autocommit_path, autocommit_format)?;
-        Ok(Self {
-            state: SessionState::new(),
-            autocommit,
-        })
+        let state = SessionState::new();
+        if let Some(target) = &autocommit {
+            state
+                .checkpoint_durable(target.format.durability_format(), &target.path)
+                .map_err(grm_err)?;
+        }
+        Ok(Self { state, autocommit })
     }
 
     #[getter]
@@ -102,8 +105,9 @@ impl PySession {
             parse_fields(fields)?,
         )
         .map_err(grm_err)?;
-        self.state.register_model(model).map_err(grm_err)?;
-        self.persist_autocommit().map_err(grm_err)
+        self.state.register_model(model.clone()).map_err(grm_err)?;
+        self.append_autocommit(DurableOperation::RegisterNodeModel { model })
+            .map_err(grm_err)
     }
 
     fn link_create(
@@ -123,8 +127,11 @@ impl PySession {
             parse_fields(fields)?,
         )
         .map_err(grm_err)?;
-        self.state.register_rel_model(model).map_err(grm_err)?;
-        self.persist_autocommit().map_err(grm_err)
+        self.state
+            .register_rel_model(model.clone())
+            .map_err(grm_err)?;
+        self.append_autocommit(DurableOperation::RegisterRelModel { model })
+            .map_err(grm_err)
     }
 
     fn model_show(&self, py: Python<'_>, name: &str) -> PyResult<Option<PyObject>> {
@@ -166,7 +173,8 @@ impl PySession {
     ) -> PyResult<PyObject> {
         let raw_values = extract_string_map(values)?;
         let node = block_on(py, self.state.create_instance(model_name, &raw_values))?;
-        self.persist_autocommit().map_err(grm_err)?;
+        self.append_autocommit(DurableOperation::UpsertNode { node: node.clone() })
+            .map_err(grm_err)?;
         stored_node_to_py(py, &node)
     }
 
@@ -189,7 +197,8 @@ impl PySession {
             .map_err(|err| PyTypeError::new_err(format!("invalid batch parameters: {err}")))?;
         let outcome = block_on(py, apply_session_batch(&mut self.state, params))?;
         if outcome.should_persist {
-            self.persist_autocommit().map_err(grm_err)?;
+            self.append_autocommit_many(&outcome.durable_ops)
+                .map_err(grm_err)?;
         }
         json_value_to_py(py, &outcome.value)
     }
@@ -209,7 +218,8 @@ impl PySession {
             self.state
                 .update_node_instance(model_name, &id, &raw_values),
         )?;
-        self.persist_autocommit().map_err(grm_err)?;
+        self.append_autocommit(DurableOperation::UpsertNode { node: node.clone() })
+            .map_err(grm_err)?;
         stored_node_to_py(py, &node)
     }
 
@@ -220,8 +230,13 @@ impl PySession {
         node_id: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let id = python_value_to_string(node_id)?;
+        let raw_id = self
+            .state
+            .parse_backend_id(&id, self.state.node_id_type(), "node id")
+            .map_err(grm_err)?;
         block_on(py, self.state.delete_node_instance(model_name, &id))?;
-        self.persist_autocommit().map_err(grm_err)
+        self.append_autocommit(DurableOperation::DeleteNode { id: raw_id })
+            .map_err(grm_err)
     }
 
     #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
@@ -384,7 +399,8 @@ impl PySession {
             self.state
                 .create_relationship_instance(model_name, &from_id, &to_id, &raw_values),
         )?;
-        self.persist_autocommit().map_err(grm_err)?;
+        self.append_autocommit(DurableOperation::UpsertRel { rel: rel.clone() })
+            .map_err(grm_err)?;
         stored_rel_to_py(py, &rel)
     }
 
@@ -403,7 +419,8 @@ impl PySession {
             self.state
                 .update_relationship_instance(model_name, &id, &raw_values),
         )?;
-        self.persist_autocommit().map_err(grm_err)?;
+        self.append_autocommit(DurableOperation::UpsertRel { rel: rel.clone() })
+            .map_err(grm_err)?;
         stored_rel_to_py(py, &rel)
     }
 
@@ -414,8 +431,13 @@ impl PySession {
         edge_id: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let id = python_value_to_string(edge_id)?;
+        let raw_id = self
+            .state
+            .parse_backend_id(&id, self.state.rel_id_type(), "edge id")
+            .map_err(grm_err)?;
         block_on(py, self.state.delete_relationship_instance(model_name, &id))?;
-        self.persist_autocommit().map_err(grm_err)
+        self.append_autocommit(DurableOperation::DeleteRel { id: raw_id })
+            .map_err(grm_err)
     }
 
     #[pyo3(signature = (model_name, filters=None))]
@@ -491,17 +513,17 @@ impl PySession {
 
     fn load_json(&mut self, path: &str) -> PyResult<()> {
         self.state.load_from_json(path).map_err(grm_err)?;
-        self.persist_autocommit().map_err(grm_err)
+        self.checkpoint_autocommit().map_err(grm_err)
     }
 
     fn load_binary(&mut self, path: &str) -> PyResult<()> {
         self.state.load_from_binary(path).map_err(grm_err)?;
-        self.persist_autocommit().map_err(grm_err)
+        self.checkpoint_autocommit().map_err(grm_err)
     }
 
     fn import_json(&mut self, path: &str) -> PyResult<()> {
         self.state.import_from_json(path).map_err(grm_err)?;
-        self.persist_autocommit().map_err(grm_err)
+        self.checkpoint_autocommit().map_err(grm_err)
     }
 }
 
@@ -701,22 +723,43 @@ impl PyNeo4jSession {
 }
 
 impl PySession {
-    fn persist_autocommit(&self) -> grm_rs::Result<()> {
+    fn append_autocommit(&self, op: DurableOperation) -> grm_rs::Result<()> {
         let Some(target) = &self.autocommit else {
             return Ok(());
         };
 
-        match target.format {
-            PySessionFileFormat::Json => self.state.save_to_json(&target.path),
-            PySessionFileFormat::Binary => self.state.save_to_binary(&target.path),
+        self.state
+            .append_durable_operation(&target.path, &op)
+            .map_err(|err| {
+                grm_rs::GrmError::Backend(format!(
+                    "autocommit failed for '{}': {}",
+                    target.path.display(),
+                    err
+                ))
+            })
+    }
+
+    fn append_autocommit_many(&self, ops: &[DurableOperation]) -> grm_rs::Result<()> {
+        for op in ops {
+            self.append_autocommit(op.clone())?;
         }
-        .map_err(|err| {
-            grm_rs::GrmError::Backend(format!(
-                "autocommit failed for '{}': {}",
-                target.path.display(),
-                err
-            ))
-        })
+        Ok(())
+    }
+
+    fn checkpoint_autocommit(&self) -> grm_rs::Result<()> {
+        let Some(target) = &self.autocommit else {
+            return Ok(());
+        };
+
+        self.state
+            .checkpoint_durable(target.format.durability_format(), &target.path)
+            .map_err(|err| {
+                grm_rs::GrmError::Backend(format!(
+                    "autocommit failed for '{}': {}",
+                    target.path.display(),
+                    err
+                ))
+            })
     }
 }
 
@@ -792,6 +835,13 @@ impl PySessionFileFormat {
         match self {
             Self::Json => "json",
             Self::Binary => "binary",
+        }
+    }
+
+    fn durability_format(self) -> DurabilityFormat {
+        match self {
+            Self::Json => DurabilityFormat::Json,
+            Self::Binary => DurabilityFormat::Binary,
         }
     }
 }
