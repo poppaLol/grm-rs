@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use grm_rs::{
-    CliSession, GrmError, RuntimeNodeModel, RuntimeRelModel, apply_session_batch,
+    CliSession, DurableOperation, GrmError, RuntimeNodeModel, RuntimeRelModel, apply_session_batch,
     runtime::{SessionCommand, parse_command_line},
 };
 use rmcp::handler::server::wrapper::Parameters;
@@ -95,15 +95,18 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<DefineNodeParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             let model = RuntimeNodeModel::new(
                 params.name,
                 params.id_field,
                 state.node_id_type(),
                 parse_fields(params.fields)?,
             )?;
-            state.register_model(model)?;
-            Ok(state.schema_value())
+            state.register_model(model.clone())?;
+            Ok((
+                state.schema_value(),
+                vec![DurableOperation::RegisterNodeModel { model }],
+            ))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -116,7 +119,7 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<DefineEdgeParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             let model = RuntimeRelModel::new(
                 params.name,
                 params.from_model,
@@ -125,8 +128,11 @@ impl GrmMcpServer {
                 state.rel_id_type(),
                 parse_fields(params.fields)?,
             )?;
-            state.register_rel_model(model)?;
-            Ok(state.schema_value())
+            state.register_rel_model(model.clone())?;
+            Ok((
+                state.schema_value(),
+                vec![DurableOperation::RegisterRelModel { model }],
+            ))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -139,10 +145,11 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeCreateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let node = state.create_instance(&params.model, &props).await?;
-            serde_json::to_value(node).map_err(json_error)
+            let value = serde_json::to_value(&node).map_err(json_error)?;
+            Ok((value, vec![DurableOperation::UpsertNode { node }]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -155,12 +162,13 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let node = state
                 .update_node_instance(&params.model, &params.id.to_string(), &props)
                 .await?;
-            serde_json::to_value(node).map_err(json_error)
+            let value = serde_json::to_value(&node).map_err(json_error)?;
+            Ok((value, vec![DurableOperation::UpsertNode { node }]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -171,11 +179,14 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             state
                 .delete_node_instance(&params.model, &params.id.to_string())
                 .await?;
-            Ok(json!({ "deleted": true, "model": params.model, "id": params.id }))
+            Ok((
+                json!({ "deleted": true, "model": params.model, "id": params.id }),
+                vec![DurableOperation::DeleteNode { id: params.id }],
+            ))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -204,7 +215,7 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeCreateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let edge = state
                 .create_relationship_instance(
@@ -214,7 +225,8 @@ impl GrmMcpServer {
                     &props,
                 )
                 .await?;
-            serde_json::to_value(edge).map_err(json_error)
+            let value = serde_json::to_value(&edge).map_err(json_error)?;
+            Ok((value, vec![DurableOperation::UpsertRel { rel: edge }]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -225,12 +237,13 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let edge = state
                 .update_relationship_instance(&params.model, &params.id.to_string(), &props)
                 .await?;
-            serde_json::to_value(edge).map_err(json_error)
+            let value = serde_json::to_value(&edge).map_err(json_error)?;
+            Ok((value, vec![DurableOperation::UpsertRel { rel: edge }]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -241,11 +254,14 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        self.with_state_mut(true, async |state| {
+        self.with_state_mut_durable(async |state| {
             state
                 .delete_relationship_instance(&params.model, &params.id.to_string())
                 .await?;
-            Ok(json!({ "deleted": true, "model": params.model, "id": params.id }))
+            Ok((
+                json!({ "deleted": true, "model": params.model, "id": params.id }),
+                vec![DurableOperation::DeleteRel { id: params.id }],
+            ))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
