@@ -64,6 +64,12 @@ def main() -> None:
         knows_bob = session.edge_create("Knows", user["id"], bob["id"], {"since": 2020})
         knows_carol = session.edge_create("Knows", bob["id"], carol["id"], {"since": 2021})
 
+        same_path_reopened = Session(
+            autocommit=True,
+            autocommit_path=str(autocommit_path),
+        )
+        assert len(same_path_reopened.node_find("User", {"name": "Alice"})) == 1
+
         export_path = Path(tmpdir) / "interchange.json"
         session.export_json(str(export_path))
         exported = json.loads(export_path.read_text())
@@ -169,6 +175,7 @@ def main() -> None:
             {item.get("ref") for item in batch_result["ids"]}
         )
         assert len(batch_session.edge_find("BatchAuthored", {"year": 2026})) == 1
+        assert '"Batch"' in Path(f"{batch_autocommit_path}.log").read_text()
 
         batch_reloaded = Session()
         batch_reloaded.load_json(str(batch_autocommit_path))
