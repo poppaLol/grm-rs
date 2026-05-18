@@ -219,8 +219,17 @@ cargo test --test backend_behavior neo4j_backend_satisfies_shared_behavior_when_
 
 ## Learn By Workflow
 
-Tutorials are the planned home for detailed walkthroughs across CLI, Rust,
-Python, and MCP. Until the tutorial set is filled out, start with:
+Tutorials are the home for detailed workflow walkthroughs across CLI, Python,
+MCP, and future Rust/Neo4j paths. Start with the
+[tutorials index](docs/tutorials/README.md).
+
+Available tutorials include:
+
+- [CLI sessions](docs/tutorials/cli-session.md)
+- [Python sessions](docs/tutorials/python-session.md)
+- [MCP workflows](docs/tutorials/mcp-workflow.md)
+
+Additional reference docs:
 
 - [Python quickstart](docs/python-quickstart.md)
 - [Query language design](docs/query-language-design.md)
@@ -228,12 +237,9 @@ Python, and MCP. Until the tutorial set is filled out, start with:
 - [Query and persistence optimization](docs/query-persistence-optimization.md)
 - [MCP batch and graph patch requirements](docs/mcp-batch-graph-patch-requirements.md)
 
-The intended tutorial package will cover:
+Planned tutorials:
 
-- CLI sessions: define, create, traverse, explain/profile, save/load
 - Rust typed models: derives, repositories, transactions, traversal
-- Python sessions: runtime schema and graph workflows
-- MCP workflows: batch/patch-oriented agent graph updates
 - Neo4j: running the same behavior against a live backend
 
 ## Status

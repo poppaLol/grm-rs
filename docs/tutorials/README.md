@@ -10,13 +10,15 @@ Available tutorials:
 
 - [CLI sessions](cli-session.md): define schema, create data, traverse,
   explain/profile, save, and export
+- [Python sessions](python-session.md): the same runtime schema and graph
+  workflow through `grm_rs.Session`
+- [MCP workflows](mcp-workflow.md): agent-oriented graph memory with structured
+  tools, batching, traversal, explain/profile, and export
 
 Planned tutorials:
 
 - Rust typed models: derives, repositories, typed IDs, transactions, and
   traversal
-- Python sessions: runtime schema and graph workflows
-- MCP workflows: batch and graph-patch oriented agent updates
 - Neo4j backend: running shared behavior against a live graph backend
 
 Existing starting points:

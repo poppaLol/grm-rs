@@ -251,6 +251,16 @@ session.export --json test-dbs/tutorial-export.json
 workflows. It is separate from workspace persistence even though the data may
 look similar for small examples.
 
+## Experimental Neo4j Bridge Process
+
+GRM does not yet expose a direct CLI or MCP command that pushes an interchange
+export to Neo4j. If your agent environment can run Python, an experimental bridge
+is possible: install `grm-python`, read the exported `grm.interchange` JSON, and
+use a Python Neo4j client or future GRM Neo4j APIs to write the graph.
+
+Treat this as custom integration code rather than a stable GRM product surface.
+For now, `session.export --json ...` is the stable handoff point.
+
 ## Script The Setup
 
 You can put setup commands in a `.grm` script:
