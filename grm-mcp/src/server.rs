@@ -22,6 +22,9 @@ pub struct GrmMcpServer {
 impl GrmMcpServer {
     pub fn new(options: StartupOptions) -> GrmResult<Self> {
         let mut state = SessionState::new();
+        let has_startup_source = options.load_json.is_some()
+            || options.load_bin.is_some()
+            || options.import_json.is_some();
         if let Some(path) = &options.load_json {
             state.load_from_json(path)?;
         }
@@ -33,7 +36,11 @@ impl GrmMcpServer {
         }
 
         if let Some(target) = &options.autocommit {
-            state.checkpoint_durable(target.format.durability_format(), &target.path)?;
+            if !has_startup_source && target.path.exists() {
+                state.recover_durable(target.format.durability_format(), &target.path)?;
+            } else {
+                state.checkpoint_durable(target.format.durability_format(), &target.path)?;
+            }
         }
 
         Ok(Self {

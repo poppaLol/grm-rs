@@ -17,7 +17,8 @@ pub(crate) fn write_file_atomically(path: impl AsRef<Path>, bytes: &[u8]) -> io:
 
     fs::rename(&temp_path, path).inspect_err(|_| {
         let _ = fs::remove_file(&temp_path);
-    })
+    })?;
+    sync_parent_dir(path)
 }
 
 pub(crate) fn write_file_atomically_with_backup(
@@ -26,8 +27,18 @@ pub(crate) fn write_file_atomically_with_backup(
 ) -> io::Result<()> {
     let path = path.as_ref();
     write_file_atomically(path, bytes)?;
-    fs::copy(path, backup_path(path))?;
+    let backup = backup_path(path);
+    write_file_atomically(&backup, bytes)?;
     Ok(())
+}
+
+pub(crate) fn sync_parent_dir(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    OpenOptions::new().read(true).open(parent)?.sync_all()
 }
 
 pub(crate) fn backup_path(path: impl AsRef<Path>) -> PathBuf {
