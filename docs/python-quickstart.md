@@ -156,7 +156,7 @@ print(result["counts"])
 - `export_json`, `export_dict`, and `import_json` use the portable `grm.interchange` graph format described in [`import-export.md`](import-export.md)
 - `import_json` currently requires an empty session; create a fresh `Session()` before importing interchange files
 - Autocommit is off by default; enable it at construction time with `Session(autocommit=True, autocommit_path="test-dbs/session.json")`
-- When autocommit is enabled, `session.autocommit` is `True` and every successful mutating operation, including `import_json`, persists the session snapshot file
+- When autocommit is enabled, `session.autocommit` is `True` and successful mutating operations persist through the shared append-log/checkpoint durability path. Normal schema/node/edge writes append durable records; load/import-style operations checkpoint the session file.
 - Python traversal mirrors CLI `node.find ... via=...` semantics, but uses structured inputs: pass `via=[{"dir": "out", "link": "AUTHORED", "model": "Post"}]`, optional `end_filters`, optional `edge_filters`, and `return_="root"`, `"end"`, or `"edge"`
 - `node_create`, `node_find`, `edge_create`, and `edge_find` return plain Python dictionaries/lists
 - Rust-side failures are raised as `grm_rs.GrmError`
