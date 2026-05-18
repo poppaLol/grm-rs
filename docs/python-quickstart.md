@@ -21,6 +21,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install maturin
 cd grm-python
+mkdir -p test-dbs
 maturin develop
 ```
 
