@@ -111,6 +111,18 @@ impl GrmMcpServer {
         }
         Ok(value)
     }
+
+    pub(crate) async fn with_state_mut_durable<T>(
+        &self,
+        work: impl AsyncFnOnce(&mut SessionState) -> GrmResult<(T, Vec<DurableOperation>)>,
+    ) -> Result<T, McpError> {
+        let mut state = self.state.lock().await;
+        let (value, ops) = work(&mut state).await.map_err(to_mcp_error)?;
+        self.append_autocommit_ops(&state, &ops)
+            .await
+            .map_err(to_mcp_error)?;
+        Ok(value)
+    }
 }
 
 #[cfg(test)]
