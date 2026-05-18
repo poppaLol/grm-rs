@@ -1,5 +1,6 @@
 mod batch;
 mod catalog;
+mod durability;
 mod ops;
 mod parser;
 mod session;
@@ -15,6 +16,7 @@ pub use catalog::{
     RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionModelCatalog,
     parse_required_flag, validate_field_name, validate_model_name,
 };
+pub use durability::DurableOperation;
 pub use ops::{
     AdminRequest, BatchRequest, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat,
     EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeRequest, EdgeUpdateRequest,

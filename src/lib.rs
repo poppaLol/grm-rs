@@ -28,18 +28,19 @@ pub use model::{NodeModel, RelModel};
 pub use repo::{NodeRepository, RelRepository, Repo};
 pub use runtime::{
     AdminRequest, BatchRequest, CliSession, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat,
-    EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeRequest, EdgeUpdateRequest,
-    ExplainRequest, ExportRequest, FieldSpec, FieldValueType, ImportRequest, LoadRequest,
-    NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeRequest, NodeUpdateRequest,
-    OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
-    QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest, RuntimeValueType,
-    SaveRequest, SchemaRequest, SessionBatchDefineEdgeParams, SessionBatchDefineNodeParams,
-    SessionBatchEdgeCreateParams, SessionBatchEdgeDeleteParams, SessionBatchEdgeUpdateParams,
-    SessionBatchEndpoint, SessionBatchFieldParam, SessionBatchNodeCreateParams,
-    SessionBatchNodeDeleteParams, SessionBatchNodeUpdateParams, SessionBatchOp,
-    SessionBatchOutcome, SessionBatchParams, SessionBatchResponse, SessionCompactSummary,
-    SessionFindResult, SessionModelCatalog, SessionState, TraversalDirection, TraversalRequest,
-    TraversalReturn, TraversalStepRequest, apply_session_batch,
+    DurableOperation, EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeRequest,
+    EdgeUpdateRequest, ExplainRequest, ExportRequest, FieldSpec, FieldValueType, ImportRequest,
+    LoadRequest, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeRequest,
+    NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate,
+    QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest,
+    RuntimeValueType, SaveRequest, SchemaRequest, SessionBatchDefineEdgeParams,
+    SessionBatchDefineNodeParams, SessionBatchEdgeCreateParams, SessionBatchEdgeDeleteParams,
+    SessionBatchEdgeUpdateParams, SessionBatchEndpoint, SessionBatchFieldParam,
+    SessionBatchNodeCreateParams, SessionBatchNodeDeleteParams, SessionBatchNodeUpdateParams,
+    SessionBatchOp, SessionBatchOutcome, SessionBatchParams, SessionBatchResponse,
+    SessionCompactSummary, SessionFindResult, SessionModelCatalog, SessionState,
+    TraversalDirection, TraversalRequest, TraversalReturn, TraversalStepRequest,
+    apply_session_batch,
 };
 
 pub async fn connect_neo4j_backend(config: Neo4jConfig) -> Result<Neo4jBackend> {
