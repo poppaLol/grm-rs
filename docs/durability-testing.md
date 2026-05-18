@@ -2,16 +2,24 @@
 
 This note captures the current testing stance for persistence durability work.
 
-It is not a promise of universal filesystem safety. It is a guide for how `grm-rs` should build confidence in the current snapshot-based persistence model while durability features evolve.
+It is not a promise of universal filesystem safety. It is a guide for how `grm-rs` should build confidence in the current snapshot-plus-append-log persistence model while durability features evolve.
 
 ## Current Intent
 
 The immediate goal is to make local session persistence safer without changing the simple user-facing session model.
 
+The conservative product claim is:
+
+> Durable local graph memory for agents and projects.
+
+More precisely: after a successful autocommit write returns, the write is present in either the append log or a checkpoint on a single local filesystem, assuming one writer owns the session or store.
+
 That means focusing on:
 
 - interrupted-write safety
 - backup and recovery behavior around snapshot files
+- replay from checkpoint plus later append-log records
+- safe handling of a truncated final append-log record
 - clearer confidence in autocommit on real machines
 
 ## Initial Platform Targets
@@ -35,6 +43,9 @@ Durability confidence should come from testing the failure boundaries that actua
 - restart after interruption
 - recover from a damaged primary snapshot when a backup exists
 - handle repeated autocommit writes without drifting into corruption
+- rebuild backend-maintained system indexes from recovered schema and graph state
+
+Durable source-of-truth data currently includes runtime schema definitions, node and edge CRUD operations, typed batch graph operations, checkpoints/snapshots, and recovery metadata. User-defined index definitions are expected to join this set later. Backend-maintained system index contents are derived data and should be rebuilt after recovery rather than trusted as durable state.
 
 This matters more than broad but shallow “it ran on many machines” coverage.
 
@@ -47,6 +58,8 @@ The first scoped claim should stay conservative:
 - one writer at a time
 
 Shared filesystems, network storage, and clustered/multi-writer behavior should be treated as separate durability classes and tested later.
+
+This is not a distributed durability claim, a cloud-service claim, or a multi-writer coordination claim.
 
 ## Scale Testing
 
@@ -70,7 +83,7 @@ Over time, the test corpus should grow to include:
 
 ## Recommended Confidence Ladder
 
-1. Unit and integration tests for save, autocommit, backup, and recovery logic.
+1. Unit and integration tests for save, autocommit, backup, shared durability APIs, and recovery logic.
 2. Repeatable local failure-injection tests:
    kill during autocommit, truncate files, damage primary snapshots, verify fallback behavior.
 3. Manual runs on real Linux and macOS machines.
