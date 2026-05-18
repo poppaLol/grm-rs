@@ -873,7 +873,7 @@ async fn session_explain_node_find_renders_flat_logical_plan_without_mutating() 
 #[tokio::test]
 async fn session_explain_node_find_renders_traversal_logical_plan() {
     let input = Cursor::new(
-        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain node.find User name=Alice via=out:Authored:Post\nsession.exit\n",
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain node.find User name=Alice via=out:Authored:Post\nsession.profile --verbose node.find User name=Alice via=out:Authored:Post\nsession.exit\n",
     );
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
@@ -884,10 +884,11 @@ async fn session_explain_node_find_renders_traversal_logical_plan() {
     let output = String::from_utf8(output).unwrap();
 
     assert!(output.contains("Current logical plan for node.find User"));
-    assert!(output.contains("NodeLabelScan v0 User"));
+    assert!(output.contains("NodePropertySeek v0 User.name"));
     assert!(output.contains("ExpandOut v0 -[v1:Authored]-> v2"));
-    assert!(output.contains("NodeFilter v0 User name"));
     assert!(output.contains("Return Node v2"));
+    assert!(output.contains("rows_in=unknown rows_out=unknown elapsed=unknown"));
+    assert!(output.contains("rows_in=unknown rows_out=1 elapsed=unknown"));
 }
 
 #[tokio::test]
@@ -907,7 +908,7 @@ async fn session_profile_node_find_reports_count_and_elapsed_time() {
     assert!(output.contains("NodePropertySeek v0 User.name"));
     assert!(output.contains("Result rows: 1"));
     assert!(output.contains("Elapsed: "));
-    assert!(output.contains("Per-step metrics: not available"));
+    assert!(!output.contains("rows_in="));
 }
 
 #[tokio::test]
@@ -941,7 +942,7 @@ async fn session_state_explain_and_profile_return_structured_values() {
     assert_eq!(profile["result_rows"], 1);
     assert!(profile["elapsed"]["micros"].as_u64().is_some());
     assert!(profile["elapsed"]["display"].as_str().is_some());
-    assert!(profile["per_step_metrics"].is_null());
+    assert!(profile["per_step_metrics"].as_array().unwrap().len() >= 2);
 }
 
 #[tokio::test]
@@ -1011,6 +1012,9 @@ async fn verbose_session_commands_render_diagnostic_metadata() {
     assert!(output.contains("access_path=node_property_index"));
     assert!(output.contains("index=system.node.property"));
     assert!(output.contains("scan=false"));
+    assert!(output.contains("chosen_anchor=User.name"));
+    assert!(output.contains("selected_access_path=node_property_index"));
+    assert!(output.contains("rows_in=0 rows_out=1 elapsed="));
 }
 
 #[tokio::test]
@@ -1041,6 +1045,10 @@ async fn explain_structured_access_paths_identify_indexes_and_scans() {
         Some("system.node.id"),
         false,
     );
+    assert_eq!(
+        id_explain["plan"]["details"][0]["planner"]["selected_access_path"],
+        json!("node_id_lookup")
+    );
 
     let property_explain = state
         .explain(ExplainRequest {
@@ -1061,6 +1069,51 @@ async fn explain_structured_access_paths_identify_indexes_and_scans() {
         "node_property_index",
         Some("system.node.property"),
         false,
+    );
+    assert_eq!(
+        property_explain["plan"]["details"][0]["planner"]["chosen_anchor"],
+        json!("User.name")
+    );
+
+    let multi_equality_explain = state
+        .explain(ExplainRequest {
+            query: QueryRequest::NodeFind(NodeFindRequest {
+                model: "User".to_string(),
+                predicates: vec![
+                    PropertyPredicate {
+                        field: "name".to_string(),
+                        op: PredicateOp::Eq,
+                        value: json!("Alice"),
+                    },
+                    PropertyPredicate {
+                        field: "age".to_string(),
+                        op: PredicateOp::Eq,
+                        value: json!(42),
+                    },
+                ],
+                ..Default::default()
+            }),
+        })
+        .unwrap();
+    assert_plan_has_access(
+        &multi_equality_explain,
+        "NodePropertySeek",
+        "node_property_index",
+        Some("system.node.property"),
+        false,
+    );
+    assert_eq!(
+        multi_equality_explain["plan"]["details"][0]["planner"]["residual_filters"],
+        json!(["age"])
+    );
+    let details = multi_equality_explain["plan"]["details"]
+        .as_array()
+        .unwrap();
+    assert!(
+        details
+            .iter()
+            .any(|step| step["kind"] == json!("NodeFilter")
+                && step["display"] == json!("NodeFilter v0 User age"))
     );
 
     let label_explain = state
@@ -1169,6 +1222,10 @@ async fn explain_structured_access_paths_identify_indexes_and_scans() {
         })
         .unwrap();
     assert_plan_has_access(&range_explain, "NodeFilter", "scan", None, true);
+    assert_eq!(
+        range_explain["plan"]["details"][0]["planner"]["residual_filters"],
+        json!(["age"])
+    );
 }
 
 fn assert_plan_has_access(
@@ -1423,7 +1480,7 @@ fn typed_batch_request_has_flat_ordered_batch_shape() {
 #[tokio::test]
 async fn session_explain_and_profile_edge_find_render_logical_plan() {
     let input = Cursor::new(
-        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain edge.find Authored from=1\nsession.profile edge.find Authored from=1\nsession.exit\n",
+        "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain edge.find Authored from=1\nsession.profile --verbose edge.find Authored from=1\nsession.exit\n",
     );
     let output = Vec::new();
     let mut session = CliSession::new(input, output);
@@ -1439,6 +1496,7 @@ async fn session_explain_and_profile_edge_find_render_logical_plan() {
     assert!(output.contains("Profile for edge.find Authored"));
     assert!(output.contains("Result rows: 1"));
     assert!(output.contains("Elapsed: "));
+    assert!(output.contains("rows_in=0 rows_out=1 elapsed="));
 }
 
 #[tokio::test]

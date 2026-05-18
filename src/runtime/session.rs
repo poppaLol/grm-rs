@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::backend::{
-    BinaryPersistedGraphStore, ExecutionPlan, GraphStore, PersistedGraphStore, PlanStep,
-    PlanStepKind, system_index_catalog,
+    AccessPath, BinaryPersistedGraphStore, ExecutionPlan, GraphStore, PersistedGraphStore,
+    PlanStep, PlanStepKind, PlannerStepMetadata, ProfileStepMetrics, system_index_catalog,
 };
 use crate::dsl::{
     CompareOp, Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, ReturnKind, VarGen,
@@ -184,6 +184,15 @@ enum SortDirection {
     Desc,
 }
 
+impl SortDirection {
+    fn keyword(self) -> &'static str {
+        match self {
+            Self::Asc => "asc",
+            Self::Desc => "desc",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct NodeFindQuery {
     predicates: Vec<SessionPredicate>,
@@ -246,6 +255,13 @@ impl SessionQueryResult {
             Self::Graph(graph) => graph.rows.len(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct SessionProfileResult {
+    result: SessionQueryResult,
+    elapsed: Duration,
+    metrics: Vec<ProfileStepMetrics>,
 }
 
 #[derive(Debug, Clone)]
@@ -931,15 +947,14 @@ impl SessionState {
         reject_introspection_format_terms(terms)?;
         let query = self.parse_node_find_terms(model_name, terms)?;
         let plan = self.explain_node_find_query(model_name, &query)?;
-        let started = Instant::now();
-        let result = self.execute_node_query(model_name, &query).await?;
-        let elapsed = started.elapsed();
+        let profile = self.profile_node_query(model_name, &query, &plan).await?;
         Ok(profile_value(
             "node.find",
             model_name,
             &plan,
-            result.row_count(),
-            elapsed,
+            profile.result.row_count(),
+            profile.elapsed,
+            Some(&profile.metrics),
         ))
     }
 
@@ -993,44 +1008,46 @@ impl SessionState {
             QueryRequest::NodeFind(node_request) => {
                 let query = self.node_find_query_from_request(&node_request)?;
                 let plan = self.explain_node_find_query(&node_request.model, &query)?;
-                let started = Instant::now();
-                let result = self.execute_node_query(&node_request.model, &query).await?;
-                let elapsed = started.elapsed();
+                let profile = self
+                    .profile_node_query(&node_request.model, &query, &plan)
+                    .await?;
                 Ok(profile_value(
                     "node.find",
                     &node_request.model,
                     &plan,
-                    result.row_count(),
-                    elapsed,
+                    profile.result.row_count(),
+                    profile.elapsed,
+                    Some(&profile.metrics),
                 ))
             }
             QueryRequest::EdgeFind(edge_request) => {
                 let query = self.edge_find_query_from_request(&edge_request)?;
                 let plan = self.explain_edge_find_query(&edge_request.model, &query)?;
-                let started = Instant::now();
-                let rels = self.find_relationships_with_query(&edge_request.model, &query)?;
-                let elapsed = started.elapsed();
+                let (rels, elapsed, metrics) =
+                    self.profile_edge_query(&edge_request.model, &query, &plan)?;
                 Ok(profile_value(
                     "edge.find",
                     &edge_request.model,
                     &plan,
                     rels.len(),
                     elapsed,
+                    Some(&metrics),
                 ))
             }
             QueryRequest::Traversal(traversal_request) => {
                 let node_request = traversal_request.root;
                 let query = self.node_find_query_from_request(&node_request)?;
                 let plan = self.explain_node_find_query(&node_request.model, &query)?;
-                let started = Instant::now();
-                let result = self.execute_node_query(&node_request.model, &query).await?;
-                let elapsed = started.elapsed();
+                let profile = self
+                    .profile_node_query(&node_request.model, &query, &plan)
+                    .await?;
                 Ok(profile_value(
                     "node.find",
                     &node_request.model,
                     &plan,
-                    result.row_count(),
-                    elapsed,
+                    profile.result.row_count(),
+                    profile.elapsed,
+                    Some(&profile.metrics),
                 ))
             }
         }
@@ -1083,6 +1100,165 @@ impl SessionState {
         self.execute_node_traversal_query(model_name, query).await
     }
 
+    async fn profile_node_query(
+        &self,
+        model_name: &str,
+        query: &NodeFindQuery,
+        plan: &ExecutionPlan,
+    ) -> Result<SessionProfileResult> {
+        let total_started = Instant::now();
+        let (result, metrics) = if query.traversals.is_empty() {
+            self.profile_flat_node_query(model_name, query, plan)?
+        } else {
+            self.profile_traversal_query(model_name, query, plan)
+                .await?
+        };
+        Ok(SessionProfileResult {
+            result,
+            elapsed: total_started.elapsed(),
+            metrics,
+        })
+    }
+
+    fn profile_flat_node_query(
+        &self,
+        model_name: &str,
+        query: &NodeFindQuery,
+        plan: &ExecutionPlan,
+    ) -> Result<(SessionQueryResult, Vec<ProfileStepMetrics>)> {
+        let model = self
+            .catalog
+            .get_node_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?
+            .clone();
+        let prop_filters = self.parse_model_predicates(&query.predicates, &model)?;
+        let indexed_property = prop_filters
+            .iter()
+            .find(|(_, op, _)| *op == CompareOp::Eq)
+            .map(|(key, _, value)| (key.as_str(), value));
+
+        let mut metrics = Vec::new();
+        let anchor_started = Instant::now();
+        let mut nodes = self.client.backend().snapshot_nodes_filtered(
+            &model.label,
+            query.id_filter,
+            indexed_property,
+        );
+        let anchor_elapsed = anchor_started.elapsed();
+        push_step_metric(
+            &mut metrics,
+            plan,
+            0,
+            Some(0),
+            Some(nodes.len()),
+            Some(anchor_elapsed),
+        );
+
+        if let Some(filter_index) =
+            plan_step_index(plan, |kind| matches!(kind, PlanStepKind::NodeFilter { .. }))
+        {
+            let input_rows = nodes.len();
+            let filter_started = Instant::now();
+            nodes.retain(|node| matches_predicates(&node.props, &prop_filters));
+            push_step_metric(
+                &mut metrics,
+                plan,
+                filter_index,
+                Some(input_rows),
+                Some(nodes.len()),
+                Some(filter_started.elapsed()),
+            );
+        } else {
+            nodes.retain(|node| matches_predicates(&node.props, &prop_filters));
+        }
+
+        let return_index = plan.steps.len().saturating_sub(1);
+        let input_rows = nodes.len();
+        let return_started = Instant::now();
+        if !query.order.is_empty() {
+            self.sort_nodes(&mut nodes, &model, &query.order)?;
+        }
+        nodes = apply_offset_limit(nodes, query.offset, query.limit);
+        push_step_metric(
+            &mut metrics,
+            plan,
+            return_index,
+            Some(input_rows),
+            Some(nodes.len()),
+            Some(return_started.elapsed()),
+        );
+
+        Ok((SessionQueryResult::Nodes { model, rows: nodes }, metrics))
+    }
+
+    async fn profile_traversal_query(
+        &self,
+        model_name: &str,
+        query: &NodeFindQuery,
+        plan: &ExecutionPlan,
+    ) -> Result<(SessionQueryResult, Vec<ProfileStepMetrics>)> {
+        let root_model = self
+            .catalog
+            .get_node_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?
+            .clone();
+        let prop_filters = self.parse_model_predicates(&query.predicates, &root_model)?;
+        let indexed_property = prop_filters
+            .iter()
+            .find(|(_, op, _)| *op == CompareOp::Eq)
+            .map(|(key, _, value)| (key.as_str(), value));
+
+        let mut metrics = Vec::new();
+        let anchor_started = Instant::now();
+        let root_candidates = self.client.backend().snapshot_nodes_filtered(
+            &root_model.label,
+            query.id_filter,
+            indexed_property,
+        );
+        push_step_metric(
+            &mut metrics,
+            plan,
+            0,
+            Some(0),
+            Some(root_candidates.len()),
+            Some(anchor_started.elapsed()),
+        );
+
+        let execute_started = Instant::now();
+        let result = self.execute_node_query(model_name, query).await?;
+        let _execute_elapsed = execute_started.elapsed();
+        let result_rows = result.row_count();
+        for (index, step) in plan.steps.iter().enumerate() {
+            if matches!(
+                step.kind,
+                PlanStepKind::ExpandOut { .. }
+                    | PlanStepKind::ExpandIn { .. }
+                    | PlanStepKind::ExpandBoth { .. }
+            ) {
+                push_step_metric(&mut metrics, plan, index, None, None, None);
+            }
+        }
+        for (index, step) in plan.steps.iter().enumerate() {
+            if matches!(
+                step.kind,
+                PlanStepKind::NodeFilter { .. } | PlanStepKind::RelationshipFilter { .. }
+            ) {
+                push_step_metric(&mut metrics, plan, index, None, None, None);
+            }
+        }
+        let return_index = plan.steps.len().saturating_sub(1);
+        push_step_metric(
+            &mut metrics,
+            plan,
+            return_index,
+            None,
+            Some(result_rows),
+            None,
+        );
+
+        Ok((result, metrics))
+    }
+
     async fn execute_node_traversal_query(
         &self,
         model_name: &str,
@@ -1104,6 +1280,9 @@ impl SessionState {
         let edge_filters =
             self.parse_rel_predicates(&query.edge_predicates, &plan.return_rel_model)?;
 
+        // Root predicates are already part of the GraphQuery anchor. Keep this
+        // post-exec check as a backend-safety guard until traversal execution
+        // exposes operator-level filtering directly.
         let filtered_rows = result
             .rows
             .into_iter()
@@ -1252,15 +1431,14 @@ impl SessionState {
         let filters = collect_query_terms(terms);
         let query = self.parse_edge_find_query(model_name, &filters)?;
         let plan = self.explain_edge_find_query(model_name, &query)?;
-        let started = Instant::now();
-        let rels = self.find_relationships_with_query(model_name, &query)?;
-        let elapsed = started.elapsed();
+        let (rels, elapsed, metrics) = self.profile_edge_query(model_name, &query, &plan)?;
         Ok(profile_value(
             "edge.find",
             model_name,
             &plan,
             rels.len(),
             elapsed,
+            Some(&metrics),
         ))
     }
 
@@ -1290,6 +1468,73 @@ impl SessionState {
         Ok(rels)
     }
 
+    fn profile_edge_query(
+        &self,
+        model_name: &str,
+        query: &EdgeFindQuery,
+        plan: &ExecutionPlan,
+    ) -> Result<(Vec<StoredRel>, Duration, Vec<ProfileStepMetrics>)> {
+        let total_started = Instant::now();
+        let model = self
+            .catalog
+            .get_rel_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        let prop_filters = self.parse_rel_predicates(&query.predicates, model)?;
+        let mut metrics = Vec::new();
+
+        let anchor_started = Instant::now();
+        let mut rels = self.client.backend().snapshot_relationships_filtered(
+            &model.rel_type,
+            query.id_filter,
+            query.from_filter,
+            query.to_filter,
+        );
+        push_step_metric(
+            &mut metrics,
+            plan,
+            0,
+            Some(0),
+            Some(rels.len()),
+            Some(anchor_started.elapsed()),
+        );
+
+        if let Some(filter_index) = plan_step_index(plan, |kind| {
+            matches!(kind, PlanStepKind::RelationshipFilter { .. })
+        }) {
+            let input_rows = rels.len();
+            let filter_started = Instant::now();
+            rels.retain(|rel| matches_predicates(&rel.props, &prop_filters));
+            push_step_metric(
+                &mut metrics,
+                plan,
+                filter_index,
+                Some(input_rows),
+                Some(rels.len()),
+                Some(filter_started.elapsed()),
+            );
+        } else {
+            rels.retain(|rel| matches_predicates(&rel.props, &prop_filters));
+        }
+
+        let return_index = plan.steps.len().saturating_sub(1);
+        let input_rows = rels.len();
+        let return_started = Instant::now();
+        if !query.order.is_empty() {
+            self.sort_relationships(&mut rels, model, &query.order)?;
+        }
+        rels = apply_offset_limit(rels, query.offset, query.limit);
+        push_step_metric(
+            &mut metrics,
+            plan,
+            return_index,
+            Some(input_rows),
+            Some(rels.len()),
+            Some(return_started.elapsed()),
+        );
+
+        Ok((rels, total_started.elapsed(), metrics))
+    }
+
     fn explain_node_find_query(
         &self,
         model_name: &str,
@@ -1307,42 +1552,87 @@ impl SessionState {
             let var = VarId(0);
             let labels = vec![model.label.clone()];
             let mut steps = Vec::new();
+            let selected_equality_key = prop_filters
+                .iter()
+                .find(|(_, op, _)| *op == CompareOp::Eq)
+                .map(|(key, _, _)| key.clone());
             if let Some(id) = query.id_filter {
-                steps.push(PlanStep::new(PlanStepKind::NodeById {
-                    var,
-                    labels: labels.clone(),
-                    id,
-                }));
-            } else if let Some((key, _, _)) =
-                prop_filters.iter().find(|(_, op, _)| *op == CompareOp::Eq)
-            {
-                steps.push(PlanStep::new(PlanStepKind::NodePropertySeek {
-                    var,
-                    labels: labels.clone(),
-                    key: key.clone(),
-                }));
+                steps.push(
+                    PlanStep::new(PlanStepKind::NodeById {
+                        var,
+                        labels: labels.clone(),
+                        id,
+                    })
+                    .with_planner(
+                        PlannerStepMetadata::new(
+                            Some(format!("id={id}")),
+                            node_candidate_access_paths(query, &prop_filters),
+                            Some(AccessPath::NodeIdLookup),
+                            predicate_keys(&prop_filters),
+                        )
+                        .with_paging(
+                            order_terms(&query.order),
+                            query.limit,
+                            query.offset,
+                        ),
+                    ),
+                );
+            } else if let Some(key) = selected_equality_key.as_deref() {
+                steps.push(
+                    PlanStep::new(PlanStepKind::NodePropertySeek {
+                        var,
+                        labels: labels.clone(),
+                        key: key.to_string(),
+                    })
+                    .with_planner(
+                        PlannerStepMetadata::new(
+                            Some(format!("{}.{}", model.label, key)),
+                            node_candidate_access_paths(query, &prop_filters),
+                            Some(AccessPath::NodePropertyIndex),
+                            residual_predicate_keys(&prop_filters, Some(key)),
+                        )
+                        .with_paging(
+                            order_terms(&query.order),
+                            query.limit,
+                            query.offset,
+                        ),
+                    ),
+                );
             } else {
-                steps.push(PlanStep::new(PlanStepKind::NodeLabelScan {
-                    var,
-                    labels: labels.clone(),
-                }));
+                steps.push(
+                    PlanStep::new(PlanStepKind::NodeLabelScan {
+                        var,
+                        labels: labels.clone(),
+                    })
+                    .with_planner(
+                        PlannerStepMetadata::new(
+                            Some(model.label.clone()),
+                            node_candidate_access_paths(query, &prop_filters),
+                            Some(AccessPath::NodeLabelIndex),
+                            predicate_keys(&prop_filters),
+                        )
+                        .with_paging(
+                            order_terms(&query.order),
+                            query.limit,
+                            query.offset,
+                        ),
+                    ),
+                );
             }
 
-            let filter_keys = prop_filters
-                .iter()
-                .map(|(key, _, _)| key.clone())
-                .collect::<Vec<_>>();
-            if query.id_filter.is_some() && !filter_keys.is_empty()
-                || query.id_filter.is_none() && filter_keys.len() > 1
-                || query.id_filter.is_none()
-                    && filter_keys.len() == 1
-                    && !prop_filters.iter().any(|(_, op, _)| *op == CompareOp::Eq)
-            {
+            let residual_filter_keys = if query.id_filter.is_some() {
+                predicate_keys(&prop_filters)
+            } else if let Some(key) = selected_equality_key.as_deref() {
+                residual_predicate_keys(&prop_filters, Some(key))
+            } else {
+                predicate_keys(&prop_filters)
+            };
+            if !residual_filter_keys.is_empty() {
                 steps.push(PlanStep::new(PlanStepKind::NodeFilter {
                     var,
                     labels: labels.clone(),
                     id: None,
-                    keys: filter_keys,
+                    keys: residual_filter_keys,
                 }));
             }
 
@@ -1374,17 +1664,75 @@ impl SessionState {
         }
 
         let mut plan = ExecutionPlan::for_graph_query(&runtime_plan.graph_query);
-        let return_step = plan.steps.pop();
         let root_filters = self.parse_model_predicates(&query.predicates, model)?;
-        if !root_filters.is_empty() {
+        if let Some(first_step) = plan.steps.first_mut() {
+            let selected = first_step.kind.access_path();
+            first_step.planner = Some(
+                PlannerStepMetadata::new(
+                    selected.map(|path| match path {
+                        AccessPath::NodeIdLookup => query
+                            .id_filter
+                            .map(|id| format!("id={id}"))
+                            .unwrap_or_else(|| model.label.clone()),
+                        AccessPath::NodePropertyIndex => root_filters
+                            .iter()
+                            .find(|(_, op, _)| *op == CompareOp::Eq)
+                            .map(|(key, _, _)| format!("{}.{}", model.label, key))
+                            .unwrap_or_else(|| model.label.clone()),
+                        _ => model.label.clone(),
+                    }),
+                    node_candidate_access_paths(query, &root_filters),
+                    selected,
+                    match selected {
+                        Some(AccessPath::NodeIdLookup) => predicate_keys(&root_filters),
+                        Some(AccessPath::NodePropertyIndex) => root_filters
+                            .iter()
+                            .find(|(_, op, _)| *op == CompareOp::Eq)
+                            .map(|(key, _, _)| residual_predicate_keys(&root_filters, Some(key)))
+                            .unwrap_or_else(|| predicate_keys(&root_filters)),
+                        _ => predicate_keys(&root_filters),
+                    },
+                )
+                .with_paging(order_terms(&query.order), query.limit, query.offset),
+            );
+        }
+        for step in &mut plan.steps {
+            if matches!(
+                step.kind,
+                PlanStepKind::ExpandOut { .. }
+                    | PlanStepKind::ExpandIn { .. }
+                    | PlanStepKind::ExpandBoth { .. }
+            ) {
+                let selected = step.kind.access_path();
+                step.planner = Some(PlannerStepMetadata::new(
+                    Some(step.to_string()),
+                    step.kind
+                        .candidate_index_names()
+                        .into_iter()
+                        .filter_map(access_path_for_index_name)
+                        .collect(),
+                    selected,
+                    Vec::new(),
+                ));
+            }
+        }
+        let return_step = plan.steps.pop();
+        let selected_root_path = plan.steps.first().and_then(|step| step.kind.access_path());
+        let root_residual_filters = match selected_root_path {
+            Some(AccessPath::NodeIdLookup) => predicate_keys(&root_filters),
+            Some(AccessPath::NodePropertyIndex) => root_filters
+                .iter()
+                .find(|(_, op, _)| *op == CompareOp::Eq)
+                .map(|(key, _, _)| residual_predicate_keys(&root_filters, Some(key)))
+                .unwrap_or_else(|| predicate_keys(&root_filters)),
+            _ => predicate_keys(&root_filters),
+        };
+        if !root_residual_filters.is_empty() {
             plan.steps.push(PlanStep::new(PlanStepKind::NodeFilter {
                 var: runtime_plan.root_var,
                 labels: vec![model.label.clone()],
                 id: query.id_filter,
-                keys: root_filters
-                    .iter()
-                    .map(|(key, _, _)| key.clone())
-                    .collect::<Vec<_>>(),
+                keys: root_residual_filters,
             }));
         }
         if !end_filters.is_empty() {
@@ -1430,23 +1778,74 @@ impl SessionState {
         let var = VarId(0);
         let mut steps = Vec::new();
         if let Some(id) = query.id_filter {
-            steps.push(PlanStep::new(PlanStepKind::RelationshipById {
-                var,
-                rel_type: model.rel_type.clone(),
-                id,
-            }));
+            steps.push(
+                PlanStep::new(PlanStepKind::RelationshipById {
+                    var,
+                    rel_type: model.rel_type.clone(),
+                    id,
+                })
+                .with_planner(
+                    PlannerStepMetadata::new(
+                        Some(format!("id={id}")),
+                        edge_candidate_access_paths(query),
+                        Some(AccessPath::RelationshipIdLookup),
+                        predicate_keys(&prop_filters),
+                    )
+                    .with_paging(
+                        order_terms(&query.order),
+                        query.limit,
+                        query.offset,
+                    ),
+                ),
+            );
         } else if query.from_filter.is_some() || query.to_filter.is_some() {
-            steps.push(PlanStep::new(PlanStepKind::RelationshipEndpointSeek {
-                var,
-                rel_type: model.rel_type.clone(),
-                from: query.from_filter,
-                to: query.to_filter,
-            }));
+            let selected = match (query.from_filter, query.to_filter) {
+                (Some(_), Some(_)) => AccessPath::RelationshipEndpointAdjacency,
+                (Some(_), None) => AccessPath::OutgoingAdjacency,
+                (None, Some(_)) => AccessPath::IncomingAdjacency,
+                (None, None) => AccessPath::RelationshipTypeIndex,
+            };
+            steps.push(
+                PlanStep::new(PlanStepKind::RelationshipEndpointSeek {
+                    var,
+                    rel_type: model.rel_type.clone(),
+                    from: query.from_filter,
+                    to: query.to_filter,
+                })
+                .with_planner(
+                    PlannerStepMetadata::new(
+                        Some(edge_endpoint_anchor(query)),
+                        edge_candidate_access_paths(query),
+                        Some(selected),
+                        predicate_keys(&prop_filters),
+                    )
+                    .with_paging(
+                        order_terms(&query.order),
+                        query.limit,
+                        query.offset,
+                    ),
+                ),
+            );
         } else {
-            steps.push(PlanStep::new(PlanStepKind::RelationshipTypeScan {
-                var,
-                rel_type: model.rel_type.clone(),
-            }));
+            steps.push(
+                PlanStep::new(PlanStepKind::RelationshipTypeScan {
+                    var,
+                    rel_type: model.rel_type.clone(),
+                })
+                .with_planner(
+                    PlannerStepMetadata::new(
+                        Some(model.rel_type.clone()),
+                        edge_candidate_access_paths(query),
+                        Some(AccessPath::RelationshipTypeIndex),
+                        predicate_keys(&prop_filters),
+                    )
+                    .with_paging(
+                        order_terms(&query.order),
+                        query.limit,
+                        query.offset,
+                    ),
+                ),
+            );
         }
 
         let filter_keys = prop_filters
@@ -1760,12 +2159,21 @@ impl SessionState {
         let mut vg = VarGen::default();
         let root_var = vg.fresh();
         let root_labels = leak_labels(&root_model.label);
+        let root_filters = self
+            .parse_model_predicates(&query.predicates, root_model)?
+            .into_iter()
+            .map(|(key, op, value)| crate::dsl::PropertyFilter {
+                key: leak_string(key),
+                op,
+                value,
+            })
+            .collect::<Vec<_>>();
 
         let mut matches = vec![MatchClause::Node(NodeMatch {
             var: root_var,
             labels: root_labels,
             id_filter: query.id_filter,
-            property_filters: vec![],
+            property_filters: root_filters,
         })];
 
         let mut current_var = root_var;
@@ -3026,15 +3434,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         reject_introspection_format_terms(terms)?;
         let query = self.state.parse_node_find_terms(model_name, terms)?;
         let plan = self.state.explain_node_find_query(model_name, &query)?;
-        let started = Instant::now();
-        let result = self.state.execute_node_query(model_name, &query).await?;
-        let elapsed = started.elapsed();
+        let profile = self
+            .state
+            .profile_node_query(model_name, &query, &plan)
+            .await?;
         self.render_profile(
             "node.find",
             model_name,
             &plan,
-            result.row_count(),
-            elapsed,
+            profile.result.row_count(),
+            profile.elapsed,
+            &profile.metrics,
             verbose,
         )
     }
@@ -3171,12 +3581,16 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let filters = collect_query_terms(terms);
         let query = self.state.parse_edge_find_query(model_name, &filters)?;
         let plan = self.state.explain_edge_find_query(model_name, &query)?;
-        let started = Instant::now();
-        let rels = self
-            .state
-            .find_relationships_with_query(model_name, &query)?;
-        let elapsed = started.elapsed();
-        self.render_profile("edge.find", model_name, &plan, rels.len(), elapsed, verbose)
+        let (rels, elapsed, metrics) = self.state.profile_edge_query(model_name, &query, &plan)?;
+        self.render_profile(
+            "edge.find",
+            model_name,
+            &plan,
+            rels.len(),
+            elapsed,
+            &metrics,
+            verbose,
+        )
     }
 
     fn handle_session_save(&mut self, args: &[&str]) -> Result<()> {
@@ -3358,16 +3772,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         plan: &ExecutionPlan,
         row_count: usize,
         elapsed: Duration,
+        metrics: &[ProfileStepMetrics],
         verbose: bool,
     ) -> Result<()> {
         writeln!(self.writer, "Profile for {command} {target}")?;
-        self.render_plan_steps(plan, verbose)?;
+        if verbose {
+            self.render_profile_plan_steps(plan, metrics)?;
+        } else {
+            self.render_plan_steps(plan, false)?;
+        }
         writeln!(self.writer, "Result rows: {row_count}")?;
         writeln!(self.writer, "Elapsed: {}", format_profile_duration(elapsed))?;
-        writeln!(
-            self.writer,
-            "Per-step metrics: not available in this first-phase profile."
-        )?;
         Ok(())
     }
 
@@ -3380,6 +3795,35 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                     self.writer,
                     "     {}",
                     format_plan_step_access_metadata(step)
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn render_profile_plan_steps(
+        &mut self,
+        plan: &ExecutionPlan,
+        metrics: &[ProfileStepMetrics],
+    ) -> Result<()> {
+        writeln!(self.writer, "Plan steps:")?;
+        for (index, step) in plan.steps.iter().enumerate() {
+            writeln!(self.writer, "  {}. {}", index + 1, step)?;
+            writeln!(
+                self.writer,
+                "     {}",
+                format_plan_step_access_metadata(step)
+            )?;
+            if let Some(metric) = metrics.iter().find(|metric| metric.step_index == index) {
+                writeln!(
+                    self.writer,
+                    "     rows_in={} rows_out={} elapsed={}",
+                    format_optional_usize(metric.input_rows),
+                    format_optional_usize(metric.output_rows),
+                    metric
+                        .elapsed_micros
+                        .map(|micros| format!("{micros}us"))
+                        .unwrap_or_else(|| "unknown".to_string())
                 )?;
             }
         }
@@ -4658,6 +5102,93 @@ fn matches_predicates(
     })
 }
 
+fn predicate_keys(filters: &[(String, CompareOp, Value)]) -> Vec<String> {
+    filters.iter().map(|(key, _, _)| key.clone()).collect()
+}
+
+fn residual_predicate_keys(
+    filters: &[(String, CompareOp, Value)],
+    selected_equality_key: Option<&str>,
+) -> Vec<String> {
+    let mut skipped_selected = false;
+    filters
+        .iter()
+        .filter_map(|(key, op, _)| {
+            if *op == CompareOp::Eq
+                && selected_equality_key == Some(key.as_str())
+                && !skipped_selected
+            {
+                skipped_selected = true;
+                None
+            } else {
+                Some(key.clone())
+            }
+        })
+        .collect()
+}
+
+fn node_candidate_access_paths(
+    query: &NodeFindQuery,
+    filters: &[(String, CompareOp, Value)],
+) -> Vec<AccessPath> {
+    let mut paths = Vec::new();
+    if query.id_filter.is_some() {
+        paths.push(AccessPath::NodeIdLookup);
+    }
+    if filters.iter().any(|(_, op, _)| *op == CompareOp::Eq) {
+        paths.push(AccessPath::NodePropertyIndex);
+    }
+    paths.push(AccessPath::NodeLabelIndex);
+    paths
+}
+
+fn edge_candidate_access_paths(query: &EdgeFindQuery) -> Vec<AccessPath> {
+    let mut paths = Vec::new();
+    if query.id_filter.is_some() {
+        paths.push(AccessPath::RelationshipIdLookup);
+    }
+    match (query.from_filter, query.to_filter) {
+        (Some(_), Some(_)) => {
+            paths.push(AccessPath::OutgoingAdjacency);
+            paths.push(AccessPath::IncomingAdjacency);
+        }
+        (Some(_), None) => paths.push(AccessPath::OutgoingAdjacency),
+        (None, Some(_)) => paths.push(AccessPath::IncomingAdjacency),
+        (None, None) => {}
+    }
+    paths.push(AccessPath::RelationshipTypeIndex);
+    paths
+}
+
+fn edge_endpoint_anchor(query: &EdgeFindQuery) -> String {
+    match (query.from_filter, query.to_filter) {
+        (Some(from), Some(to)) => format!("from={from},to={to}"),
+        (Some(from), None) => format!("from={from}"),
+        (None, Some(to)) => format!("to={to}"),
+        (None, None) => "type".to_string(),
+    }
+}
+
+fn order_terms(order: &[SessionOrder]) -> Vec<String> {
+    order
+        .iter()
+        .map(|order| format!("{}:{}", order.field, order.direction.keyword()))
+        .collect()
+}
+
+fn access_path_for_index_name(index: &str) -> Option<AccessPath> {
+    match index {
+        "system.node.id" => Some(AccessPath::NodeIdLookup),
+        "system.node.label" => Some(AccessPath::NodeLabelIndex),
+        "system.node.property" => Some(AccessPath::NodePropertyIndex),
+        "system.edge.id" => Some(AccessPath::RelationshipIdLookup),
+        "system.edge.type" => Some(AccessPath::RelationshipTypeIndex),
+        "system.edge.outgoing_adjacency" => Some(AccessPath::OutgoingAdjacency),
+        "system.edge.incoming_adjacency" => Some(AccessPath::IncomingAdjacency),
+        _ => None,
+    }
+}
+
 fn format_props(props: &BTreeMap<String, Value>, colors: &SessionColors) -> String {
     if props.is_empty() {
         return "{}".into();
@@ -5638,6 +6169,7 @@ fn profile_value(
     plan: &ExecutionPlan,
     row_count: usize,
     elapsed: Duration,
+    metrics: Option<&[ProfileStepMetrics]>,
 ) -> Value {
     json!({
         "command": command,
@@ -5648,7 +6180,9 @@ fn profile_value(
             "micros": elapsed.as_micros(),
             "display": format_profile_duration(elapsed),
         },
-        "per_step_metrics": null,
+        "per_step_metrics": metrics
+            .map(|metrics| serde_json::to_value(metrics).unwrap_or(Value::Null))
+            .unwrap_or(Value::Null),
     })
 }
 
@@ -5677,6 +6211,7 @@ fn plan_step_value(step: &PlanStep) -> Value {
         "index": access_path.and_then(|path| path.index_name()),
         "indexes": step.kind.candidate_index_names(),
         "scan": access_path.map(|path| path.is_scan()).unwrap_or(false),
+        "planner": step.planner,
     })
 }
 
@@ -5704,7 +6239,38 @@ fn format_plan_step_access_metadata(step: &PlanStep) -> String {
         .map(|path| path.is_scan())
         .unwrap_or(false);
 
-    format!("access_path={access_path} index={index} indexes={indexes} scan={scan}")
+    let mut parts = vec![format!(
+        "access_path={access_path} index={index} indexes={indexes} scan={scan}"
+    )];
+    if let Some(planner) = &step.planner {
+        if let Some(anchor) = &planner.chosen_anchor {
+            parts.push(format!("chosen_anchor={anchor}"));
+        }
+        if let Some(selected) = planner.selected_access_path {
+            if let Ok(value) = serde_json::to_value(selected) {
+                if let Some(selected) = value.as_str() {
+                    parts.push(format!("selected_access_path={selected}"));
+                }
+            }
+        }
+        if !planner.residual_filters.is_empty() {
+            parts.push(format!(
+                "residual_filters={}",
+                planner.residual_filters.join(",")
+            ));
+        }
+        if !planner.order.is_empty() {
+            parts.push(format!("order={}", planner.order.join(",")));
+        }
+        if let Some(limit) = planner.limit {
+            parts.push(format!("limit={limit}"));
+        }
+        if let Some(offset) = planner.offset {
+            parts.push(format!("offset={offset}"));
+        }
+    }
+
+    parts.join(" ")
 }
 
 fn format_profile_duration(duration: Duration) -> String {
@@ -5715,6 +6281,42 @@ fn format_profile_duration(duration: Duration) -> String {
     } else {
         format!("{}us", duration.as_micros())
     }
+}
+
+fn push_step_metric(
+    metrics: &mut Vec<ProfileStepMetrics>,
+    plan: &ExecutionPlan,
+    step_index: usize,
+    input_rows: Option<usize>,
+    output_rows: Option<usize>,
+    elapsed: Option<Duration>,
+) {
+    if metrics.iter().any(|metric| metric.step_index == step_index) {
+        return;
+    }
+    if let Some(step) = plan.steps.get(step_index) {
+        metrics.push(ProfileStepMetrics::new(
+            step_index,
+            step.kind.logical_name(),
+            step.kind.access_path(),
+            input_rows,
+            output_rows,
+            elapsed.map(|elapsed| elapsed.as_micros()),
+        ));
+    }
+}
+
+fn plan_step_index(
+    plan: &ExecutionPlan,
+    predicate: impl Fn(&PlanStepKind) -> bool,
+) -> Option<usize> {
+    plan.steps.iter().position(|step| predicate(&step.kind))
+}
+
+fn format_optional_usize(value: Option<usize>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 impl SessionFileFormat {

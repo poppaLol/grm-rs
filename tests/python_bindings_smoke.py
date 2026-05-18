@@ -334,7 +334,7 @@ def main() -> None:
         assert profile["result_rows"] == 1
         assert isinstance(profile["elapsed"]["micros"], int)
         assert isinstance(profile["elapsed"]["display"], str)
-        assert profile["per_step_metrics"] is None
+        assert len(profile["per_step_metrics"]) >= 2
 
         edge_profile = session.profile_edge_find("Authored", {"from": user["id"]})
         assert edge_profile["command"] == "edge.find"

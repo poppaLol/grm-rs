@@ -128,11 +128,92 @@ impl fmt::Display for ExecutionPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanStep {
     pub kind: PlanStepKind,
+    pub planner: Option<PlannerStepMetadata>,
 }
 
 impl PlanStep {
     pub fn new(kind: PlanStepKind) -> Self {
-        Self { kind }
+        Self {
+            kind,
+            planner: None,
+        }
+    }
+
+    pub fn with_planner(mut self, planner: PlannerStepMetadata) -> Self {
+        self.planner = Some(planner);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PlannerStepMetadata {
+    pub chosen_anchor: Option<String>,
+    pub candidate_access_paths: Vec<AccessPath>,
+    pub selected_access_path: Option<AccessPath>,
+    pub residual_filters: Vec<String>,
+    pub order: Vec<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+impl PlannerStepMetadata {
+    pub fn new(
+        chosen_anchor: impl Into<Option<String>>,
+        candidate_access_paths: Vec<AccessPath>,
+        selected_access_path: Option<AccessPath>,
+        residual_filters: Vec<String>,
+    ) -> Self {
+        Self {
+            chosen_anchor: chosen_anchor.into(),
+            candidate_access_paths,
+            selected_access_path,
+            residual_filters,
+            order: Vec::new(),
+            limit: None,
+            offset: None,
+        }
+    }
+
+    pub fn with_paging(
+        mut self,
+        order: Vec<String>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Self {
+        self.order = order;
+        self.limit = limit;
+        self.offset = offset;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProfileStepMetrics {
+    pub step_index: usize,
+    pub kind: String,
+    pub access_path: Option<AccessPath>,
+    pub input_rows: Option<usize>,
+    pub output_rows: Option<usize>,
+    pub elapsed_micros: Option<u128>,
+}
+
+impl ProfileStepMetrics {
+    pub fn new(
+        step_index: usize,
+        kind: impl Into<String>,
+        access_path: Option<AccessPath>,
+        input_rows: Option<usize>,
+        output_rows: Option<usize>,
+        elapsed_micros: Option<u128>,
+    ) -> Self {
+        Self {
+            step_index,
+            kind: kind.into(),
+            access_path,
+            input_rows,
+            output_rows,
+            elapsed_micros,
+        }
     }
 }
 
