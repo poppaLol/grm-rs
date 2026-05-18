@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    GrmError, Result, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionState,
+    DurableOperation, GrmError, Result, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
+    RuntimeValueType, SessionState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +149,7 @@ pub struct SessionBatchParams {
 pub struct SessionBatchOutcome {
     pub value: Value,
     pub should_persist: bool,
+    pub durable_ops: Vec<DurableOperation>,
 }
 
 struct BatchApplied {
@@ -156,6 +157,7 @@ struct BatchApplied {
     model: String,
     id: Option<i64>,
     local_ref: Option<String>,
+    durable_op: DurableOperation,
 }
 
 struct BatchSummary {
@@ -243,6 +245,7 @@ pub async fn apply_session_batch(
         params.ops.len(),
     );
     let mut refs = BTreeMap::<String, i64>::new();
+    let mut durable_ops = Vec::new();
 
     for (index, op) in params.ops.into_iter().enumerate() {
         if op.is_delete() && !params.allow_deletes {
@@ -256,6 +259,7 @@ pub async fn apply_session_batch(
                 }
                 summary.applied = false;
                 return Ok(SessionBatchOutcome {
+                    durable_ops: Vec::new(),
                     should_persist: false,
                     value: summary.into_value(),
                 });
@@ -265,7 +269,10 @@ pub async fn apply_session_batch(
 
         let result = apply_batch_op(state, &mut refs, op).await;
         match result {
-            Ok(applied) => summary.record(applied),
+            Ok(applied) => {
+                durable_ops.push(applied.durable_op.clone());
+                summary.record(applied);
+            }
             Err(err) => {
                 summary.record_error(index, err.to_string());
                 if params.atomic {
@@ -274,6 +281,7 @@ pub async fn apply_session_batch(
                     }
                     summary.applied = false;
                     return Ok(SessionBatchOutcome {
+                        durable_ops: Vec::new(),
                         should_persist: false,
                         value: summary.into_value(),
                     });
@@ -284,6 +292,7 @@ pub async fn apply_session_batch(
 
     let should_persist = summary.applied || summary.has_successes();
     Ok(SessionBatchOutcome {
+        durable_ops,
         value: summary.into_value(),
         should_persist,
     })
@@ -303,12 +312,13 @@ async fn apply_batch_op(
                 state.node_id_type(),
                 parse_fields(params.fields)?,
             )?;
-            state.register_model(model)?;
+            state.register_model(model.clone())?;
             Ok(BatchApplied {
                 op: op_name,
                 model: params.name,
                 id: None,
                 local_ref: None,
+                durable_op: DurableOperation::RegisterNodeModel { model },
             })
         }
         SessionBatchOp::SchemaDefineEdge(params) => {
@@ -320,12 +330,13 @@ async fn apply_batch_op(
                 state.rel_id_type(),
                 parse_fields(params.fields)?,
             )?;
-            state.register_rel_model(model)?;
+            state.register_rel_model(model.clone())?;
             Ok(BatchApplied {
                 op: op_name,
                 model: params.name,
                 id: None,
                 local_ref: None,
+                durable_op: DurableOperation::RegisterRelModel { model },
             })
         }
         SessionBatchOp::NodeCreate(params) => {
@@ -346,6 +357,7 @@ async fn apply_batch_op(
                 model: params.model,
                 id: Some(node.id),
                 local_ref: params.local_ref,
+                durable_op: DurableOperation::UpsertNode { node },
             })
         }
         SessionBatchOp::NodeUpdate(params) => {
@@ -358,6 +370,7 @@ async fn apply_batch_op(
                 model: params.model,
                 id: Some(node.id),
                 local_ref: None,
+                durable_op: DurableOperation::UpsertNode { node },
             })
         }
         SessionBatchOp::NodeDelete(params) => {
@@ -369,6 +382,7 @@ async fn apply_batch_op(
                 model: params.model,
                 id: Some(params.id),
                 local_ref: None,
+                durable_op: DurableOperation::DeleteNode { id: params.id },
             })
         }
         SessionBatchOp::EdgeCreate(params) => {
@@ -388,6 +402,7 @@ async fn apply_batch_op(
                 model: params.model,
                 id: Some(edge.id),
                 local_ref: None,
+                durable_op: DurableOperation::UpsertRel { rel: edge },
             })
         }
         SessionBatchOp::EdgeUpdate(params) => {
@@ -400,6 +415,7 @@ async fn apply_batch_op(
                 model: params.model,
                 id: Some(edge.id),
                 local_ref: None,
+                durable_op: DurableOperation::UpsertRel { rel: edge },
             })
         }
         SessionBatchOp::EdgeDelete(params) => {
@@ -411,6 +427,7 @@ async fn apply_batch_op(
                 model: params.model,
                 id: Some(params.id),
                 local_ref: None,
+                durable_op: DurableOperation::DeleteRel { id: params.id },
             })
         }
     }
