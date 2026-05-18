@@ -225,6 +225,52 @@ async fn autocommit_batch_uses_shared_wal_recovery_path() {
 }
 
 #[tokio::test]
+async fn autocommit_single_operation_tools_append_wal_records() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("mcp-single-session.json");
+    let path_arg = path.to_string_lossy().into_owned();
+    let writer = client(&["--autocommit-json", &path_arg]).await;
+
+    call(
+        &writer,
+        "grm_schema_define_node",
+        json!({
+            "name": "User",
+            "id_field": "userId",
+            "fields": [
+                { "name": "name", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+    call(
+        &writer,
+        "grm_node_create",
+        json!({
+            "model": "User",
+            "props": { "name": "Alice" }
+        }),
+    )
+    .await;
+
+    writer.cancel().await.unwrap();
+
+    let log = std::fs::read_to_string(path.with_extension("json.log")).unwrap();
+    assert!(log.contains("RegisterNodeModel"));
+    assert!(log.contains("UpsertNode"));
+
+    let reopened = client(&["--autocommit-json", &path_arg]).await;
+    let found = call(
+        &reopened,
+        "grm_node_find",
+        json!({ "model": "User", "filters": { "name": "Alice" } }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 1);
+    reopened.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn help_tools_teach_recovery_workflow() {
     let client = client(&[]).await;
 
