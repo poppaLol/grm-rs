@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::{DurabilityFormat, DurableOperation};
 use crate::backend::{
     AccessPath, BinaryPersistedGraphStore, ExecutionPlan, GraphStore, PersistedGraphStore,
     PlanStep, PlanStepKind, PlannerStepMetadata, ProfileStepMetrics, system_index_catalog,
@@ -16,9 +17,8 @@ use crate::dsl::{
     CompareOp, Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, ReturnKind, VarGen,
     VarId,
 };
-use crate::fsutil::{
-    backup_path, log_path, write_file_atomically, write_file_atomically_with_backup,
-};
+use crate::fsutil::{backup_path, write_file_atomically, write_file_atomically_with_backup};
+use crate::runtime::durability;
 use crate::runtime::{
     AdminRequest, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
     EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, NodeCreateRequest, NodeDeleteRequest,
@@ -123,16 +123,6 @@ struct InterchangeEdge {
     from: i64,
     to: i64,
     props: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum SessionLogEntry {
-    RegisterNodeModel { model: RuntimeNodeModel },
-    RegisterRelModel { model: RuntimeRelModel },
-    UpsertNode { node: StoredNode },
-    DeleteNode { id: i64 },
-    UpsertRel { rel: StoredRel },
-    DeleteRel { id: i64 },
 }
 
 const AUTOCOMMIT_CHECKPOINT_INTERVAL: usize = 8;
@@ -262,6 +252,16 @@ struct SessionProfileResult {
     result: SessionQueryResult,
     elapsed: Duration,
     metrics: Vec<ProfileStepMetrics>,
+}
+
+struct RenderProfile<'a> {
+    command: &'a str,
+    target: &'a str,
+    plan: &'a ExecutionPlan,
+    row_count: usize,
+    elapsed: Duration,
+    metrics: &'a [ProfileStepMetrics],
+    verbose: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +450,43 @@ impl SessionState {
         self.catalog.is_empty() && store.nodes.is_empty() && store.rels.is_empty()
     }
 
+    pub fn checkpoint_durable(
+        &self,
+        format: DurabilityFormat,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
+        match format {
+            DurabilityFormat::Json => self.save_to_json(path),
+            DurabilityFormat::Binary => self.save_to_binary(path),
+        }
+    }
+
+    pub fn recover_durable(
+        &mut self,
+        format: DurabilityFormat,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
+        match format {
+            DurabilityFormat::Json => self.load_from_json(path),
+            DurabilityFormat::Binary => self.load_from_binary(path),
+        }
+    }
+
+    pub fn append_durable_operation(
+        &self,
+        path: impl AsRef<Path>,
+        entry: &DurableOperation,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        durability::append_operation(path, entry).map_err(|err| {
+            crate::GrmError::Backend(format!(
+                "failed to append durable operation for '{}': {}",
+                path.display(),
+                err
+            ))
+        })
+    }
+
     pub fn save_to_json(&self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let json = serde_json::to_string_pretty(&self.persisted_session()).map_err(|_| {
@@ -458,7 +495,7 @@ impl SessionState {
         write_file_atomically_with_backup(path, json.as_bytes()).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to write JSON session file")
         })?;
-        clear_session_log(path)
+        durability::clear_log(path)
             .map_err(|_| crate::error::GrmError::SaveAborted("failed to clear session log file"))?;
         Ok(())
     }
@@ -563,7 +600,7 @@ impl SessionState {
         write_file_atomically_with_backup(path, &bytes).map_err(|_| {
             crate::error::GrmError::SaveAborted("failed to write binary session file")
         })?;
-        clear_session_log(path)
+        durability::clear_log(path)
             .map_err(|_| crate::error::GrmError::SaveAborted("failed to clear session log file"))?;
         Ok(())
     }
@@ -2112,7 +2149,7 @@ impl SessionState {
         Ok(query)
     }
 
-    fn parse_backend_id(
+    pub fn parse_backend_id(
         &self,
         raw: &str,
         id_type: crate::BackendIdType,
@@ -3193,7 +3230,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.script_summary
             .created_node_types
             .push(model.name.clone());
-        self.persist_autocommit_entry(SessionLogEntry::RegisterNodeModel {
+        self.persist_autocommit_entry(DurableOperation::RegisterNodeModel {
             model: model.clone(),
         })?;
         if self.output_mode != SessionOutputMode::Script {
@@ -3231,7 +3268,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.script_summary
             .created_link_types
             .push(model.name.clone());
-        self.persist_autocommit_entry(SessionLogEntry::RegisterRelModel {
+        self.persist_autocommit_entry(DurableOperation::RegisterRelModel {
             model: model.clone(),
         })?;
         if self.output_mode != SessionOutputMode::Script {
@@ -3255,7 +3292,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         self.state.register_model(model.clone())?;
-        self.persist_autocommit_entry(SessionLogEntry::RegisterNodeModel {
+        self.persist_autocommit_entry(DurableOperation::RegisterNodeModel {
             model: model.clone(),
         })?;
         writeln!(self.writer, "Model '{}' created.", model.name)?;
@@ -3291,7 +3328,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         }
 
         self.state.register_rel_model(model.clone())?;
-        self.persist_autocommit_entry(SessionLogEntry::RegisterRelModel {
+        self.persist_autocommit_entry(DurableOperation::RegisterRelModel {
             model: model.clone(),
         })?;
         writeln!(self.writer, "Link '{}' created.", model.name)?;
@@ -3322,7 +3359,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .inserted_nodes
             .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit_entry(SessionLogEntry::UpsertNode {
+        self.persist_autocommit_entry(DurableOperation::UpsertNode {
             node: created.clone(),
         })?;
         if self.output_mode != SessionOutputMode::Script {
@@ -3379,7 +3416,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 .ok_or(crate::GrmError::NotFound)?;
             (model.name.clone(), model.id_field_name.clone())
         };
-        self.persist_autocommit_entry(SessionLogEntry::UpsertNode {
+        self.persist_autocommit_entry(DurableOperation::UpsertNode {
             node: updated.clone(),
         })?;
         writeln!(
@@ -3398,7 +3435,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let raw_id = self
             .state
             .parse_backend_id(id, self.state.node_id_type(), "node id")?;
-        self.persist_autocommit_entry(SessionLogEntry::DeleteNode { id: raw_id })?;
+        self.persist_autocommit_entry(DurableOperation::DeleteNode { id: raw_id })?;
         writeln!(self.writer, "Deleted node {model_name} {id}.")?;
         Ok(())
     }
@@ -3438,15 +3475,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .state
             .profile_node_query(model_name, &query, &plan)
             .await?;
-        self.render_profile(
-            "node.find",
-            model_name,
-            &plan,
-            profile.result.row_count(),
-            profile.elapsed,
-            &profile.metrics,
+        self.render_profile(RenderProfile {
+            command: "node.find",
+            target: model_name,
+            plan: &plan,
+            row_count: profile.result.row_count(),
+            elapsed: profile.elapsed,
+            metrics: &profile.metrics,
             verbose,
-        )
+        })
     }
 
     async fn handle_edge_create_parsed(
@@ -3483,7 +3520,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .inserted_edges
             .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit_entry(SessionLogEntry::UpsertRel {
+        self.persist_autocommit_entry(DurableOperation::UpsertRel {
             rel: created.clone(),
         })?;
         if self.output_mode != SessionOutputMode::Script {
@@ -3513,7 +3550,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 .ok_or(crate::GrmError::NotFound)?;
             (model.name.clone(), model.id_field_name.clone())
         };
-        self.persist_autocommit_entry(SessionLogEntry::UpsertRel {
+        self.persist_autocommit_entry(DurableOperation::UpsertRel {
             rel: updated.clone(),
         })?;
         writeln!(
@@ -3536,7 +3573,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let raw_id = self
             .state
             .parse_backend_id(id, self.state.rel_id_type(), "edge id")?;
-        self.persist_autocommit_entry(SessionLogEntry::DeleteRel { id: raw_id })?;
+        self.persist_autocommit_entry(DurableOperation::DeleteRel { id: raw_id })?;
         writeln!(self.writer, "Deleted edge {model_name} {id}.")?;
         Ok(())
     }
@@ -3582,15 +3619,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let query = self.state.parse_edge_find_query(model_name, &filters)?;
         let plan = self.state.explain_edge_find_query(model_name, &query)?;
         let (rels, elapsed, metrics) = self.state.profile_edge_query(model_name, &query, &plan)?;
-        self.render_profile(
-            "edge.find",
-            model_name,
-            &plan,
-            rels.len(),
+        self.render_profile(RenderProfile {
+            command: "edge.find",
+            target: model_name,
+            plan: &plan,
+            row_count: rels.len(),
             elapsed,
-            &metrics,
+            metrics: &metrics,
             verbose,
-        )
+        })
     }
 
     fn handle_session_save(&mut self, args: &[&str]) -> Result<()> {
@@ -3765,24 +3802,23 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.render_plan_steps(plan, verbose)
     }
 
-    fn render_profile(
-        &mut self,
-        command: &str,
-        target: &str,
-        plan: &ExecutionPlan,
-        row_count: usize,
-        elapsed: Duration,
-        metrics: &[ProfileStepMetrics],
-        verbose: bool,
-    ) -> Result<()> {
-        writeln!(self.writer, "Profile for {command} {target}")?;
-        if verbose {
-            self.render_profile_plan_steps(plan, metrics)?;
+    fn render_profile(&mut self, profile: RenderProfile<'_>) -> Result<()> {
+        writeln!(
+            self.writer,
+            "Profile for {} {}",
+            profile.command, profile.target
+        )?;
+        if profile.verbose {
+            self.render_profile_plan_steps(profile.plan, profile.metrics)?;
         } else {
-            self.render_plan_steps(plan, false)?;
+            self.render_plan_steps(profile.plan, false)?;
         }
-        writeln!(self.writer, "Result rows: {row_count}")?;
-        writeln!(self.writer, "Elapsed: {}", format_profile_duration(elapsed))?;
+        writeln!(self.writer, "Result rows: {}", profile.row_count)?;
+        writeln!(
+            self.writer,
+            "Elapsed: {}",
+            format_profile_duration(profile.elapsed)
+        )?;
         Ok(())
     }
 
@@ -4545,17 +4581,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
         let path = target.path.clone();
         let format = target.format;
-        match format {
-            SessionFileFormat::Json => self.state.save_to_json(&target.path),
-            SessionFileFormat::Binary => self.state.save_to_binary(&target.path),
-        }
-        .map_err(|err| {
-            crate::GrmError::Backend(format!(
-                "autocommit failed for '{}': {}",
-                path.display(),
-                err
-            ))
-        })?;
+        self.state
+            .checkpoint_durable(format.durability_format(), &target.path)
+            .map_err(|err| {
+                crate::GrmError::Backend(format!(
+                    "autocommit failed for '{}': {}",
+                    path.display(),
+                    err
+                ))
+            })?;
         target.pending_entries = 0;
         Ok(())
     }
@@ -4612,7 +4646,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         self.checkpoint_autocommit()
     }
 
-    fn persist_autocommit_entry(&mut self, entry: SessionLogEntry) -> Result<()> {
+    fn persist_autocommit_entry(&mut self, entry: DurableOperation) -> Result<()> {
         if self.script_tx.is_some() {
             return Ok(());
         }
@@ -4621,13 +4655,15 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             return Ok(());
         };
 
-        append_session_log(&target.path, &entry).map_err(|err| {
-            crate::GrmError::Backend(format!(
-                "autocommit failed for '{}': {}",
-                target.path.display(),
-                err
-            ))
-        })?;
+        self.state
+            .append_durable_operation(&target.path, &entry)
+            .map_err(|err| {
+                crate::GrmError::Backend(format!(
+                    "autocommit failed for '{}': {}",
+                    target.path.display(),
+                    err
+                ))
+            })?;
         target.pending_entries += 1;
 
         if target.pending_entries >= AUTOCOMMIT_CHECKPOINT_INTERVAL {
@@ -4928,7 +4964,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
 impl SessionState {
     fn apply_session_log(&mut self, path: &Path) -> Result<()> {
-        let entries = read_session_log(path)?;
+        let entries = durability::read_operations(path)?;
         if entries.is_empty() {
             return Ok(());
         }
@@ -4976,83 +5012,34 @@ impl SessionState {
     }
 }
 
-fn append_session_log(path: &Path, entry: &SessionLogEntry) -> io::Result<()> {
-    let log_path = log_path(path);
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)?;
-    let line = serde_json::to_vec(entry).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "failed to serialize session log",
-        )
-    })?;
-    file.write_all(&line)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-    Ok(())
-}
-
-fn clear_session_log(path: &Path) -> io::Result<()> {
-    let log_path = log_path(path);
-    match fs::remove_file(log_path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
-fn read_session_log(path: &Path) -> Result<Vec<SessionLogEntry>> {
-    let log_path = log_path(path);
-    let contents = match fs::read_to_string(&log_path) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => {
-            return Err(crate::error::GrmError::LoadAborted(
-                "failed to read session log file",
-            ));
-        }
-    };
-
-    let mut entries = Vec::new();
-    for line in contents.lines().filter(|line| !line.trim().is_empty()) {
-        let entry = serde_json::from_str(line).map_err(|_| {
-            crate::error::GrmError::LoadAborted("failed to deserialize session log file")
-        })?;
-        entries.push(entry);
-    }
-    Ok(entries)
-}
-
 fn apply_session_log_entry(
     store: &mut GraphStore,
     catalog: &mut SessionModelCatalog,
-    entry: &SessionLogEntry,
+    entry: &DurableOperation,
 ) -> Result<()> {
     match entry {
-        SessionLogEntry::RegisterNodeModel { model } => {
+        DurableOperation::RegisterNodeModel { model } => {
             if catalog.get_node_model(&model.name).is_none() {
                 catalog.register_node_model(model.clone())?;
             }
         }
-        SessionLogEntry::RegisterRelModel { model } => {
+        DurableOperation::RegisterRelModel { model } => {
             if catalog.get_rel_model(&model.name).is_none() {
                 catalog.register_rel_model(model.clone())?;
             }
         }
-        SessionLogEntry::UpsertNode { node } => {
+        DurableOperation::UpsertNode { node } => {
             store.next_node_id = store.next_node_id.max(node.id + 1);
             store.insert_node(node.id, node.clone());
         }
-        SessionLogEntry::DeleteNode { id } => {
+        DurableOperation::DeleteNode { id } => {
             store.remove_node(*id);
         }
-        SessionLogEntry::UpsertRel { rel } => {
+        DurableOperation::UpsertRel { rel } => {
             store.next_rel_id = store.next_rel_id.max(rel.id + 1);
             store.insert_relationship(rel.id, rel.clone());
         }
-        SessionLogEntry::DeleteRel { id } => {
+        DurableOperation::DeleteRel { id } => {
             store.remove_relationship(*id);
         }
     }
@@ -6332,6 +6319,13 @@ impl SessionFileFormat {
         match self {
             Self::Json => "--json",
             Self::Binary => "--bin",
+        }
+    }
+
+    fn durability_format(self) -> DurabilityFormat {
+        match self {
+            Self::Json => DurabilityFormat::Json,
+            Self::Binary => DurabilityFormat::Binary,
         }
     }
 }
