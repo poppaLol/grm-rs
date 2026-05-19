@@ -8,7 +8,7 @@ Recommended agent workflow:
 3. If Neo4j mode is active, read grm://backend/status; if runtime schema is empty, define or reconstruct schema before typed reads or writes.
 4. Before defining schema, decide the graph's richness vs sparseness.
 5. Prefer structured tools for schema, node, edge, introspection, import, export, and persistence operations.
-6. For more than 3 creates or updates, prefer grm_batch.
+6. For more than 3 creates or updates, prefer grm_batch with ops as structured operation objects, not CLI strings or JSON-encoded strings.
 7. Use grm_explain or grm_profile to inspect node.find and edge.find plans when supported by the active backend.
 8. Use grm_query for traversal queries or exact CLI parity when supported by the active backend.
 9. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
@@ -39,7 +39,7 @@ pub fn help_index() -> Value {
             "Before defining schema, decide the graph's richness vs sparseness.",
             "Prefer structured tools over grm_query except for traversal queries or CLI parity.",
             "Use grm_explain or grm_profile to inspect node.find and edge.find plans.",
-            "For more than 3 creates or updates, prefer grm_batch.",
+            "For more than 3 creates or updates, prefer grm_batch with ops as structured operation objects, not CLI strings or JSON-encoded strings.",
             "After recoverable errors, call grm_tool_help with the tool name before retrying.",
             "Verify writes with grm://graph/summary, grm://graph/export, or grm_export."
         ],
@@ -52,7 +52,7 @@ pub fn help_index() -> Value {
                 "Prefer rich edge models when relationships mean different things or drive different traversals, for example AUTHORED, PURCHASED, LOCATEDIN, and DEPENDSON.",
                 "Prefer sparse edge models when relationships share meaning and differ mainly by properties, for example RELATEDTO with kind, confidence, and source."
             ],
-            "batching": "After choosing schema granularity, batch related schema and data mutations. For more than 3 related creates or updates, prefer grm_batch so refs, validation, and rollback happen together."
+            "batching": "After choosing schema granularity, batch related schema and data mutations. For more than 3 related creates or updates, prefer grm_batch so refs, validation, and rollback happen together. In grm_batch, ops must be an array of operation objects, not CLI strings or JSON-encoded strings."
         },
         "resources": [
             "grm://docs/agent-guide",
@@ -153,6 +153,11 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_batch" => json!({
             "tool": "grm_batch",
             "purpose": "Apply an ordered list of structured schema, node, and edge mutations in one MCP call.",
+            "input_shape": [
+                "ops is an array of operation objects, not CLI command strings and not serialized JSON strings.",
+                "Correct item shape: { \"op\": \"node_create\", \"args\": { \"model\": \"File\", \"props\": { \"path\": \"src/lib.rs\" } } }.",
+                "Incorrect item shape: \"{\\\"op\\\":\\\"node_create\\\",\\\"args\\\":{...}}\"."
+            ],
             "modeling_guidance": [
                 "Before batching schema creation, choose the graph's richness vs sparseness.",
                 "Use richer node/edge models when distinctions matter to fields, constraints, relationships, or traversal semantics.",
@@ -217,7 +222,8 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 recovery("was not created earlier in this batch", "Create the referenced node earlier in ops or use a numeric id."),
                 recovery("duplicate batch ref", "Use a unique ref for each node_create operation in the batch."),
                 recovery("requires allow_deletes=true", "Set allow_deletes=true when the batch intentionally includes delete operations."),
-                recovery("missing required field", "Provide all required fields from the schema.")
+                recovery("missing required field", "Provide all required fields from the schema."),
+                recovery("invalid type: string, expected adjacently tagged enum SessionBatchOp", "Pass each ops entry as a JSON object with op and args fields, not as a JSON-encoded string.")
             ],
             "related": ["grm_schema_list", "grm_node_create", "grm_edge_create"]
         }),
@@ -553,6 +559,20 @@ mod tests {
         assert!(
             batch_help.to_string().contains("richness vs sparseness"),
             "batch help should remind agents to choose schema granularity before batching"
+        );
+    }
+
+    #[test]
+    fn batch_help_warns_ops_are_objects_not_strings() {
+        let help = tool_help("grm_batch").unwrap();
+        let rendered = help.to_string();
+        assert!(
+            rendered.contains("operation objects"),
+            "batch help should tell agents that ops entries are structured objects"
+        );
+        assert!(
+            rendered.contains("JSON-encoded string"),
+            "batch help should prevent agents from passing serialized JSON strings"
         );
     }
 }

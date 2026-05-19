@@ -264,7 +264,7 @@ impl JsonSchema for BatchParams {
                 },
                 "ops": {
                     "type": "array",
-                    "description": "Ordered structured schema/node/edge operations.",
+                    "description": "Ordered structured schema/node/edge operation objects. Do not pass CLI command strings or JSON-encoded strings; each item must be an object such as {\"op\":\"node_create\",\"args\":{\"model\":\"File\",\"props\":{\"path\":\"src/lib.rs\"}}}.",
                     "items": batch_op_schema()
                 }
             },
