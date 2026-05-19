@@ -32,6 +32,34 @@ The server owns one in-memory `SessionState` per process. Use
 mutations persisted after each write. Use `--export-json <path>` if you also
 want a readable interchange graph file updated after successful mutations.
 
+### Neo4j MCP Mode
+
+To let agents write directly into a live Neo4j graph, run `grm-mcp` with:
+
+```bash
+GRM_BACKEND=neo4j
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=...
+grm-mcp
+```
+
+Neo4j mode is intentionally narrow. It supports:
+
+- `grm_schema_list`
+- `grm_schema_define_node`
+- `grm_schema_define_edge`
+- `grm_node_create`
+- `grm_edge_create`
+- simple `grm_node_find`
+- simple `grm_edge_find`
+
+Important: runtime schema metadata is session-local in this first slice. If you
+restart `grm-mcp`, the Neo4j graph data remains, but agents must define the
+runtime schema again before finding or extending that data. Graph durability
+comes from Neo4j, not the GRM WAL/autocommit layer. Unsupported tools return
+clear not-supported errors in Neo4j mode.
+
 ## Startup Flags
 
 ```text
