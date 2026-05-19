@@ -5,13 +5,19 @@ pub const AGENT_GUIDE: &str = r#"GRM is a runtime graph session exposed over MCP
 Recommended agent workflow:
 1. Call grm_help when first using this server in a session.
 2. Call grm_schema_list or read grm://schema before creating or querying data.
-3. Before defining schema, decide the graph's richness vs sparseness.
-4. Prefer structured tools for schema, node, edge, introspection, import, export, and persistence operations.
-5. For more than 3 creates or updates, prefer grm_batch.
-6. Use grm_explain or grm_profile to inspect node.find and edge.find plans.
-7. Use grm_query for traversal queries or exact CLI parity.
-8. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
-9. Verify writes with grm://graph/summary, grm://graph/export, or grm_export.
+3. If Neo4j mode is active, read grm://backend/status; if runtime schema is empty, define or reconstruct schema before typed reads or writes.
+4. Before defining schema, decide the graph's richness vs sparseness.
+5. Prefer structured tools for schema, node, edge, introspection, import, export, and persistence operations.
+6. For more than 3 creates or updates, prefer grm_batch.
+7. Use grm_explain or grm_profile to inspect node.find and edge.find plans when supported by the active backend.
+8. Use grm_query for traversal queries or exact CLI parity when supported by the active backend.
+9. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
+10. Verify writes with grm://graph/summary, grm://graph/export, or grm_export when supported by the active backend.
+
+Neo4j mode note:
+- Runtime schema metadata is session-local. Neo4j graph data may already exist even when grm_schema_list is empty.
+- On startup, call grm_schema_list, inspect grm://backend/status, and if schema is empty ask whether to define a fresh schema, reconstruct one from project docs, or wait for a future backing-store introspection path.
+- Neo4j mode supports grm_batch for schema_define_node, schema_define_edge, node_create, and edge_create. Updates, deletes, snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
 
 Schema richness vs sparseness:
 - Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.
@@ -29,6 +35,7 @@ pub fn help_index() -> Value {
         "recommended_workflow": [
             "Call grm_help when first using this server in a session.",
             "Call grm_schema_list or read grm://schema before creating or querying data.",
+            "If Neo4j mode is active, read grm://backend/status; if runtime schema is empty, define or reconstruct schema before typed reads or writes.",
             "Before defining schema, decide the graph's richness vs sparseness.",
             "Prefer structured tools over grm_query except for traversal queries or CLI parity.",
             "Use grm_explain or grm_profile to inspect node.find and edge.find plans.",
@@ -51,6 +58,7 @@ pub fn help_index() -> Value {
             "grm://docs/agent-guide",
             "grm://docs/query-language",
             "grm://docs/tool-help",
+            "grm://backend/status",
             "grm://schema",
             "grm://graph/summary",
             "grm://graph/export"
@@ -105,8 +113,9 @@ pub fn tool_help(name: &str) -> Option<Value> {
             "tool": "grm_schema_list",
             "purpose": "Return node models, edge models, and backend identity types.",
             "before_calling": ["Call this before creating or querying graph data if model fields are unknown."],
+            "neo4j_note": "In Neo4j mode this reports session-local runtime schema, not full Neo4j store introspection. If it is empty, define or reconstruct schema before typed reads or writes.",
             "example": {},
-            "related": ["grm://schema", "grm_help"]
+            "related": ["grm://schema", "grm://backend/status", "grm_help"]
         }),
         "grm_index_list" => json!({
             "tool": "grm_index_list",
@@ -165,6 +174,13 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 "edge_update",
                 "edge_delete"
             ],
+            "neo4j_supported_ops": [
+                "schema_define_node",
+                "schema_define_edge",
+                "node_create",
+                "edge_create"
+            ],
+            "neo4j_note": "Neo4j mode currently requires atomic=true. It applies supported batch operations in order, writes graph creates in one Neo4j transaction, and stages session-local schema until commit. It does not auto-create schema from data writes.",
             "before_calling": [
                 "Use this for more than 3 creates or updates.",
                 "Define referenced models before creating nodes or edges.",

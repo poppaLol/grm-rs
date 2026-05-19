@@ -65,6 +65,14 @@ The agent should also inspect the current schema first by calling `grm_schema_li
 This can prevent it from overwriting data, or re-interpreting existing data in an
 altered schema.
 
+If the server is running with `GRM_BACKEND=neo4j`, the runtime schema reported
+by `grm_schema_list` is session-local. The Neo4j graph may already contain data
+even when that schema is empty. In that mode, the agent should inspect
+`grm://backend/status`; if the runtime schema is empty, it should ask whether to
+define a fresh schema, reconstruct one from project docs, or wait for a future
+Neo4j introspection path before writing. Only then should it perform
+`grm_batch` writes.
+
 ## Ask For Molecules
 
 The human gives the actual task:
@@ -168,6 +176,11 @@ would include all node and edge definitions; the excerpt below shows the shape:
 
 The omitted operations define `Mixture`, `Atom`, `HAS_BOND`, `BOND_FROM`, and
 `BOND_TO` in the same style. Call the full payload with `grm_batch`.
+
+In Neo4j mode, this schema-definition batch is supported and updates only the
+current MCP server's session-local runtime schema. The backing Neo4j graph may
+outlive that schema metadata, so a future server process must define or
+reconstruct schema again before typed reads or writes.
 
 ## Store The Molecules
 
@@ -308,6 +321,12 @@ molecules such as octane and benzene, citric acid atoms and bonds, and the
 `CONTAINS` / `HAS_ATOM` / `HAS_BOND` edges that connect them. Call the full
 payload with `grm_batch`.
 
+Neo4j mode supports this style of `grm_batch` with `atomic=true` for
+`node_create` and `edge_create` operations, including batch-local refs. It still
+does not support batch updates, deletes, snapshots, import/export, autocommit,
+explain/profile, or traversal/query parity. Graph durability comes from Neo4j;
+schema metadata remains session-local.
+
 A good agent response after the batch is:
 
 ```text
@@ -439,9 +458,9 @@ schema-aware creation and simple lookup through:
 It is not a general backend pivot. Runtime schema metadata is session-local in
 this first slice: if `grm-mcp` restarts, the Neo4j graph data remains, but the
 agent must define the runtime schema again before finding or extending that
-data. Neo4j durability comes from Neo4j, and GRM snapshot/import, batch,
-explain/profile, traversal parity, and CLI Neo4j session mode are not part of
-this workflow yet.
+data. Neo4j durability comes from Neo4j, and GRM snapshot/import, non-create
+batch operations, explain/profile, traversal parity, and CLI Neo4j session mode
+are not part of this workflow yet.
 
 ## Recover From Tool Errors
 
