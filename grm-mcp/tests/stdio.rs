@@ -1,9 +1,11 @@
-use grm_rs::{DurabilityFormat, SessionState};
+use grm_rs::{DurabilityFormat, GraphBackend, Neo4jBackend, Neo4jConfig, SessionState};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, JsonObject};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
+use std::env;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 use tokio::process::Command;
 
@@ -21,6 +23,28 @@ async fn client(args: &[&str]) -> rmcp::service::RunningService<rmcp::RoleClient
     )
     .await
     .expect("connect to grm-mcp")
+}
+
+async fn neo4j_client() -> Option<rmcp::service::RunningService<rmcp::RoleClient, ()>> {
+    let uri = env::var("NEO4J_URI").ok()?;
+    let user = env::var("NEO4J_USER").ok()?;
+    let password = env::var("NEO4J_PASSWORD").ok()?;
+    let command = Command::new(env!("CARGO_BIN_EXE_grm-mcp"));
+
+    Some(
+        ().serve(
+            TokioChildProcess::new(command.configure(|cmd| {
+                cmd.kill_on_drop(true)
+                    .env("GRM_BACKEND", "neo4j")
+                    .env("NEO4J_URI", uri)
+                    .env("NEO4J_USER", user)
+                    .env("NEO4J_PASSWORD", password);
+            }))
+            .expect("spawn grm-mcp in Neo4j mode"),
+        )
+        .await
+        .expect("connect to grm-mcp"),
+    )
 }
 
 async fn call(
@@ -61,6 +85,40 @@ fn fixture_path(name: &str) -> String {
         .into_owned()
 }
 
+fn unique_smoke_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_nanos();
+    format!("grm-mcp-neo4j-batch-{nanos}")
+}
+
+async fn cleanup_neo4j_smoke_graph(smoke_id: &str) {
+    let Ok(uri) = env::var("NEO4J_URI") else {
+        return;
+    };
+    let Ok(user) = env::var("NEO4J_USER") else {
+        return;
+    };
+    let Ok(password) = env::var("NEO4J_PASSWORD") else {
+        return;
+    };
+    let backend = Neo4jBackend::connect(Neo4jConfig {
+        uri,
+        user,
+        password,
+    })
+    .await
+    .expect("connect Neo4j for smoke cleanup");
+    backend
+        .execute_query(
+            "MATCH (n) WHERE n.smoke_id = $smoke_id DETACH DELETE n",
+            json!({ "smoke_id": smoke_id }),
+        )
+        .await
+        .expect("cleanup Neo4j MCP smoke graph");
+}
+
 #[tokio::test]
 async fn schema_list_on_empty_stdio_session() {
     let client = client(&[]).await;
@@ -70,6 +128,154 @@ async fn schema_list_on_empty_stdio_session() {
     assert_eq!(schema["edges"], json!([]));
 
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a running Neo4j Bolt endpoint and NEO4J_* env vars"]
+async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
+    let Some(client) = neo4j_client().await else {
+        eprintln!("skipping Neo4j MCP smoke test; set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD");
+        return;
+    };
+    let smoke_id = unique_smoke_id();
+
+    let schema = call(&client, "grm_schema_list", json!({})).await;
+    assert_eq!(schema["backend"]["mode"], json!("neo4j"));
+    assert_eq!(schema["backend"]["runtime_schema_empty"], json!(true));
+    assert!(
+        schema
+            .to_string()
+            .contains("Define or reconstruct session-local runtime schema")
+    );
+
+    let missing_schema = call_error(
+        &client,
+        "grm_node_find",
+        json!({ "model": "GrmMcpSmokeUser", "filters": { "smoke_id": smoke_id } }),
+    )
+    .await;
+    assert!(missing_schema.contains("session-local runtime schema"));
+    assert!(missing_schema.contains("define schema first"));
+    assert!(missing_schema.contains("grm_schema_list"));
+
+    let unsupported_batch_op = call_error(
+        &client,
+        "grm_batch",
+        json!({
+            "ops": [
+                {
+                    "op": "node_update",
+                    "args": {
+                        "model": "GrmMcpSmokeUser",
+                        "id": 1,
+                        "props": { "name": "Alice Updated" }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    assert!(unsupported_batch_op.contains("node_update"));
+    assert!(unsupported_batch_op.contains("schema_define_node"));
+    assert!(unsupported_batch_op.contains("edge_create"));
+
+    let result = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "response": "detailed",
+            "ops": [
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "GrmMcpSmokeUser",
+                        "id_field": "userId",
+                        "fields": [
+                            { "name": "name", "type": "string", "required": true },
+                            { "name": "smoke_id", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "GrmMcpSmokePost",
+                        "id_field": "postId",
+                        "fields": [
+                            { "name": "title", "type": "string", "required": true },
+                            { "name": "smoke_id", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "schema_define_edge",
+                    "args": {
+                        "name": "GRM_MCP_SMOKE_AUTHORED",
+                        "from_model": "GrmMcpSmokeUser",
+                        "to_model": "GrmMcpSmokePost",
+                        "id_field": "authoredId",
+                        "fields": [
+                            { "name": "smoke_id", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "user",
+                        "model": "GrmMcpSmokeUser",
+                        "props": { "name": "Alice", "smoke_id": smoke_id }
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "post",
+                        "model": "GrmMcpSmokePost",
+                        "props": { "title": "Neo4j MCP batch smoke", "smoke_id": smoke_id }
+                    }
+                },
+                {
+                    "op": "edge_create",
+                    "args": {
+                        "model": "GRM_MCP_SMOKE_AUTHORED",
+                        "from": "user",
+                        "to": "post",
+                        "props": { "smoke_id": smoke_id }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(result["applied"], json!(true));
+    assert_eq!(result["counts"]["node_create"]["GrmMcpSmokeUser"], json!(1));
+    assert_eq!(
+        result["counts"]["edge_create"]["GRM_MCP_SMOKE_AUTHORED"],
+        json!(1)
+    );
+    assert_eq!(result["ids"].as_array().unwrap().len(), 3);
+
+    let found_nodes = call(
+        &client,
+        "grm_node_find",
+        json!({ "model": "GrmMcpSmokeUser", "filters": { "smoke_id": smoke_id } }),
+    )
+    .await;
+    assert_eq!(found_nodes["nodes"].as_array().unwrap().len(), 1);
+
+    let found_edges = call(
+        &client,
+        "grm_edge_find",
+        json!({ "model": "GRM_MCP_SMOKE_AUTHORED", "filters": { "smoke_id": smoke_id } }),
+    )
+    .await;
+    assert_eq!(found_edges["edges"].as_array().unwrap().len(), 1);
+
+    client.cancel().await.unwrap();
+    cleanup_neo4j_smoke_graph(&smoke_id).await;
 }
 
 #[tokio::test]
