@@ -47,6 +47,8 @@ grm-mcp
 Neo4j mode is intentionally narrow. It supports:
 
 - `grm_schema_list`
+- `grm_batch` for `schema_define_node`, `schema_define_edge`, `node_create`,
+  and `edge_create`
 - `grm_schema_define_node`
 - `grm_schema_define_edge`
 - `grm_node_create`
@@ -55,10 +57,17 @@ Neo4j mode is intentionally narrow. It supports:
 - simple `grm_edge_find`
 
 Important: runtime schema metadata is session-local in this first slice. If you
-restart `grm-mcp`, the Neo4j graph data remains, but agents must define the
-runtime schema again before finding or extending that data. Graph durability
-comes from Neo4j, not the GRM WAL/autocommit layer. Unsupported tools return
-clear not-supported errors in Neo4j mode.
+restart `grm-mcp`, the Neo4j graph data remains, but agents must define or
+reconstruct the runtime schema again before finding or extending typed data.
+`grm_schema_list` is still the first schema inspection tool. In Neo4j mode, if
+that schema is empty, read `grm://backend/status` and ask whether to define a
+fresh schema, reconstruct one from project docs, or wait for a future backing
+store introspection path before writing.
+
+Graph durability comes from Neo4j, not the GRM WAL/autocommit layer. Neo4j mode
+does not support snapshots, import/export, autocommit, explain/profile,
+traversal/query parity, updates, or deletes yet. Unsupported tools and
+unsupported Neo4j batch operations return clear not-supported errors.
 
 ## Startup Flags
 
@@ -191,6 +200,14 @@ operations may provide a batch-local `ref`, and later edge create operations may
 use either numeric ids or those earlier refs as endpoints. Refs must be unique
 within a batch. Delete operations are rejected unless `allow_deletes` is set to
 `true`.
+
+In Neo4j mode, `grm_batch` currently requires `atomic=true` and supports only
+schema definition, node create, and edge create operations. It stages
+session-local schema metadata and executes Neo4j graph creates in one
+transaction, committing only after every supported operation succeeds. It does
+not auto-create schema from data writes; creating or finding a model that is not
+registered in the session-local runtime schema fails with guidance to define
+schema first.
 
 `grm_graph_patch` remains the planned declarative graph-shaped bulk write
 surface.

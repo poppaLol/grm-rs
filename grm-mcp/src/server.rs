@@ -7,7 +7,7 @@ use grm_rs::{
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::{AutocommitTarget, StartupOptions};
@@ -74,8 +74,7 @@ impl GrmMcpServer {
             || options.export_json.is_some()
         {
             return Err(GrmError::NotSupported(
-                "startup load/import/export/autocommit options are not supported in Neo4j MCP mode yet; Neo4j durability comes from Neo4j and runtime schema is session-local"
-                    .into(),
+                "startup load/import/export/autocommit options are not supported in Neo4j MCP mode yet; Neo4j durability comes from Neo4j and runtime schema is session-local",
             ));
         }
 
@@ -108,7 +107,7 @@ impl GrmMcpServer {
         self.is_neo4j().then(|| {
             McpError::internal_error(
                 format!(
-                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_node_create, grm_edge_create, simple grm_node_find, and simple grm_edge_find"
+                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge creation, grm_node_create, grm_edge_create, simple grm_node_find, and simple grm_edge_find"
                 ),
                 None,
             )
@@ -116,7 +115,64 @@ impl GrmMcpServer {
     }
 
     pub async fn schema_json(&self) -> Value {
-        self.state.lock().await.schema_value()
+        let state = self.state.lock().await;
+        let mut value = state.schema_value();
+        if self.is_neo4j() {
+            let node_count = state.catalog().list_node_models().len();
+            let edge_count = state.catalog().list_rel_models().len();
+            value["backend"] = json!({
+                "mode": "neo4j",
+                "connected": true,
+                "runtime_schema_model_count": node_count + edge_count,
+                "runtime_schema_empty": node_count == 0 && edge_count == 0,
+                "note": "Neo4j graph data may already exist outside this session-local runtime schema."
+            });
+            if node_count == 0 && edge_count == 0 {
+                value["guidance"] = json!({
+                    "schema_required": "Define or reconstruct session-local runtime schema before creating or finding typed Neo4j data.",
+                    "startup_flow": [
+                        "Call grm_schema_list.",
+                        "Read grm://backend/status for backend/session orientation.",
+                        "If schema is empty, ask whether to define a fresh schema, reconstruct one from project docs, or wait for a future backing-store introspection path.",
+                        "Only then perform grm_batch writes."
+                    ]
+                });
+            }
+        }
+        value
+    }
+
+    pub async fn backend_status_json(&self) -> Value {
+        let state = self.state.lock().await;
+        let node_count = state.catalog().list_node_models().len();
+        let edge_count = state.catalog().list_rel_models().len();
+        if self.is_neo4j() {
+            json!({
+                "backend": {
+                    "mode": "neo4j",
+                    "connected": true,
+                    "runtime_schema_model_count": node_count + edge_count,
+                    "runtime_schema_empty": node_count == 0 && edge_count == 0,
+                    "note": "Runtime schema metadata is session-local; Neo4j graph data may already exist outside the current GRM runtime schema.",
+                    "future_orientation_tools": ["grm_backend_status", "grm_store_summary", "grm_schema_introspect"]
+                },
+                "recommended_startup_flow": [
+                    "Call grm_schema_list.",
+                    "Inspect this backend/session status resource.",
+                    "If schema is empty, ask the user whether to define a fresh schema, reconstruct one from project docs, or inspect the backing store through a future introspection path.",
+                    "Only then perform grm_batch writes."
+                ]
+            })
+        } else {
+            json!({
+                "backend": {
+                    "mode": "in-memory",
+                    "connected": true,
+                    "runtime_schema_model_count": node_count + edge_count,
+                    "runtime_schema_empty": node_count == 0 && edge_count == 0
+                }
+            })
+        }
     }
 
     pub async fn export_json(&self) -> GrmResult<Value> {

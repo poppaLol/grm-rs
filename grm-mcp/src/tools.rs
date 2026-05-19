@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use grm_rs::{
-    CliSession, DurableOperation, GraphTx, GrmError, KernelValue, RuntimeField, RuntimeNodeModel,
-    RuntimeRelModel, StoredNode, StoredRel, apply_session_batch,
+    CliSession, DurableOperation, GraphTx, GrmError, KernelValue, Neo4jTx, RuntimeField,
+    RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionBatchEndpoint,
+    SessionBatchFieldParam, SessionBatchOp, SessionBatchParams, SessionBatchResponse, StoredNode,
+    StoredRel, apply_session_batch,
+    client::Transaction,
     runtime::{SessionCommand, parse_command_line},
 };
 use rmcp::handler::server::wrapper::Parameters;
@@ -80,8 +83,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<BatchParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if let Some(err) = self.unsupported_in_neo4j("grm_batch") {
-            return Err(err);
+        if self.is_neo4j() {
+            let value = self.neo4j_batch(params.0).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
         }
         let mut state = self.state.lock().await;
         let outcome = apply_session_batch(&mut state, params.0)
@@ -512,6 +516,102 @@ impl GrmMcpServer {
 }
 
 impl GrmMcpServer {
+    async fn neo4j_batch(&self, params: SessionBatchParams) -> grm_rs::Result<Value> {
+        if !params.atomic {
+            return Err(GrmError::NotSupported(
+                "Neo4j grm_batch currently requires atomic=true; graph writes are committed only after every supported operation succeeds",
+            ));
+        }
+
+        let mut state = self.state.lock().await;
+        let mut staged = state.snapshot();
+        let mut refs = BTreeMap::<String, i64>::new();
+        let mut summary = Neo4jBatchSummary::new(
+            true,
+            matches!(params.response, SessionBatchResponse::Detailed),
+            params.ops.len(),
+        );
+        let mut tx = self.neo4j_client()?.transaction().await?;
+
+        for (index, op) in params.ops.into_iter().enumerate() {
+            if let Err(err) = ensure_neo4j_batch_op_supported(&op) {
+                let _ = tx.rollback().await;
+                return Err(GrmError::Constraint(err));
+            }
+
+            let op_name = op.op_name();
+            let result = match op {
+                SessionBatchOp::SchemaDefineNode(params) => (|| {
+                    let model = RuntimeNodeModel::new(
+                        params.name.clone(),
+                        params.id_field,
+                        staged.node_id_type(),
+                        parse_batch_fields(params.fields)?,
+                    )?;
+                    staged.register_model(model)?;
+                    Ok(Neo4jBatchApplied {
+                        op: op_name,
+                        model: params.name,
+                        id: None,
+                        local_ref: None,
+                    })
+                })(),
+                SessionBatchOp::SchemaDefineEdge(params) => (|| {
+                    let model = RuntimeRelModel::new(
+                        params.name.clone(),
+                        params.from_model,
+                        params.to_model,
+                        params.id_field,
+                        staged.rel_id_type(),
+                        parse_batch_fields(params.fields)?,
+                    )?;
+                    staged.register_rel_model(model)?;
+                    Ok(Neo4jBatchApplied {
+                        op: op_name,
+                        model: params.name,
+                        id: None,
+                        local_ref: None,
+                    })
+                })(),
+                SessionBatchOp::NodeCreate(params) => {
+                    if let Some(local_ref) = &params.local_ref {
+                        if refs.contains_key(local_ref) {
+                            Err(GrmError::Constraint(format!(
+                                "duplicate batch ref '{local_ref}'"
+                            )))
+                        } else {
+                            create_neo4j_batch_node(&mut tx, &staged, &mut refs, params, op_name)
+                                .await
+                        }
+                    } else {
+                        create_neo4j_batch_node(&mut tx, &staged, &mut refs, params, op_name).await
+                    }
+                }
+                SessionBatchOp::EdgeCreate(params) => {
+                    create_neo4j_batch_edge(&mut tx, &staged, &refs, params, op_name).await
+                }
+                SessionBatchOp::NodeUpdate(_)
+                | SessionBatchOp::NodeDelete(_)
+                | SessionBatchOp::EdgeUpdate(_)
+                | SessionBatchOp::EdgeDelete(_) => unreachable!("unsupported ops checked above"),
+            };
+
+            let applied = match result {
+                Ok(applied) => applied,
+                Err(err) => {
+                    let _ = tx.rollback().await;
+                    summary.record_error(index, err.to_string());
+                    return Ok(summary.into_value());
+                }
+            };
+            summary.record(applied);
+        }
+
+        tx.commit().await?;
+        *state = staged;
+        Ok(summary.into_value())
+    }
+
     async fn neo4j_node_create(&self, params: NodeCreateParams) -> grm_rs::Result<Value> {
         let raw = value_map_to_raw(params.props)?;
         let (label, props) = {
@@ -519,7 +619,7 @@ impl GrmMcpServer {
             let model = state
                 .catalog()
                 .get_node_model(&params.model)
-                .ok_or(GrmError::NotFound)?
+                .ok_or_else(|| missing_node_schema(&params.model))?
                 .clone();
             (model.label.clone(), model.validate_instance_input(&raw)?)
         };
@@ -537,18 +637,18 @@ impl GrmMcpServer {
             let model = state
                 .catalog()
                 .get_rel_model(&params.model)
-                .ok_or(GrmError::NotFound)?
+                .ok_or_else(|| missing_edge_schema(&params.model))?
                 .clone();
             let from_label = state
                 .catalog()
                 .get_node_model(&model.from_model)
-                .ok_or(GrmError::NotFound)?
+                .ok_or_else(|| missing_node_schema(&model.from_model))?
                 .label
                 .clone();
             let to_label = state
                 .catalog()
                 .get_node_model(&model.to_model)
-                .ok_or(GrmError::NotFound)?
+                .ok_or_else(|| missing_node_schema(&model.to_model))?
                 .label
                 .clone();
             let props = model.validate_instance_input(&raw)?;
@@ -598,7 +698,7 @@ impl GrmMcpServer {
             let model = state
                 .catalog()
                 .get_node_model(&params.model)
-                .ok_or(GrmError::NotFound)?
+                .ok_or_else(|| missing_node_schema(&params.model))?
                 .clone();
             let id_filter = parse_optional_id_filter(&raw, &model.id_field_name, "node")?;
             let props = model_filters(&raw, &model.fields, &model.name, &[&model.id_field_name])?;
@@ -653,7 +753,7 @@ impl GrmMcpServer {
             let model = state
                 .catalog()
                 .get_rel_model(&params.model)
-                .ok_or(GrmError::NotFound)?
+                .ok_or_else(|| missing_edge_schema(&params.model))?
                 .clone();
             let id_filter = parse_optional_id_filter(&raw, &model.id_field_name, "edge")?;
             let from_filter = parse_named_id_filter(&raw, "from")?;
@@ -776,6 +876,250 @@ fn model_filters(
     Ok(parsed)
 }
 
+struct Neo4jBatchApplied {
+    op: &'static str,
+    model: String,
+    id: Option<i64>,
+    local_ref: Option<String>,
+}
+
+struct Neo4jBatchSummary {
+    applied: bool,
+    atomic: bool,
+    detailed: bool,
+    operation_count: usize,
+    counts: BTreeMap<String, BTreeMap<String, usize>>,
+    errors: Vec<Value>,
+    ids: Vec<Value>,
+}
+
+impl Neo4jBatchSummary {
+    fn new(atomic: bool, detailed: bool, operation_count: usize) -> Self {
+        Self {
+            applied: true,
+            atomic,
+            detailed,
+            operation_count,
+            counts: BTreeMap::new(),
+            errors: Vec::new(),
+            ids: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, applied: Neo4jBatchApplied) {
+        *self
+            .counts
+            .entry(applied.op.to_string())
+            .or_default()
+            .entry(applied.model.clone())
+            .or_default() += 1;
+
+        if self.detailed {
+            if let Some(id) = applied.id {
+                let mut value = json!({
+                    "op": applied.op,
+                    "model": applied.model,
+                    "id": id,
+                });
+                if let Some(local_ref) = applied.local_ref {
+                    value["ref"] = json!(local_ref);
+                }
+                self.ids.push(value);
+            }
+        }
+    }
+
+    fn record_error(&mut self, index: usize, message: String) {
+        self.applied = false;
+        self.errors.push(json!({
+            "index": index,
+            "message": message,
+            "recovery": "Call grm_schema_list, define or reconstruct session-local runtime schema first, then retry the Neo4j batch."
+        }));
+    }
+
+    fn into_value(self) -> Value {
+        let mut value = json!({
+            "applied": self.applied,
+            "atomic": self.atomic,
+            "operation_count": self.operation_count,
+            "counts": self.counts,
+            "errors": self.errors,
+            "backend": {
+                "mode": "neo4j",
+                "atomicity": "Neo4j graph writes are committed in one transaction after all supported operations succeed; session-local schema metadata is staged and installed after commit."
+            }
+        });
+        if self.detailed {
+            value["ids"] = json!(self.ids);
+        }
+        value
+    }
+}
+
+fn ensure_neo4j_batch_op_supported(op: &SessionBatchOp) -> Result<(), String> {
+    match op {
+        SessionBatchOp::SchemaDefineNode(_)
+        | SessionBatchOp::SchemaDefineEdge(_)
+        | SessionBatchOp::NodeCreate(_)
+        | SessionBatchOp::EdgeCreate(_) => Ok(()),
+        _ => Err(format!(
+            "{} is not supported in Neo4j grm_batch yet; supported Neo4j batch operations are schema_define_node, schema_define_edge, node_create, and edge_create",
+            op.op_name()
+        )),
+    }
+}
+
+async fn create_neo4j_batch_node(
+    tx: &mut Transaction<Neo4jTx>,
+    state: &grm_rs::SessionState,
+    refs: &mut BTreeMap<String, i64>,
+    params: grm_rs::SessionBatchNodeCreateParams,
+    op_name: &'static str,
+) -> grm_rs::Result<Neo4jBatchApplied> {
+    let raw = value_map_to_raw(params.props)?;
+    let model = state
+        .catalog()
+        .get_node_model(&params.model)
+        .ok_or_else(|| missing_node_schema(&params.model))?
+        .clone();
+    let props = model.validate_instance_input(&raw)?;
+    let node = tx
+        .tx_mut()?
+        .create_node(vec![model.label.clone()], props)
+        .await?;
+    if let Some(local_ref) = &params.local_ref {
+        refs.insert(local_ref.clone(), node.id);
+    }
+    Ok(Neo4jBatchApplied {
+        op: op_name,
+        model: params.model,
+        id: Some(node.id),
+        local_ref: params.local_ref,
+    })
+}
+
+async fn create_neo4j_batch_edge(
+    tx: &mut Transaction<Neo4jTx>,
+    state: &grm_rs::SessionState,
+    refs: &BTreeMap<String, i64>,
+    params: grm_rs::SessionBatchEdgeCreateParams,
+    op_name: &'static str,
+) -> grm_rs::Result<Neo4jBatchApplied> {
+    let from = resolve_neo4j_batch_endpoint(&params.from, refs, "from")?;
+    let to = resolve_neo4j_batch_endpoint(&params.to, refs, "to")?;
+    let raw = value_map_to_raw(params.props)?;
+    let (model, from_label, to_label, props) =
+        validated_neo4j_edge_create(state, &params.model, raw)?;
+
+    let from_node = tx
+        .tx_mut()?
+        .find_node_by_id(from)
+        .await?
+        .ok_or_else(|| GrmError::Constraint(format!("from node '{from}' was not found")))?;
+    if !from_node.labels.iter().any(|label| label == &from_label) {
+        return Err(GrmError::Constraint(format!(
+            "from node '{from}' does not match model '{}'",
+            model.from_model
+        )));
+    }
+    let to_node = tx
+        .tx_mut()?
+        .find_node_by_id(to)
+        .await?
+        .ok_or_else(|| GrmError::Constraint(format!("to node '{to}' was not found")))?;
+    if !to_node.labels.iter().any(|label| label == &to_label) {
+        return Err(GrmError::Constraint(format!(
+            "to node '{to}' does not match model '{}'",
+            model.to_model
+        )));
+    }
+
+    let edge = tx
+        .tx_mut()?
+        .create_relationship(from, to, &model.rel_type, props)
+        .await?;
+    Ok(Neo4jBatchApplied {
+        op: op_name,
+        model: params.model,
+        id: Some(edge.id),
+        local_ref: None,
+    })
+}
+
+fn parse_batch_fields(fields: Vec<SessionBatchFieldParam>) -> grm_rs::Result<Vec<RuntimeField>> {
+    fields
+        .into_iter()
+        .map(|field| {
+            let value_type =
+                RuntimeValueType::parse_keyword(&field.value_type).ok_or_else(|| {
+                    GrmError::Constraint(format!(
+                        "unsupported field type '{}', expected one of: string, int, float, bool",
+                        field.value_type
+                    ))
+                })?;
+            Ok(RuntimeField {
+                name: field.name,
+                value_type,
+                required: field.required,
+            })
+        })
+        .collect()
+}
+
+fn resolve_neo4j_batch_endpoint(
+    endpoint: &SessionBatchEndpoint,
+    refs: &BTreeMap<String, i64>,
+    field: &str,
+) -> grm_rs::Result<i64> {
+    match endpoint {
+        SessionBatchEndpoint::Id(id) => Ok(*id),
+        SessionBatchEndpoint::Ref(local_ref) => refs.get(local_ref).copied().ok_or_else(|| {
+            GrmError::Constraint(format!(
+                "{field} ref '{local_ref}' was not created earlier in this batch"
+            ))
+        }),
+    }
+}
+
+fn validated_neo4j_edge_create(
+    state: &grm_rs::SessionState,
+    model_name: &str,
+    raw: BTreeMap<String, String>,
+) -> grm_rs::Result<(RuntimeRelModel, String, String, BTreeMap<String, Value>)> {
+    let model = state
+        .catalog()
+        .get_rel_model(model_name)
+        .ok_or_else(|| missing_edge_schema(model_name))?
+        .clone();
+    let from_label = state
+        .catalog()
+        .get_node_model(&model.from_model)
+        .ok_or_else(|| missing_node_schema(&model.from_model))?
+        .label
+        .clone();
+    let to_label = state
+        .catalog()
+        .get_node_model(&model.to_model)
+        .ok_or_else(|| missing_node_schema(&model.to_model))?
+        .label
+        .clone();
+    let props = model.validate_instance_input(&raw)?;
+    Ok((model, from_label, to_label, props))
+}
+
+fn missing_node_schema(model: &str) -> GrmError {
+    GrmError::Constraint(format!(
+        "node model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_node or grm_batch schema_define_node before creating or finding typed Neo4j data"
+    ))
+}
+
+fn missing_edge_schema(model: &str) -> GrmError {
+    GrmError::Constraint(format!(
+        "edge model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_edge or grm_batch schema_define_edge before creating or finding typed Neo4j data"
+    ))
+}
+
 fn cypher_name(name: &str) -> String {
     format!("`{}`", name.replace('`', "``"))
 }
@@ -784,7 +1128,7 @@ fn cypher_name(name: &str) -> String {
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.is_neo4j() {
-            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware node/edge operations directly to Neo4j. Neo4j mode supports schema define/list, node_create, edge_create, and simple node/edge find only."
+            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge creation, node_create, edge_create, and simple node/edge find."
         } else {
             "Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible."
         };
@@ -811,6 +1155,7 @@ impl ServerHandler for GrmMcpServer {
                 RawResource::new("grm://schema", "schema").no_annotation(),
                 RawResource::new("grm://graph/export", "graph export").no_annotation(),
                 RawResource::new("grm://graph/summary", "graph summary").no_annotation(),
+                RawResource::new("grm://backend/status", "backend status").no_annotation(),
                 RawResource::new("grm://docs/agent-guide", "agent guide").no_annotation(),
                 RawResource::new("grm://docs/query-language", "query language").no_annotation(),
                 RawResource::new("grm://docs/tool-help", "tool help").no_annotation(),
@@ -840,6 +1185,10 @@ impl ServerHandler for GrmMcpServer {
                     return Err(err);
                 }
                 serde_json::to_string_pretty(&self.summary_json().await)
+                    .map_err(|err| McpError::internal_error(err.to_string(), None))?
+            }
+            "grm://backend/status" => {
+                serde_json::to_string_pretty(&self.backend_status_json().await)
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?
             }
             "grm://docs/agent-guide" => AGENT_GUIDE.to_string(),
