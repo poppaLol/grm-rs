@@ -407,7 +407,7 @@ The agent can also export on demand:
 
 Call that payload with `grm_export`.
 
-## Neo4j Is Not Direct Yet
+## Direct Neo4j MCP Mode
 
 The human then asks:
 
@@ -415,31 +415,33 @@ The human then asks:
 Can you save this straight into Neo4j for me?
 ```
 
-This is the important limitation: the current GRM MCP tool set does not expose a
-direct Neo4j write target. It can save local GRM session snapshots and export
-portable `grm.interchange` JSON, but there is no MCP tool today that connects to
-Neo4j and persists the graph there.
+For a live Neo4j target, start the MCP server in Neo4j mode:
 
-A good agent response is explicit:
-
-```text
-I cannot save directly to Neo4j through the current GRM MCP tools. The available
-path is to export GRM interchange JSON, then generate or run a loader that
-translates that export into Cypher writes.
+```bash
+GRM_BACKEND=neo4j
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=...
+grm-mcp
 ```
 
-GRM does not yet expose a direct CLI or MCP command that pushes an interchange
-export to Neo4j. If the agent environment can run Python, an experimental bridge
-is possible: install `grm-python`, read the exported `grm.interchange` JSON, and
-use a Python Neo4j client or future GRM Neo4j APIs to write the graph.
+This mode is a live graph backend for agent-authored graph memory. It supports
+schema-aware creation and simple lookup through:
 
-That is a reasonable path for an agent to offer, but it should be described as
-custom integration code rather than a stable GRM product surface. In this
-tutorial, the stable GRM output remains:
+- `grm_schema_list`
+- `grm_schema_define_node`
+- `grm_schema_define_edge`
+- `grm_node_create`
+- `grm_edge_create`
+- simple `grm_node_find`
+- simple `grm_edge_find`
 
-```text
-test-dbs/mcp-chemistry-export.json
-```
+It is not a general backend pivot. Runtime schema metadata is session-local in
+this first slice: if `grm-mcp` restarts, the Neo4j graph data remains, but the
+agent must define the runtime schema again before finding or extending that
+data. Neo4j durability comes from Neo4j, and GRM snapshot/import, batch,
+explain/profile, traversal parity, and CLI Neo4j session mode are not part of
+this workflow yet.
 
 ## Recover From Tool Errors
 
@@ -460,8 +462,8 @@ Common recovery moves are:
 - use `grm_node_find` or `grm_edge_find` to locate numeric IDs before updates
 - use `grm_batch` for related writes so validation and rollback happen together
 - use `grm_export` when a user needs a handoff file for another system
-- generate a separate loader when the target is Neo4j, because direct Neo4j
-  persistence is not in the MCP function set yet
+- use `GRM_BACKEND=neo4j` when the target is live Neo4j and the workflow fits
+  the supported schema/create/simple-find tool slice
 
 ## Where To Go Next
 

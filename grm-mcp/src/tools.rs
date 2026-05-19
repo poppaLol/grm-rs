@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use grm_rs::{
-    CliSession, DurableOperation, GrmError, RuntimeNodeModel, RuntimeRelModel, apply_session_batch,
+    CliSession, DurableOperation, GraphTx, GrmError, KernelValue, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, StoredNode, StoredRel, apply_session_batch,
     runtime::{SessionCommand, parse_command_line},
 };
 use rmcp::handler::server::wrapper::Parameters;
@@ -14,7 +16,7 @@ use rmcp::service::RequestContext;
 use rmcp::{
     ErrorData as McpError, Json, RoleServer, ServerHandler, tool, tool_handler, tool_router,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::help::{AGENT_GUIDE, help_index, known_tools, tool_help, tool_help_index};
 use crate::schema::{
@@ -64,6 +66,9 @@ impl GrmMcpServer {
         description = "Inspect GRM's current system index catalog. Indexes are backend-maintained derived metadata, not user-defined or durable source-of-truth data."
     )]
     async fn grm_index_list(&self) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_index_list") {
+            return Err(err);
+        }
         let state = self.state.lock().await;
         Ok(Json(to_object(state.index_catalog_value())?))
     }
@@ -75,6 +80,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<BatchParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_batch") {
+            return Err(err);
+        }
         let mut state = self.state.lock().await;
         let outcome = apply_session_batch(&mut state, params.0)
             .await
@@ -95,6 +103,16 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<DefineNodeParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_neo4j() {
+            let mut state = self.state.lock().await;
+            let fields = parse_fields(params.fields).map_err(to_mcp_error)?;
+            let model =
+                RuntimeNodeModel::new(params.name, params.id_field, state.node_id_type(), fields)
+                    .map_err(to_mcp_error)?;
+            state.register_model(model).map_err(to_mcp_error)?;
+            return Ok(Json(to_object(state.schema_value())?));
+        }
+
         self.with_state_mut_durable(async |state| {
             let model = RuntimeNodeModel::new(
                 params.name,
@@ -119,6 +137,22 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<DefineEdgeParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_neo4j() {
+            let mut state = self.state.lock().await;
+            let fields = parse_fields(params.fields).map_err(to_mcp_error)?;
+            let model = RuntimeRelModel::new(
+                params.name,
+                params.from_model,
+                params.to_model,
+                params.id_field,
+                state.rel_id_type(),
+                fields,
+            )
+            .map_err(to_mcp_error)?;
+            state.register_rel_model(model).map_err(to_mcp_error)?;
+            return Ok(Json(to_object(state.schema_value())?));
+        }
+
         self.with_state_mut_durable(async |state| {
             let model = RuntimeRelModel::new(
                 params.name,
@@ -145,6 +179,11 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeCreateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_neo4j() {
+            let value = self.neo4j_node_create(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
+
         self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let node = state.create_instance(&params.model, &props).await?;
@@ -162,6 +201,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_node_update") {
+            return Err(err);
+        }
         self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let node = state
@@ -179,6 +221,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_node_delete") {
+            return Err(err);
+        }
         self.with_state_mut_durable(async |state| {
             state
                 .delete_node_instance(&params.model, &params.id.to_string())
@@ -199,6 +244,11 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeFindParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_neo4j() {
+            let value = self.neo4j_node_find(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
+
         self.with_state_mut(false, async |state| {
             let filters = value_map_to_raw(params.filters)?;
             let nodes = state.find_nodes(&params.model, &filters)?;
@@ -215,6 +265,11 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeCreateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_neo4j() {
+            let value = self.neo4j_edge_create(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
+
         self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let edge = state
@@ -237,6 +292,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_edge_update") {
+            return Err(err);
+        }
         self.with_state_mut_durable(async |state| {
             let props = value_map_to_raw(params.props)?;
             let edge = state
@@ -254,6 +312,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_edge_delete") {
+            return Err(err);
+        }
         self.with_state_mut_durable(async |state| {
             state
                 .delete_relationship_instance(&params.model, &params.id.to_string())
@@ -274,6 +335,11 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeFindParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_neo4j() {
+            let value = self.neo4j_edge_find(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
+
         self.with_state_mut(false, async |state| {
             let filters = value_map_to_raw(params.filters)?;
             let edges = state.find_relationships(&params.model, &filters)?;
@@ -290,6 +356,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_query") {
+            return Err(err);
+        }
         let mut state = self.state.lock().await;
         let current = std::mem::take(&mut *state);
         let mut session =
@@ -315,6 +384,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_explain") {
+            return Err(err);
+        }
         let state = self.state.lock().await;
         let value = match parse_introspection_command("session.explain", &params.command)? {
             SessionCommand::SessionExplainNodeFind {
@@ -339,6 +411,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_profile") {
+            return Err(err);
+        }
         let state = self.state.lock().await;
         let value = match parse_introspection_command("session.profile", &params.command)? {
             SessionCommand::SessionProfileNodeFind {
@@ -362,6 +437,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<FileFormatParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_save") {
+            return Err(err);
+        }
         self.with_state_mut(false, async |state| {
             match params.format {
                 FileFormat::Json => state.save_to_json(&params.path)?,
@@ -378,6 +456,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<FileFormatParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_load") {
+            return Err(err);
+        }
         self.with_state_mut(true, async |state| {
             match params.format {
                 FileFormat::Json => state.load_from_json(&params.path)?,
@@ -396,6 +477,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<PathParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_import") {
+            return Err(err);
+        }
         self.with_state_mut(true, async |state| {
             state.import_from_json(&params.path)?;
             Ok(state.summary_value())
@@ -411,6 +495,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<ExportParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_neo4j("grm_export") {
+            return Err(err);
+        }
         self.with_state_mut(false, async |state| {
             if let Some(path) = params.path {
                 state.export_to_json(&path)?;
@@ -424,9 +511,283 @@ impl GrmMcpServer {
     }
 }
 
+impl GrmMcpServer {
+    async fn neo4j_node_create(&self, params: NodeCreateParams) -> grm_rs::Result<Value> {
+        let raw = value_map_to_raw(params.props)?;
+        let (label, props) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_node_model(&params.model)
+                .ok_or(GrmError::NotFound)?
+                .clone();
+            (model.label.clone(), model.validate_instance_input(&raw)?)
+        };
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        let node = tx.tx_mut()?.create_node(vec![label], props).await?;
+        tx.commit().await?;
+        serde_json::to_value(node).map_err(json_error)
+    }
+
+    async fn neo4j_edge_create(&self, params: EdgeCreateParams) -> grm_rs::Result<Value> {
+        let raw = value_map_to_raw(params.props)?;
+        let (model, from_label, to_label, props) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_rel_model(&params.model)
+                .ok_or(GrmError::NotFound)?
+                .clone();
+            let from_label = state
+                .catalog()
+                .get_node_model(&model.from_model)
+                .ok_or(GrmError::NotFound)?
+                .label
+                .clone();
+            let to_label = state
+                .catalog()
+                .get_node_model(&model.to_model)
+                .ok_or(GrmError::NotFound)?
+                .label
+                .clone();
+            let props = model.validate_instance_input(&raw)?;
+            (model, from_label, to_label, props)
+        };
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        let from_node = tx
+            .tx_mut()?
+            .find_node_by_id(params.from)
+            .await?
+            .ok_or_else(|| {
+                GrmError::Constraint(format!("from node '{}' was not found", params.from))
+            })?;
+        if !from_node.labels.iter().any(|label| label == &from_label) {
+            return Err(GrmError::Constraint(format!(
+                "from node '{}' does not match model '{}'",
+                params.from, model.from_model
+            )));
+        }
+        let to_node = tx
+            .tx_mut()?
+            .find_node_by_id(params.to)
+            .await?
+            .ok_or_else(|| {
+                GrmError::Constraint(format!("to node '{}' was not found", params.to))
+            })?;
+        if !to_node.labels.iter().any(|label| label == &to_label) {
+            return Err(GrmError::Constraint(format!(
+                "to node '{}' does not match model '{}'",
+                params.to, model.to_model
+            )));
+        }
+
+        let edge = tx
+            .tx_mut()?
+            .create_relationship(params.from, params.to, &model.rel_type, props)
+            .await?;
+        tx.commit().await?;
+        serde_json::to_value(edge).map_err(json_error)
+    }
+
+    async fn neo4j_node_find(&self, params: NodeFindParams) -> grm_rs::Result<Value> {
+        let raw = value_map_to_raw(params.filters)?;
+        let (label, id_filter, props) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_node_model(&params.model)
+                .ok_or(GrmError::NotFound)?
+                .clone();
+            let id_filter = parse_optional_id_filter(&raw, &model.id_field_name, "node")?;
+            let props = model_filters(&raw, &model.fields, &model.name, &[&model.id_field_name])?;
+            (model.label.clone(), id_filter, props)
+        };
+
+        let mut clauses = vec![format!("MATCH (n:{})", cypher_name(&label))];
+        let mut params_json = serde_json::Map::new();
+        if let Some(id) = id_filter {
+            clauses.push("WHERE id(n) = $grm_id".to_string());
+            params_json.insert("grm_id".to_string(), Value::from(id));
+        }
+        for (index, (key, value)) in props.into_iter().enumerate() {
+            clauses.push(if index == 0 && id_filter.is_none() {
+                format!("WHERE n.{} = $p{index}", cypher_name(&key))
+            } else {
+                format!("AND n.{} = $p{index}", cypher_name(&key))
+            });
+            params_json.insert(format!("p{index}"), value);
+        }
+        clauses.push("RETURN n".to_string());
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        let result = tx
+            .tx_mut()?
+            .execute_query(&clauses.join(" "), Value::Object(params_json))
+            .await?;
+        tx.commit().await?;
+
+        let nodes = result
+            .rows
+            .into_iter()
+            .filter_map(|row| row.values.into_values().next())
+            .map(|value| match value {
+                KernelValue::Node(node) => Ok(StoredNode {
+                    id: node.id,
+                    labels: node.labels,
+                    props: node.props,
+                }),
+                _ => Err(GrmError::Mapping(
+                    "Neo4j node find returned a non-node value".into(),
+                )),
+            })
+            .collect::<grm_rs::Result<Vec<_>>>()?;
+        Ok(json!({ "model": params.model, "nodes": nodes }))
+    }
+
+    async fn neo4j_edge_find(&self, params: EdgeFindParams) -> grm_rs::Result<Value> {
+        let raw = value_map_to_raw(params.filters)?;
+        let (rel_type, id_filter, from_filter, to_filter, props) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_rel_model(&params.model)
+                .ok_or(GrmError::NotFound)?
+                .clone();
+            let id_filter = parse_optional_id_filter(&raw, &model.id_field_name, "edge")?;
+            let from_filter = parse_named_id_filter(&raw, "from")?;
+            let to_filter = parse_named_id_filter(&raw, "to")?;
+            let props = model_filters(
+                &raw,
+                &model.fields,
+                &model.name,
+                &[&model.id_field_name, "from", "to"],
+            )?;
+            (
+                model.rel_type.clone(),
+                id_filter,
+                from_filter,
+                to_filter,
+                props,
+            )
+        };
+
+        let mut clauses = vec![format!("MATCH ()-[r:{}]->()", cypher_name(&rel_type))];
+        let mut params_json = serde_json::Map::new();
+        let mut predicates = Vec::new();
+        if let Some(id) = id_filter {
+            predicates.push("id(r) = $grm_id".to_string());
+            params_json.insert("grm_id".to_string(), Value::from(id));
+        }
+        if let Some(id) = from_filter {
+            predicates.push("id(startNode(r)) = $from_id".to_string());
+            params_json.insert("from_id".to_string(), Value::from(id));
+        }
+        if let Some(id) = to_filter {
+            predicates.push("id(endNode(r)) = $to_id".to_string());
+            params_json.insert("to_id".to_string(), Value::from(id));
+        }
+        for (index, (key, value)) in props.into_iter().enumerate() {
+            predicates.push(format!("r.{} = $p{index}", cypher_name(&key)));
+            params_json.insert(format!("p{index}"), value);
+        }
+        if !predicates.is_empty() {
+            clauses.push(format!("WHERE {}", predicates.join(" AND ")));
+        }
+        clauses.push("RETURN r".to_string());
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        let result = tx
+            .tx_mut()?
+            .execute_query(&clauses.join(" "), Value::Object(params_json))
+            .await?;
+        tx.commit().await?;
+
+        let edges = result
+            .rows
+            .into_iter()
+            .filter_map(|row| row.values.into_values().next())
+            .map(|value| match value {
+                KernelValue::Rel(rel) => Ok(StoredRel {
+                    id: rel.id,
+                    rel_type: rel.ty,
+                    from: rel.from,
+                    to: rel.to,
+                    props: rel.props,
+                }),
+                _ => Err(GrmError::Mapping(
+                    "Neo4j edge find returned a non-edge value".into(),
+                )),
+            })
+            .collect::<grm_rs::Result<Vec<_>>>()?;
+        Ok(json!({ "model": params.model, "edges": edges }))
+    }
+}
+
+fn parse_optional_id_filter(
+    raw: &BTreeMap<String, String>,
+    id_field_name: &str,
+    subject: &str,
+) -> grm_rs::Result<Option<i64>> {
+    let id = parse_named_id_filter(raw, "id")?;
+    let model_id = if id_field_name == "id" {
+        None
+    } else {
+        parse_named_id_filter(raw, id_field_name)?
+    };
+    match (id, model_id) {
+        (Some(left), Some(right)) if left != right => Err(GrmError::Constraint(format!(
+            "conflicting {subject} id filters 'id' and '{id_field_name}'"
+        ))),
+        (Some(id), _) | (_, Some(id)) => Ok(Some(id)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn parse_named_id_filter(raw: &BTreeMap<String, String>, key: &str) -> grm_rs::Result<Option<i64>> {
+    raw.get(key)
+        .map(|value| {
+            value.parse::<i64>().map_err(|_| {
+                GrmError::Constraint(format!("{key} filter must be an integer backend id"))
+            })
+        })
+        .transpose()
+}
+
+fn model_filters(
+    raw: &BTreeMap<String, String>,
+    fields: &[RuntimeField],
+    model_name: &str,
+    special_keys: &[&str],
+) -> grm_rs::Result<BTreeMap<String, Value>> {
+    let mut parsed = BTreeMap::new();
+    for (key, value) in raw {
+        if key == "id" || special_keys.iter().any(|special| key == special) {
+            continue;
+        }
+        let Some(field) = fields.iter().find(|field| field.name == *key) else {
+            return Err(GrmError::Constraint(format!(
+                "unknown field '{key}' for model '{model_name}'"
+            )));
+        };
+        parsed.insert(key.clone(), field.value_type.parse_value(value)?);
+    }
+    Ok(parsed)
+}
+
+fn cypher_name(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
 #[tool_handler]
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
+        let instructions = if self.is_neo4j() {
+            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware node/edge operations directly to Neo4j. Neo4j mode supports schema define/list, node_create, edge_create, and simple node/edge find only."
+        } else {
+            "Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible."
+        };
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
@@ -437,7 +798,7 @@ impl ServerHandler for GrmMcpServer {
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION"),
         ))
-        .with_instructions("Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible.")
+        .with_instructions(instructions)
     }
 
     async fn list_resources(
@@ -468,11 +829,19 @@ impl ServerHandler for GrmMcpServer {
             "grm://schema" => serde_json::to_string_pretty(&self.schema_json().await)
                 .map_err(|err| McpError::internal_error(err.to_string(), None))?,
             "grm://graph/export" => {
+                if let Some(err) = self.unsupported_in_neo4j("grm://graph/export") {
+                    return Err(err);
+                }
                 serde_json::to_string_pretty(&self.export_json().await.map_err(to_mcp_error)?)
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?
             }
-            "grm://graph/summary" => serde_json::to_string_pretty(&self.summary_json().await)
-                .map_err(|err| McpError::internal_error(err.to_string(), None))?,
+            "grm://graph/summary" => {
+                if let Some(err) = self.unsupported_in_neo4j("grm://graph/summary") {
+                    return Err(err);
+                }
+                serde_json::to_string_pretty(&self.summary_json().await)
+                    .map_err(|err| McpError::internal_error(err.to_string(), None))?
+            }
             "grm://docs/agent-guide" => AGENT_GUIDE.to_string(),
             "grm://docs/query-language" => compact_query_doc(),
             "grm://docs/tool-help" => serde_json::to_string_pretty(&tool_help_index())
