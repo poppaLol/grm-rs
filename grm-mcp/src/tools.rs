@@ -77,7 +77,7 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Apply an ordered list of structured schema/node/edge operations. Prefer this for more than 3 creates or updates."
+        description = "Apply an ordered list of structured schema/node/edge operation objects. Do not JSON-encode operations as strings; each ops item must be an object like {\"op\":\"node_create\",\"args\":{...}}. Prefer this for more than 3 creates or updates."
     )]
     async fn grm_batch(
         &self,
