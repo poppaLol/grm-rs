@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use grm_rs::{DurableOperation, Result as GrmResult, SessionState};
+use grm_rs::{
+    DurableOperation, GraphClient, GrmError, Neo4jBackend, Neo4jConfig, Result as GrmResult,
+    SessionState,
+};
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
 use serde_json::Value;
@@ -13,6 +16,7 @@ use crate::tools::to_mcp_error;
 #[derive(Clone)]
 pub struct GrmMcpServer {
     pub(crate) state: Arc<Mutex<SessionState>>,
+    pub(crate) neo4j: Option<GraphClient<Neo4jBackend>>,
     pub(crate) autocommit: Option<AutocommitTarget>,
     pub(crate) export_json: Option<PathBuf>,
     #[allow(dead_code)]
@@ -45,9 +49,69 @@ impl GrmMcpServer {
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
+            neo4j: None,
             autocommit: options.autocommit,
             export_json: options.export_json,
             tool_router: Self::tool_router(),
+        })
+    }
+
+    pub async fn from_startup_options(options: StartupOptions) -> GrmResult<Self> {
+        match std::env::var("GRM_BACKEND").ok().as_deref() {
+            Some("neo4j") => Self::new_neo4j(options).await,
+            Some("memory") | Some("inmemory") | Some("in-memory") | None => Self::new(options),
+            Some(other) => Err(GrmError::Constraint(format!(
+                "unsupported GRM_BACKEND '{other}'; expected 'neo4j' or omit it for in-memory"
+            ))),
+        }
+    }
+
+    async fn new_neo4j(options: StartupOptions) -> GrmResult<Self> {
+        if options.load_json.is_some()
+            || options.load_bin.is_some()
+            || options.import_json.is_some()
+            || options.autocommit.is_some()
+            || options.export_json.is_some()
+        {
+            return Err(GrmError::NotSupported(
+                "startup load/import/export/autocommit options are not supported in Neo4j MCP mode yet; Neo4j durability comes from Neo4j and runtime schema is session-local"
+                    .into(),
+            ));
+        }
+
+        let config = Neo4jConfig {
+            uri: required_env("NEO4J_URI")?,
+            user: required_env("NEO4J_USER")?,
+            password: required_env("NEO4J_PASSWORD")?,
+        };
+        let backend = Neo4jBackend::connect(config).await?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(SessionState::new())),
+            neo4j: Some(GraphClient::new(backend)),
+            autocommit: None,
+            export_json: None,
+            tool_router: Self::tool_router(),
+        })
+    }
+
+    pub(crate) fn is_neo4j(&self) -> bool {
+        self.neo4j.is_some()
+    }
+
+    pub(crate) fn neo4j_client(&self) -> GrmResult<&GraphClient<Neo4jBackend>> {
+        self.neo4j
+            .as_ref()
+            .ok_or_else(|| GrmError::Backend("server is not running in Neo4j mode".into()))
+    }
+
+    pub(crate) fn unsupported_in_neo4j(&self, tool: &str) -> Option<McpError> {
+        self.is_neo4j().then(|| {
+            McpError::internal_error(
+                format!(
+                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_node_create, grm_edge_create, simple grm_node_find, and simple grm_edge_find"
+                ),
+                None,
+            )
         })
     }
 
@@ -123,6 +187,11 @@ impl GrmMcpServer {
             .map_err(to_mcp_error)?;
         Ok(value)
     }
+}
+
+fn required_env(name: &str) -> GrmResult<String> {
+    std::env::var(name)
+        .map_err(|_| GrmError::Constraint(format!("{name} must be set when GRM_BACKEND=neo4j")))
 }
 
 #[cfg(test)]

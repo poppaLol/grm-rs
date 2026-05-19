@@ -13,7 +13,7 @@ async fn main() {
         }
     };
 
-    let server = match GrmMcpServer::new(options) {
+    let server = match GrmMcpServer::from_startup_options(options).await {
         Ok(server) => server,
         Err(err) => {
             eprintln!("failed to initialize grm-mcp: {err}");

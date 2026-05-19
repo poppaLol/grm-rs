@@ -253,13 +253,10 @@ look similar for small examples.
 
 ## Experimental Neo4j Bridge Process
 
-GRM does not yet expose a direct CLI or MCP command that pushes an interchange
-export to Neo4j. If your agent environment can run Python, an experimental bridge
-is possible: install `grm-python`, read the exported `grm.interchange` JSON, and
-use a Python Neo4j client or future GRM Neo4j APIs to write the graph.
-
-Treat this as custom integration code rather than a stable GRM product surface.
-For now, `session.export --json ...` is the stable handoff point.
+GRM does not yet expose a direct CLI command that pushes an interchange export to
+Neo4j. The MCP server can target Neo4j as a live graph backend for the supported
+structured create/find tools; the CLI handoff point remains
+`session.export --json ...`.
 
 ## Script The Setup
 
