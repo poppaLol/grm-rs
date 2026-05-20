@@ -6,6 +6,11 @@ the future hosted/service contract concrete enough that security work, daemon
 work, SDKs, and packaging can be designed against it without prematurely
 building the service.
 
+See also [ADR 0001: Separate Graph Data From Schema Memory](adr/0001-graph-data-and-schema-memory.md)
+for the product architecture principle that future backends should store user
+graph data separately from schema memory that communicates and validates the
+intended shape of that graph.
+
 ## Product Position
 
 GRM's sellable surface is:

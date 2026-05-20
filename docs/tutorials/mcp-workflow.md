@@ -68,10 +68,12 @@ altered schema.
 If the server is running with `GRM_BACKEND=neo4j`, the runtime schema reported
 by `grm_schema_list` is session-local. The Neo4j graph may already contain data
 even when that schema is empty. In that mode, the agent should inspect
-`grm://backend/status`; if the runtime schema is empty, it should ask whether to
-define a fresh schema, reconstruct one from project docs, or wait for a future
-Neo4j introspection path before writing. Only then should it perform
-`grm_batch` writes.
+`grm://backend/status`; it reports the backend mode, runtime schema model count,
+whether the runtime schema is empty, whether local schema memory persistence is
+enabled, and whether schema memory was recovered from an existing file. If the
+runtime schema is empty, the agent should ask whether to define a fresh schema
+or reconstruct one from project docs before writing. Only then should it
+perform `grm_batch` writes.
 
 ## Ask For Molecules
 
@@ -438,11 +440,22 @@ For a live Neo4j target, start the MCP server in Neo4j mode:
 
 ```bash
 GRM_BACKEND=neo4j
+GRM_SCHEMA_TEMPLATE=project-memory-schema.json
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=...
 grm-mcp
 ```
+
+`GRM_SCHEMA_TEMPLATE` is optional. When set, the server loads the local JSON
+file during startup as a GRM session-backed schema memory file. If the file is
+missing, the server starts fresh and creates it. If the file exists, the server
+recovers the session-local runtime schema from it. Schema definitions made
+through the supported Neo4j MCP schema tools are appended to this local file as
+they are built. This does not create Neo4j data and does not write schema
+metadata into Neo4j. It is useful even for model types that have zero existing
+nodes or relationships, because a fresh agent can call `grm_schema_list`
+immediately after restart and see the recovered model surface.
 
 This mode is a live graph backend for agent-authored graph memory. It supports
 schema-aware creation and simple lookup through:
@@ -456,11 +469,27 @@ schema-aware creation and simple lookup through:
 - simple `grm_edge_find`
 
 It is not a general backend pivot. Runtime schema metadata is session-local in
-this first slice: if `grm-mcp` restarts, the Neo4j graph data remains, but the
-agent must define the runtime schema again before finding or extending that
-data. Neo4j durability comes from Neo4j, and GRM snapshot/import, non-create
-batch operations, explain/profile, traversal parity, and CLI Neo4j session mode
-are not part of this workflow yet.
+this first slice: if `grm-mcp` restarts without `GRM_SCHEMA_TEMPLATE`, the Neo4j
+graph data remains, but the agent must define the runtime schema again before
+finding or extending that data. Agents should still call `grm_schema_list` and
+inspect `grm://backend/status` before writes, even when schema memory is
+recovered from a local file.
+Neo4j durability comes from Neo4j, and GRM snapshot/import, non-create batch
+operations, explain/profile, traversal parity, and CLI Neo4j session mode are
+not part of this workflow yet.
+
+The built-in help text is conservative and tells agents to ask before inventing
+a schema. For autonomous schema-design work, make the permission explicit in
+the user prompt:
+
+```text
+You may design and define the GRM runtime schema for this Neo4j memory task.
+First call grm_schema_list and inspect grm://backend/status. If the runtime
+schema is empty or missing required models, choose a compact schema, define it
+with grm_batch schema_define_node/schema_define_edge operations, then create the
+requested graph data. Do not infer schema from Neo4j labels/properties, and do
+not write anything until the runtime schema contains the target models.
+```
 
 ## Recover From Tool Errors
 
