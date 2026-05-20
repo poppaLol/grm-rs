@@ -38,11 +38,21 @@ To let agents write directly into a live Neo4j graph, run `grm-mcp` with:
 
 ```bash
 GRM_BACKEND=neo4j
+GRM_SCHEMA_TEMPLATE=project-memory-schema.json
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=...
 grm-mcp
 ```
+
+`GRM_SCHEMA_TEMPLATE` is optional. When set, `grm-mcp` treats the path as a
+local GRM JSON session file for Neo4j runtime schema memory. If the file exists,
+the server recovers the session-local runtime schema from it. If the file is
+missing, the server starts with an empty schema and creates a fresh local file.
+Schema definitions made through `grm_schema_define_node`,
+`grm_schema_define_edge`, or Neo4j-supported `grm_batch` schema ops are appended
+to that local file as they are built. This does not create Neo4j nodes or
+relationships, and it does not persist schema metadata into Neo4j.
 
 Neo4j mode is intentionally narrow. It supports:
 
@@ -57,12 +67,43 @@ Neo4j mode is intentionally narrow. It supports:
 - simple `grm_edge_find`
 
 Important: runtime schema metadata is session-local in this first slice. If you
-restart `grm-mcp`, the Neo4j graph data remains, but agents must define or
-reconstruct the runtime schema again before finding or extending typed data.
-`grm_schema_list` is still the first schema inspection tool. In Neo4j mode, if
-that schema is empty, read `grm://backend/status` and ask whether to define a
-fresh schema, reconstruct one from project docs, or wait for a future backing
-store introspection path before writing.
+restart `grm-mcp` without `GRM_SCHEMA_TEMPLATE`, the Neo4j graph data remains,
+but agents must define or reconstruct the runtime schema again before finding or
+extending typed data. `grm_schema_list` is still the first schema inspection
+tool. Agents should also inspect `grm://backend/status`, which reports the
+backend mode, runtime schema model count, whether the runtime schema is empty,
+whether schema memory persistence is enabled, and whether schema memory was
+recovered from an existing file. If the schema is empty, ask whether to define a
+fresh schema or reconstruct one from project docs before writing. If an existing
+local schema memory file is invalid or inconsistent, startup fails loudly.
+
+Agent/tool flow after startup:
+
+1. Call `grm_schema_list`.
+2. Read `grm://backend/status`.
+3. If `schema_template_loaded` is `true`, the server recovered schema memory
+   from the local file; treat the models returned by `grm_schema_list` as the
+   current runtime schema and verify the intended write matches those fields and
+   endpoints.
+4. If `runtime_schema_empty` is `true`, define schema with
+   `grm_schema_define_node`, `grm_schema_define_edge`, or a `grm_batch`
+   containing `schema_define_node`/`schema_define_edge` ops. If
+   `schema_template_persistence_enabled` is `true`, those schema definitions are
+   persisted to the configured local file.
+5. Only then write graph data with `grm_batch`, `grm_node_create`, or
+   `grm_edge_create`.
+
+For autonomous schema-design tasks, grant that permission in the task prompt
+rather than relying on the conservative built-in help text. For example:
+
+```text
+You may design and define the GRM runtime schema for this Neo4j memory task.
+First call grm_schema_list and inspect grm://backend/status. If the runtime
+schema is empty or missing required models, choose a compact schema, define it
+with grm_batch schema_define_node/schema_define_edge operations, then create the
+requested graph data. Do not infer schema from Neo4j labels/properties, and do
+not write anything until the runtime schema contains the target models.
+```
 
 Graph durability comes from Neo4j, not the GRM WAL/autocommit layer. Neo4j mode
 does not support snapshots, import/export, autocommit, explain/profile,
