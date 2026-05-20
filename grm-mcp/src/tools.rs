@@ -113,7 +113,12 @@ impl GrmMcpServer {
             let model =
                 RuntimeNodeModel::new(params.name, params.id_field, state.node_id_type(), fields)
                     .map_err(to_mcp_error)?;
-            state.register_model(model).map_err(to_mcp_error)?;
+            state.register_model(model.clone()).map_err(to_mcp_error)?;
+            self.append_schema_template_ops(
+                &state,
+                &[DurableOperation::RegisterNodeModel { model }],
+            )
+            .map_err(to_mcp_error)?;
             return Ok(Json(to_object(state.schema_value())?));
         }
 
@@ -153,7 +158,14 @@ impl GrmMcpServer {
                 fields,
             )
             .map_err(to_mcp_error)?;
-            state.register_rel_model(model).map_err(to_mcp_error)?;
+            state
+                .register_rel_model(model.clone())
+                .map_err(to_mcp_error)?;
+            self.append_schema_template_ops(
+                &state,
+                &[DurableOperation::RegisterRelModel { model }],
+            )
+            .map_err(to_mcp_error)?;
             return Ok(Json(to_object(state.schema_value())?));
         }
 
@@ -526,6 +538,7 @@ impl GrmMcpServer {
         let mut state = self.state.lock().await;
         let mut staged = state.snapshot();
         let mut refs = BTreeMap::<String, i64>::new();
+        let mut schema_ops = Vec::new();
         let mut summary = Neo4jBatchSummary::new(
             true,
             matches!(params.response, SessionBatchResponse::Detailed),
@@ -548,7 +561,8 @@ impl GrmMcpServer {
                         staged.node_id_type(),
                         parse_batch_fields(params.fields)?,
                     )?;
-                    staged.register_model(model)?;
+                    staged.register_model(model.clone())?;
+                    schema_ops.push(DurableOperation::RegisterNodeModel { model });
                     Ok(Neo4jBatchApplied {
                         op: op_name,
                         model: params.name,
@@ -565,7 +579,8 @@ impl GrmMcpServer {
                         staged.rel_id_type(),
                         parse_batch_fields(params.fields)?,
                     )?;
-                    staged.register_rel_model(model)?;
+                    staged.register_rel_model(model.clone())?;
+                    schema_ops.push(DurableOperation::RegisterRelModel { model });
                     Ok(Neo4jBatchApplied {
                         op: op_name,
                         model: params.name,
@@ -609,6 +624,7 @@ impl GrmMcpServer {
 
         tx.commit().await?;
         *state = staged;
+        self.append_schema_template_ops(&state, &schema_ops)?;
         Ok(summary.into_value())
     }
 
@@ -1128,7 +1144,7 @@ fn cypher_name(name: &str) -> String {
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.is_neo4j() {
-            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge creation, node_create, edge_create, and simple node/edge find."
+            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge creation, node_create, edge_create, and simple node/edge find."
         } else {
             "Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible."
         };

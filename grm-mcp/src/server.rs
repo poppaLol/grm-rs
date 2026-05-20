@@ -17,6 +17,8 @@ use crate::tools::to_mcp_error;
 pub struct GrmMcpServer {
     pub(crate) state: Arc<Mutex<SessionState>>,
     pub(crate) neo4j: Option<GraphClient<Neo4jBackend>>,
+    pub(crate) schema_template_source: Option<PathBuf>,
+    pub(crate) schema_template_loaded_from_file: bool,
     pub(crate) autocommit: Option<AutocommitTarget>,
     pub(crate) export_json: Option<PathBuf>,
     #[allow(dead_code)]
@@ -50,6 +52,8 @@ impl GrmMcpServer {
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
             neo4j: None,
+            schema_template_source: None,
+            schema_template_loaded_from_file: false,
             autocommit: options.autocommit,
             export_json: options.export_json,
             tool_router: Self::tool_router(),
@@ -83,10 +87,15 @@ impl GrmMcpServer {
             user: required_env("NEO4J_USER")?,
             password: required_env("NEO4J_PASSWORD")?,
         };
+        let schema_template_source = optional_path_env("GRM_SCHEMA_TEMPLATE")?;
+        let (state, schema_template_loaded_from_file) =
+            initialize_schema_memory(schema_template_source.as_deref())?;
         let backend = Neo4jBackend::connect(config).await?;
         Ok(Self {
-            state: Arc::new(Mutex::new(SessionState::new())),
+            state: Arc::new(Mutex::new(state)),
             neo4j: Some(GraphClient::new(backend)),
+            schema_template_source,
+            schema_template_loaded_from_file,
             autocommit: None,
             export_json: None,
             tool_router: Self::tool_router(),
@@ -125,15 +134,21 @@ impl GrmMcpServer {
                 "connected": true,
                 "runtime_schema_model_count": node_count + edge_count,
                 "runtime_schema_empty": node_count == 0 && edge_count == 0,
+                "schema_template_loaded": self.schema_template_loaded_from_file,
+                "schema_template_persistence_enabled": self.schema_template_source.is_some(),
+                "schema_template_source": self.schema_template_source.as_ref().map(|path| path.display().to_string()),
+                "schema_memory_loaded_from_file": self.schema_template_loaded_from_file,
+                "schema_memory_persistence_enabled": self.schema_template_source.is_some(),
+                "schema_memory_source": self.schema_template_source.as_ref().map(|path| path.display().to_string()),
                 "note": "Neo4j graph data may already exist outside this session-local runtime schema."
             });
             if node_count == 0 && edge_count == 0 {
                 value["guidance"] = json!({
-                    "schema_required": "Define or reconstruct session-local runtime schema before creating or finding typed Neo4j data.",
+                "schema_required": "Define or reconstruct session-local runtime schema before creating or finding typed Neo4j data.",
                     "startup_flow": [
                         "Call grm_schema_list.",
                         "Read grm://backend/status for backend/session orientation.",
-                        "If schema is empty, ask whether to define a fresh schema, reconstruct one from project docs, or wait for a future backing-store introspection path.",
+                        "If schema is empty, ask whether to define a fresh schema or reconstruct one from project docs.",
                         "Only then perform grm_batch writes."
                     ]
                 });
@@ -147,22 +162,12 @@ impl GrmMcpServer {
         let node_count = state.catalog().list_node_models().len();
         let edge_count = state.catalog().list_rel_models().len();
         if self.is_neo4j() {
-            json!({
-                "backend": {
-                    "mode": "neo4j",
-                    "connected": true,
-                    "runtime_schema_model_count": node_count + edge_count,
-                    "runtime_schema_empty": node_count == 0 && edge_count == 0,
-                    "note": "Runtime schema metadata is session-local; Neo4j graph data may already exist outside the current GRM runtime schema.",
-                    "future_orientation_tools": ["grm_backend_status", "grm_store_summary", "grm_schema_introspect"]
-                },
-                "recommended_startup_flow": [
-                    "Call grm_schema_list.",
-                    "Inspect this backend/session status resource.",
-                    "If schema is empty, ask the user whether to define a fresh schema, reconstruct one from project docs, or inspect the backing store through a future introspection path.",
-                    "Only then perform grm_batch writes."
-                ]
-            })
+            neo4j_backend_status_value(
+                node_count,
+                edge_count,
+                self.schema_template_source.as_ref(),
+                self.schema_template_loaded_from_file,
+            )
         } else {
             json!({
                 "backend": {
@@ -209,6 +214,21 @@ impl GrmMcpServer {
         self.persist_export(state).await
     }
 
+    pub(crate) fn append_schema_template_ops(
+        &self,
+        state: &SessionState,
+        ops: &[DurableOperation],
+    ) -> GrmResult<()> {
+        let Some(path) = &self.schema_template_source else {
+            return Ok(());
+        };
+
+        for op in ops {
+            state.append_durable_operation(path, op)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn persist_export(&self, state: &SessionState) -> GrmResult<()> {
         let Some(path) = &self.export_json else {
             return Ok(());
@@ -245,13 +265,74 @@ impl GrmMcpServer {
     }
 }
 
+fn neo4j_backend_status_value(
+    node_count: usize,
+    edge_count: usize,
+    schema_template_source: Option<&PathBuf>,
+    schema_template_loaded_from_file: bool,
+) -> Value {
+    json!({
+        "backend": {
+            "mode": "neo4j",
+            "connected": true,
+            "runtime_schema_model_count": node_count + edge_count,
+            "runtime_schema_empty": node_count == 0 && edge_count == 0,
+            "schema_template_loaded": schema_template_loaded_from_file,
+            "schema_template_persistence_enabled": schema_template_source.is_some(),
+            "schema_template_source": schema_template_source.map(|path| path.display().to_string()),
+            "schema_memory_loaded_from_file": schema_template_loaded_from_file,
+            "schema_memory_persistence_enabled": schema_template_source.is_some(),
+            "schema_memory_source": schema_template_source.map(|path| path.display().to_string()),
+            "note": "Runtime schema metadata is session-local; GRM_SCHEMA_TEMPLATE can back it with a local GRM session file while Neo4j stores graph data.",
+            "future_orientation_tools": ["grm_backend_status", "grm_store_summary", "grm_schema_introspect"]
+        },
+        "recommended_startup_flow": [
+            "Call grm_schema_list.",
+            "Inspect this backend/session status resource.",
+            "If schema_template_loaded is true, verify grm_schema_list contains the intended recovered models and fields before writing.",
+            "If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started fresh and will persist schema definitions to the configured local file.",
+            "If schema is empty, ask the user whether to define a fresh schema or reconstruct one from project docs.",
+            "Only then perform grm_batch writes."
+        ]
+    })
+}
+
+fn initialize_schema_memory(path: Option<&std::path::Path>) -> GrmResult<(SessionState, bool)> {
+    let mut state = SessionState::new();
+    let Some(path) = path else {
+        return Ok((state, false));
+    };
+
+    if path.exists() {
+        state.recover_durable(grm_rs::DurabilityFormat::Json, path)?;
+        Ok((state, true))
+    } else {
+        state.checkpoint_durable(grm_rs::DurabilityFormat::Json, path)?;
+        Ok((state, false))
+    }
+}
+
 fn required_env(name: &str) -> GrmResult<String> {
     std::env::var(name)
         .map_err(|_| GrmError::Constraint(format!("{name} must be set when GRM_BACKEND=neo4j")))
 }
 
+fn optional_path_env(name: &str) -> GrmResult<Option<PathBuf>> {
+    match std::env::var(name) {
+        Ok(value) if value.trim().is_empty() => Err(GrmError::Constraint(format!(
+            "{name} must not be empty when set"
+        ))),
+        Ok(value) => Ok(Some(PathBuf::from(value))),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(GrmError::Constraint(format!(
+            "{name} must be valid Unicode"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use grm_rs::{BackendIdType, DurableOperation, RuntimeNodeModel};
     use serde_json::json;
 
     use crate::{GrmMcpServer, StartupOptions};
@@ -262,5 +343,93 @@ mod tests {
         let schema = server.schema_json().await;
         assert_eq!(schema["nodes"], json!([]));
         assert_eq!(schema["edges"], json!([]));
+    }
+
+    #[test]
+    fn neo4j_backend_status_reports_schema_template_metadata() {
+        let source = std::path::PathBuf::from("project-memory-schema.json");
+        let status = super::neo4j_backend_status_value(2, 1, Some(&source), true);
+
+        assert_eq!(status["backend"]["mode"], json!("neo4j"));
+        assert_eq!(status["backend"]["runtime_schema_model_count"], json!(3));
+        assert_eq!(status["backend"]["runtime_schema_empty"], json!(false));
+        assert_eq!(status["backend"]["schema_template_loaded"], json!(true));
+        assert_eq!(
+            status["backend"]["schema_template_persistence_enabled"],
+            json!(true)
+        );
+        assert_eq!(
+            status["backend"]["schema_memory_loaded_from_file"],
+            json!(true)
+        );
+        assert_eq!(
+            status["backend"]["schema_memory_persistence_enabled"],
+            json!(true)
+        );
+        assert_eq!(
+            status["backend"]["schema_template_source"],
+            json!("project-memory-schema.json")
+        );
+        assert_eq!(
+            status["backend"]["schema_memory_source"],
+            json!("project-memory-schema.json")
+        );
+    }
+
+    #[test]
+    fn neo4j_backend_status_reports_absent_schema_template() {
+        let status = super::neo4j_backend_status_value(0, 0, None, false);
+
+        assert_eq!(status["backend"]["mode"], json!("neo4j"));
+        assert_eq!(status["backend"]["runtime_schema_model_count"], json!(0));
+        assert_eq!(status["backend"]["runtime_schema_empty"], json!(true));
+        assert_eq!(status["backend"]["schema_template_loaded"], json!(false));
+        assert_eq!(
+            status["backend"]["schema_template_persistence_enabled"],
+            json!(false)
+        );
+        assert_eq!(
+            status["backend"]["schema_memory_persistence_enabled"],
+            json!(false)
+        );
+        assert_eq!(status["backend"]["schema_template_source"], json!(null));
+        assert_eq!(status["backend"]["schema_memory_source"], json!(null));
+    }
+
+    #[test]
+    fn schema_memory_missing_file_starts_fresh_and_creates_checkpoint() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("schema-memory.json");
+
+        let (state, loaded) = super::initialize_schema_memory(Some(&path)).unwrap();
+
+        assert!(!loaded);
+        assert!(path.exists());
+        assert!(state.catalog().is_empty());
+    }
+
+    #[test]
+    fn schema_memory_existing_file_recovers_schema_ops() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("schema-memory.json");
+        let (state, loaded) = super::initialize_schema_memory(Some(&path)).unwrap();
+        assert!(!loaded);
+
+        let model =
+            RuntimeNodeModel::new("RoadmapItem", "roadmapItemId", BackendIdType::Int64, vec![])
+                .unwrap();
+        state
+            .append_durable_operation(
+                &path,
+                &DurableOperation::RegisterNodeModel {
+                    model: model.clone(),
+                },
+            )
+            .unwrap();
+
+        let (recovered, loaded) = super::initialize_schema_memory(Some(&path)).unwrap();
+
+        assert!(loaded);
+        assert!(recovered.model("RoadmapItem").is_some());
     }
 }
