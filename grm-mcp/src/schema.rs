@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use grm_rs::{GrmError, Result as GrmResult, RuntimeField, RuntimeValueType};
+use grm_rs::{GrmError, Result as GrmResult};
 use rmcp::ErrorData as McpError;
 use rmcp::model::JsonObject;
 use rmcp::schemars;
@@ -391,26 +391,6 @@ fn batch_op_schema() -> Value {
             batch_op_variant_schema("edge_delete", edge_delete_args)
         ]
     })
-}
-
-pub(crate) fn parse_fields(fields: Vec<FieldParam>) -> GrmResult<Vec<RuntimeField>> {
-    fields
-        .into_iter()
-        .map(|field| {
-            let value_type =
-                RuntimeValueType::parse_keyword(&field.value_type).ok_or_else(|| {
-                    GrmError::Constraint(format!(
-                        "unsupported field type '{}', expected one of: string, int, float, bool",
-                        field.value_type
-                    ))
-                })?;
-            Ok(RuntimeField {
-                name: field.name,
-                value_type,
-                required: field.required,
-            })
-        })
-        .collect()
 }
 
 pub(crate) fn value_map_to_raw(
