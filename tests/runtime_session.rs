@@ -1461,6 +1461,94 @@ fn typed_schema_requests_use_stable_field_json_shape() {
     assert!(value["fields"][0].get("value_type").is_none());
 }
 
+#[tokio::test]
+async fn runtime_apply_operations_return_durable_entries() {
+    let mut state = SessionState::new();
+
+    let user_schema = state
+        .apply_define_node(DefineNodeRequest {
+            name: "User".to_string(),
+            id_field: "userId".to_string(),
+            fields: vec![FieldSpec {
+                name: "name".to_string(),
+                value_type: FieldValueType::String,
+                required: true,
+            }],
+        })
+        .unwrap();
+    assert!(matches!(
+        user_schema.durable_op,
+        DurableOperation::RegisterNodeModel { .. }
+    ));
+
+    state
+        .apply_define_node(DefineNodeRequest {
+            name: "Post".to_string(),
+            id_field: "postId".to_string(),
+            fields: vec![],
+        })
+        .unwrap();
+    let edge_schema = state
+        .apply_define_edge(DefineEdgeRequest {
+            name: "Authored".to_string(),
+            from_model: "User".to_string(),
+            to_model: "Post".to_string(),
+            id_field: "authoredId".to_string(),
+            fields: vec![],
+        })
+        .unwrap();
+    assert!(matches!(
+        edge_schema.durable_op,
+        DurableOperation::RegisterRelModel { .. }
+    ));
+
+    let user = state
+        .apply_node_create(grm_rs::NodeCreateRequest {
+            model: "User".to_string(),
+            props: BTreeMap::from([("name".to_string(), json!("Alice"))]),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        user.durable_op,
+        DurableOperation::UpsertNode { .. }
+    ));
+    let post = state
+        .apply_node_create(grm_rs::NodeCreateRequest {
+            model: "Post".to_string(),
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+
+    let edge = state
+        .apply_edge_create(grm_rs::EdgeCreateRequest {
+            model: "Authored".to_string(),
+            from: user.value.id,
+            to: post.value.id,
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        edge.durable_op,
+        DurableOperation::UpsertRel { .. }
+    ));
+
+    let deleted = state
+        .apply_edge_delete(grm_rs::EdgeDeleteRequest {
+            model: "Authored".to_string(),
+            id: edge.value.id,
+        })
+        .await
+        .unwrap();
+    assert_eq!(deleted.value.model, "Authored");
+    assert!(matches!(
+        deleted.durable_op,
+        DurableOperation::DeleteRel { .. }
+    ));
+}
+
 #[test]
 fn typed_batch_request_has_flat_ordered_batch_shape() {
     let value = serde_json::to_value(BatchRequest {

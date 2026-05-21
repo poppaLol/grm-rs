@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use grm_rs::{
-    CliSession, DurableOperation, GraphTx, GrmError, KernelValue, Neo4jTx, RuntimeField,
+    CliSession, DefineEdgeRequest, DefineNodeRequest, DurableOperation, EdgeCreateRequest,
+    EdgeDeleteRequest, EdgeUpdateRequest, FieldSpec, FieldValueType, GraphTx, GrmError,
+    KernelValue, Neo4jTx, NodeCreateRequest, NodeDeleteRequest, NodeUpdateRequest, RuntimeField,
     RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionBatchEndpoint,
     SessionBatchFieldParam, SessionBatchOp, SessionBatchParams, SessionBatchResponse, StoredNode,
     StoredRel, apply_session_batch,
@@ -26,7 +28,7 @@ use crate::schema::{
     BatchParams, DefineEdgeParams, DefineNodeParams, EdgeCreateParams, EdgeDeleteParams,
     EdgeFindParams, EdgeUpdateParams, ExportParams, FileFormat, FileFormatParams, NodeCreateParams,
     NodeDeleteParams, NodeFindParams, NodeUpdateParams, PathParams, QueryParams, ToolHelpParams,
-    json_error, parse_fields, to_object, value_map_to_raw,
+    json_error, to_object, value_map_to_raw,
 };
 use crate::server::GrmMcpServer;
 
@@ -109,31 +111,25 @@ impl GrmMcpServer {
     ) -> Result<Json<JsonObject>, McpError> {
         if self.is_neo4j() {
             let mut state = self.state.lock().await;
-            let fields = parse_fields(params.fields).map_err(to_mcp_error)?;
-            let model =
-                RuntimeNodeModel::new(params.name, params.id_field, state.node_id_type(), fields)
-                    .map_err(to_mcp_error)?;
-            state.register_model(model.clone()).map_err(to_mcp_error)?;
-            self.append_schema_template_ops(
-                &state,
-                &[DurableOperation::RegisterNodeModel { model }],
-            )
-            .map_err(to_mcp_error)?;
+            let outcome = state
+                .apply_define_node(DefineNodeRequest {
+                    name: params.name,
+                    id_field: params.id_field,
+                    fields: field_params_to_specs(params.fields).map_err(to_mcp_error)?,
+                })
+                .map_err(to_mcp_error)?;
+            self.append_schema_template_ops(&state, std::slice::from_ref(&outcome.durable_op))
+                .map_err(to_mcp_error)?;
             return Ok(Json(to_object(state.schema_value())?));
         }
 
         self.with_state_mut_durable(async |state| {
-            let model = RuntimeNodeModel::new(
-                params.name,
-                params.id_field,
-                state.node_id_type(),
-                parse_fields(params.fields)?,
-            )?;
-            state.register_model(model.clone())?;
-            Ok((
-                state.schema_value(),
-                vec![DurableOperation::RegisterNodeModel { model }],
-            ))
+            let outcome = state.apply_define_node(DefineNodeRequest {
+                name: params.name,
+                id_field: params.id_field,
+                fields: field_params_to_specs(params.fields)?,
+            })?;
+            Ok((state.schema_value(), vec![outcome.durable_op]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -148,41 +144,29 @@ impl GrmMcpServer {
     ) -> Result<Json<JsonObject>, McpError> {
         if self.is_neo4j() {
             let mut state = self.state.lock().await;
-            let fields = parse_fields(params.fields).map_err(to_mcp_error)?;
-            let model = RuntimeRelModel::new(
-                params.name,
-                params.from_model,
-                params.to_model,
-                params.id_field,
-                state.rel_id_type(),
-                fields,
-            )
-            .map_err(to_mcp_error)?;
-            state
-                .register_rel_model(model.clone())
+            let outcome = state
+                .apply_define_edge(DefineEdgeRequest {
+                    name: params.name,
+                    from_model: params.from_model,
+                    to_model: params.to_model,
+                    id_field: params.id_field,
+                    fields: field_params_to_specs(params.fields).map_err(to_mcp_error)?,
+                })
                 .map_err(to_mcp_error)?;
-            self.append_schema_template_ops(
-                &state,
-                &[DurableOperation::RegisterRelModel { model }],
-            )
-            .map_err(to_mcp_error)?;
+            self.append_schema_template_ops(&state, std::slice::from_ref(&outcome.durable_op))
+                .map_err(to_mcp_error)?;
             return Ok(Json(to_object(state.schema_value())?));
         }
 
         self.with_state_mut_durable(async |state| {
-            let model = RuntimeRelModel::new(
-                params.name,
-                params.from_model,
-                params.to_model,
-                params.id_field,
-                state.rel_id_type(),
-                parse_fields(params.fields)?,
-            )?;
-            state.register_rel_model(model.clone())?;
-            Ok((
-                state.schema_value(),
-                vec![DurableOperation::RegisterRelModel { model }],
-            ))
+            let outcome = state.apply_define_edge(DefineEdgeRequest {
+                name: params.name,
+                from_model: params.from_model,
+                to_model: params.to_model,
+                id_field: params.id_field,
+                fields: field_params_to_specs(params.fields)?,
+            })?;
+            Ok((state.schema_value(), vec![outcome.durable_op]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -201,10 +185,14 @@ impl GrmMcpServer {
         }
 
         self.with_state_mut_durable(async |state| {
-            let props = value_map_to_raw(params.props)?;
-            let node = state.create_instance(&params.model, &props).await?;
-            let value = serde_json::to_value(&node).map_err(json_error)?;
-            Ok((value, vec![DurableOperation::UpsertNode { node }]))
+            let outcome = state
+                .apply_node_create(NodeCreateRequest {
+                    model: params.model,
+                    props: params.props,
+                })
+                .await?;
+            let value = serde_json::to_value(&outcome.value).map_err(json_error)?;
+            Ok((value, vec![outcome.durable_op]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -221,12 +209,15 @@ impl GrmMcpServer {
             return Err(err);
         }
         self.with_state_mut_durable(async |state| {
-            let props = value_map_to_raw(params.props)?;
-            let node = state
-                .update_node_instance(&params.model, &params.id.to_string(), &props)
+            let outcome = state
+                .apply_node_update(NodeUpdateRequest {
+                    model: params.model,
+                    id: params.id,
+                    props: params.props,
+                })
                 .await?;
-            let value = serde_json::to_value(&node).map_err(json_error)?;
-            Ok((value, vec![DurableOperation::UpsertNode { node }]))
+            let value = serde_json::to_value(&outcome.value).map_err(json_error)?;
+            Ok((value, vec![outcome.durable_op]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -241,12 +232,15 @@ impl GrmMcpServer {
             return Err(err);
         }
         self.with_state_mut_durable(async |state| {
-            state
-                .delete_node_instance(&params.model, &params.id.to_string())
+            let outcome = state
+                .apply_node_delete(NodeDeleteRequest {
+                    model: params.model,
+                    id: params.id,
+                })
                 .await?;
             Ok((
-                json!({ "deleted": true, "model": params.model, "id": params.id }),
-                vec![DurableOperation::DeleteNode { id: params.id }],
+                json!({ "deleted": true, "model": outcome.value.model, "id": outcome.value.id }),
+                vec![outcome.durable_op],
             ))
         })
         .await
@@ -287,17 +281,16 @@ impl GrmMcpServer {
         }
 
         self.with_state_mut_durable(async |state| {
-            let props = value_map_to_raw(params.props)?;
-            let edge = state
-                .create_relationship_instance(
-                    &params.model,
-                    &params.from.to_string(),
-                    &params.to.to_string(),
-                    &props,
-                )
+            let outcome = state
+                .apply_edge_create(EdgeCreateRequest {
+                    model: params.model,
+                    from: params.from,
+                    to: params.to,
+                    props: params.props,
+                })
                 .await?;
-            let value = serde_json::to_value(&edge).map_err(json_error)?;
-            Ok((value, vec![DurableOperation::UpsertRel { rel: edge }]))
+            let value = serde_json::to_value(&outcome.value).map_err(json_error)?;
+            Ok((value, vec![outcome.durable_op]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -312,12 +305,15 @@ impl GrmMcpServer {
             return Err(err);
         }
         self.with_state_mut_durable(async |state| {
-            let props = value_map_to_raw(params.props)?;
-            let edge = state
-                .update_relationship_instance(&params.model, &params.id.to_string(), &props)
+            let outcome = state
+                .apply_edge_update(EdgeUpdateRequest {
+                    model: params.model,
+                    id: params.id,
+                    props: params.props,
+                })
                 .await?;
-            let value = serde_json::to_value(&edge).map_err(json_error)?;
-            Ok((value, vec![DurableOperation::UpsertRel { rel: edge }]))
+            let value = serde_json::to_value(&outcome.value).map_err(json_error)?;
+            Ok((value, vec![outcome.durable_op]))
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -332,12 +328,15 @@ impl GrmMcpServer {
             return Err(err);
         }
         self.with_state_mut_durable(async |state| {
-            state
-                .delete_relationship_instance(&params.model, &params.id.to_string())
+            let outcome = state
+                .apply_edge_delete(EdgeDeleteRequest {
+                    model: params.model,
+                    id: params.id,
+                })
                 .await?;
             Ok((
-                json!({ "deleted": true, "model": params.model, "id": params.id }),
-                vec![DurableOperation::DeleteRel { id: params.id }],
+                json!({ "deleted": true, "model": outcome.value.model, "id": outcome.value.id }),
+                vec![outcome.durable_op],
             ))
         })
         .await
@@ -1081,6 +1080,35 @@ fn parse_batch_fields(fields: Vec<SessionBatchFieldParam>) -> grm_rs::Result<Vec
             })
         })
         .collect()
+}
+
+fn field_params_to_specs(fields: Vec<crate::schema::FieldParam>) -> grm_rs::Result<Vec<FieldSpec>> {
+    fields
+        .into_iter()
+        .map(|field| {
+            let value_type = field_value_type(&field.value_type).ok_or_else(|| {
+                GrmError::Constraint(format!(
+                    "unsupported field type '{}', expected one of: string, int, float, bool",
+                    field.value_type
+                ))
+            })?;
+            Ok(FieldSpec {
+                name: field.name,
+                value_type,
+                required: field.required,
+            })
+        })
+        .collect()
+}
+
+fn field_value_type(raw: &str) -> Option<FieldValueType> {
+    match raw {
+        "string" => Some(FieldValueType::String),
+        "int" => Some(FieldValueType::Int),
+        "float" => Some(FieldValueType::Float),
+        "bool" => Some(FieldValueType::Bool),
+        _ => None,
+    }
 }
 
 fn resolve_neo4j_batch_endpoint(

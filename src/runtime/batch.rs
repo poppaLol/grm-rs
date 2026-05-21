@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
-    DurableOperation, GrmError, Result, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
-    RuntimeValueType, SessionState,
+    DefineEdgeRequest, DefineNodeRequest, DurableOperation, EdgeCreateRequest, EdgeDeleteRequest,
+    EdgeUpdateRequest, FieldSpec, FieldValueType, GrmError, NodeCreateRequest, NodeDeleteRequest,
+    NodeUpdateRequest, Result, SessionState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -311,37 +312,33 @@ async fn apply_batch_op(
     let op_name = op.op_name();
     match op {
         SessionBatchOp::SchemaDefineNode(params) => {
-            let model = RuntimeNodeModel::new(
-                params.name.clone(),
-                params.id_field,
-                state.node_id_type(),
-                parse_fields(params.fields)?,
-            )?;
-            state.register_model(model.clone())?;
+            let outcome = state.apply_define_node(DefineNodeRequest {
+                name: params.name,
+                id_field: params.id_field,
+                fields: parse_fields(params.fields)?,
+            })?;
             Ok(BatchApplied {
                 op: op_name,
-                model: params.name,
+                model: outcome.value.name,
                 id: None,
                 local_ref: None,
-                durable_op: DurableOperation::RegisterNodeModel { model },
+                durable_op: outcome.durable_op,
             })
         }
         SessionBatchOp::SchemaDefineEdge(params) => {
-            let model = RuntimeRelModel::new(
-                params.name.clone(),
-                params.from_model,
-                params.to_model,
-                params.id_field,
-                state.rel_id_type(),
-                parse_fields(params.fields)?,
-            )?;
-            state.register_rel_model(model.clone())?;
+            let outcome = state.apply_define_edge(DefineEdgeRequest {
+                name: params.name,
+                from_model: params.from_model,
+                to_model: params.to_model,
+                id_field: params.id_field,
+                fields: parse_fields(params.fields)?,
+            })?;
             Ok(BatchApplied {
                 op: op_name,
-                model: params.name,
+                model: outcome.value.name,
                 id: None,
                 local_ref: None,
-                durable_op: DurableOperation::RegisterRelModel { model },
+                durable_op: outcome.durable_op,
             })
         }
         SessionBatchOp::NodeCreate(params) => {
@@ -352,104 +349,123 @@ async fn apply_batch_op(
                     )));
                 }
             }
-            let props = value_map_to_raw(params.props)?;
-            let node = state.create_instance(&params.model, &props).await?;
+            let model = params.model;
+            let outcome = state
+                .apply_node_create(NodeCreateRequest {
+                    model: model.clone(),
+                    props: params.props,
+                })
+                .await?;
+            let node = outcome.value;
             if let Some(local_ref) = &params.local_ref {
                 refs.insert(local_ref.clone(), node.id);
             }
             Ok(BatchApplied {
                 op: op_name,
-                model: params.model,
+                model,
                 id: Some(node.id),
                 local_ref: params.local_ref,
-                durable_op: DurableOperation::UpsertNode { node },
+                durable_op: outcome.durable_op,
             })
         }
         SessionBatchOp::NodeUpdate(params) => {
-            let props = value_map_to_raw(params.props)?;
-            let node = state
-                .update_node_instance(&params.model, &params.id.to_string(), &props)
+            let model = params.model;
+            let outcome = state
+                .apply_node_update(NodeUpdateRequest {
+                    model: model.clone(),
+                    id: params.id,
+                    props: params.props,
+                })
                 .await?;
             Ok(BatchApplied {
                 op: op_name,
-                model: params.model,
-                id: Some(node.id),
+                model,
+                id: Some(outcome.value.id),
                 local_ref: None,
-                durable_op: DurableOperation::UpsertNode { node },
+                durable_op: outcome.durable_op,
             })
         }
         SessionBatchOp::NodeDelete(params) => {
-            state
-                .delete_node_instance(&params.model, &params.id.to_string())
+            let outcome = state
+                .apply_node_delete(NodeDeleteRequest {
+                    model: params.model,
+                    id: params.id,
+                })
                 .await?;
             Ok(BatchApplied {
                 op: op_name,
-                model: params.model,
-                id: Some(params.id),
+                model: outcome.value.model,
+                id: Some(outcome.value.id),
                 local_ref: None,
-                durable_op: DurableOperation::DeleteNode { id: params.id },
+                durable_op: outcome.durable_op,
             })
         }
         SessionBatchOp::EdgeCreate(params) => {
             let from = resolve_batch_endpoint(&params.from, refs, "from")?;
             let to = resolve_batch_endpoint(&params.to, refs, "to")?;
-            let props = value_map_to_raw(params.props)?;
-            let edge = state
-                .create_relationship_instance(
-                    &params.model,
-                    &from.to_string(),
-                    &to.to_string(),
-                    &props,
-                )
+            let model = params.model;
+            let outcome = state
+                .apply_edge_create(EdgeCreateRequest {
+                    model: model.clone(),
+                    from,
+                    to,
+                    props: params.props,
+                })
                 .await?;
             Ok(BatchApplied {
                 op: op_name,
-                model: params.model,
-                id: Some(edge.id),
+                model,
+                id: Some(outcome.value.id),
                 local_ref: None,
-                durable_op: DurableOperation::UpsertRel { rel: edge },
+                durable_op: outcome.durable_op,
             })
         }
         SessionBatchOp::EdgeUpdate(params) => {
-            let props = value_map_to_raw(params.props)?;
-            let edge = state
-                .update_relationship_instance(&params.model, &params.id.to_string(), &props)
+            let model = params.model;
+            let outcome = state
+                .apply_edge_update(EdgeUpdateRequest {
+                    model: model.clone(),
+                    id: params.id,
+                    props: params.props,
+                })
                 .await?;
             Ok(BatchApplied {
                 op: op_name,
-                model: params.model,
-                id: Some(edge.id),
+                model,
+                id: Some(outcome.value.id),
                 local_ref: None,
-                durable_op: DurableOperation::UpsertRel { rel: edge },
+                durable_op: outcome.durable_op,
             })
         }
         SessionBatchOp::EdgeDelete(params) => {
-            state
-                .delete_relationship_instance(&params.model, &params.id.to_string())
+            let outcome = state
+                .apply_edge_delete(EdgeDeleteRequest {
+                    model: params.model,
+                    id: params.id,
+                })
                 .await?;
             Ok(BatchApplied {
                 op: op_name,
-                model: params.model,
-                id: Some(params.id),
+                model: outcome.value.model,
+                id: Some(outcome.value.id),
                 local_ref: None,
-                durable_op: DurableOperation::DeleteRel { id: params.id },
+                durable_op: outcome.durable_op,
             })
         }
     }
 }
 
-fn parse_fields(fields: Vec<SessionBatchFieldParam>) -> Result<Vec<RuntimeField>> {
+fn parse_fields(fields: Vec<SessionBatchFieldParam>) -> Result<Vec<FieldSpec>> {
     fields
         .into_iter()
         .map(|field| {
-            let value_type =
-                RuntimeValueType::parse_keyword(&field.value_type).ok_or_else(|| {
-                    GrmError::Constraint(format!(
-                        "unsupported field type '{}', expected one of: string, int, float, bool",
-                        field.value_type
-                    ))
-                })?;
-            Ok(RuntimeField {
+            let value_type = parse_field_value_type(&field.value_type).ok_or_else(|| {
+                GrmError::Constraint(format!(
+                    "unsupported field type '{}', expected one of: string, int, float, bool",
+                    field.value_type
+                ))
+            })?;
+            Ok(FieldSpec {
                 name: field.name,
                 value_type,
                 required: field.required,
@@ -458,24 +474,13 @@ fn parse_fields(fields: Vec<SessionBatchFieldParam>) -> Result<Vec<RuntimeField>
         .collect()
 }
 
-fn value_map_to_raw(values: BTreeMap<String, Value>) -> Result<BTreeMap<String, String>> {
-    values
-        .into_iter()
-        .map(|(key, value)| Ok((key, value_to_raw(value)?)))
-        .collect()
-}
-
-fn value_to_raw(value: Value) -> Result<String> {
-    match value {
-        Value::String(value) => Ok(value),
-        Value::Bool(value) => Ok(value.to_string()),
-        Value::Number(value) => Ok(value.to_string()),
-        Value::Null => Err(GrmError::Constraint(
-            "null is not a supported graph value; omit the field instead".into(),
-        )),
-        Value::Array(_) | Value::Object(_) => Err(GrmError::Constraint(
-            "graph values must be strings, numbers, or booleans".into(),
-        )),
+fn parse_field_value_type(raw: &str) -> Option<FieldValueType> {
+    match raw {
+        "string" => Some(FieldValueType::String),
+        "int" => Some(FieldValueType::Int),
+        "float" => Some(FieldValueType::Float),
+        "bool" => Some(FieldValueType::Bool),
+        _ => None,
     }
 }
 

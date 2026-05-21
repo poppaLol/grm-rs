@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::batch::{SessionBatchOp, SessionBatchParams, SessionBatchResponse};
-use crate::{CompareOp, GrmError, Result, RuntimeField, RuntimeValueType};
+use crate::{
+    CompareOp, DurableOperation, GrmError, Result, RuntimeField, RuntimeValueType, StoredNode,
+    StoredRel,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "request", rename_all = "snake_case")]
@@ -43,6 +46,23 @@ pub enum EdgeRequest {
     Delete(EdgeDeleteRequest),
     Find(EdgeFindRequest),
 }
+
+#[derive(Debug, Clone)]
+pub struct RuntimeOperationOutcome<T> {
+    pub value: T,
+    pub durable_op: DurableOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDelete {
+    pub model: String,
+    pub id: i64,
+}
+
+pub type RuntimeNodeOutcome = RuntimeOperationOutcome<StoredNode>;
+pub type RuntimeEdgeOutcome = RuntimeOperationOutcome<StoredRel>;
+pub type RuntimeNodeDeleteOutcome = RuntimeOperationOutcome<RuntimeDelete>;
+pub type RuntimeEdgeDeleteOutcome = RuntimeOperationOutcome<RuntimeDelete>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "request", rename_all = "snake_case")]

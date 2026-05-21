@@ -21,9 +21,11 @@ use crate::fsutil::{backup_path, write_file_atomically, write_file_atomically_wi
 use crate::runtime::durability;
 use crate::runtime::{
     AdminRequest, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
-    EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, NodeCreateRequest, NodeDeleteRequest,
-    NodeFindRequest, NodeUpdateRequest, OrderDirection, PredicateOp, ProfileRequest,
-    PropertyPredicate, QueryRequest, TraversalDirection, TraversalReturn,
+    EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, FieldSpec, FieldValueType,
+    NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, OrderDirection,
+    PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest, RuntimeDelete,
+    RuntimeEdgeDeleteOutcome, RuntimeEdgeOutcome, RuntimeNodeDeleteOutcome, RuntimeNodeOutcome,
+    RuntimeOperationOutcome, TraversalDirection, TraversalReturn,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -690,6 +692,13 @@ impl SessionState {
     }
 
     pub fn define_node(&mut self, request: DefineNodeRequest) -> Result<()> {
+        self.apply_define_node(request).map(|_| ())
+    }
+
+    pub fn apply_define_node(
+        &mut self,
+        request: DefineNodeRequest,
+    ) -> Result<RuntimeOperationOutcome<RuntimeNodeModel>> {
         let fields = request
             .fields
             .into_iter()
@@ -697,10 +706,21 @@ impl SessionState {
             .collect::<Result<Vec<_>>>()?;
         let model =
             RuntimeNodeModel::new(request.name, request.id_field, self.node_id_type(), fields)?;
-        self.register_model(model)
+        self.register_model(model.clone())?;
+        Ok(RuntimeOperationOutcome {
+            value: model.clone(),
+            durable_op: DurableOperation::RegisterNodeModel { model },
+        })
     }
 
     pub fn define_edge(&mut self, request: DefineEdgeRequest) -> Result<()> {
+        self.apply_define_edge(request).map(|_| ())
+    }
+
+    pub fn apply_define_edge(
+        &mut self,
+        request: DefineEdgeRequest,
+    ) -> Result<RuntimeOperationOutcome<RuntimeRelModel>> {
         let fields = request
             .fields
             .into_iter()
@@ -714,45 +734,132 @@ impl SessionState {
             self.rel_id_type(),
             fields,
         )?;
-        self.register_rel_model(model)
+        self.register_rel_model(model.clone())?;
+        Ok(RuntimeOperationOutcome {
+            value: model.clone(),
+            durable_op: DurableOperation::RegisterRelModel { model },
+        })
     }
 
     pub async fn node_create(&self, request: NodeCreateRequest) -> Result<StoredNode> {
+        self.apply_node_create(request)
+            .await
+            .map(|outcome| outcome.value)
+    }
+
+    pub async fn apply_node_create(
+        &self,
+        request: NodeCreateRequest,
+    ) -> Result<RuntimeNodeOutcome> {
         let raw_values = typed_props_to_raw(request.props)?;
-        self.create_instance(&request.model, &raw_values).await
+        let node = self.create_instance(&request.model, &raw_values).await?;
+        Ok(RuntimeOperationOutcome {
+            value: node.clone(),
+            durable_op: DurableOperation::UpsertNode { node },
+        })
     }
 
     pub async fn node_update(&self, request: NodeUpdateRequest) -> Result<StoredNode> {
-        let raw_values = typed_props_to_raw(request.props)?;
-        self.update_node_instance(&request.model, &request.id.to_string(), &raw_values)
+        self.apply_node_update(request)
             .await
+            .map(|outcome| outcome.value)
+    }
+
+    pub async fn apply_node_update(
+        &self,
+        request: NodeUpdateRequest,
+    ) -> Result<RuntimeNodeOutcome> {
+        let raw_values = typed_props_to_raw(request.props)?;
+        let node = self
+            .update_node_instance(&request.model, &request.id.to_string(), &raw_values)
+            .await?;
+        Ok(RuntimeOperationOutcome {
+            value: node.clone(),
+            durable_op: DurableOperation::UpsertNode { node },
+        })
     }
 
     pub async fn node_delete(&self, request: NodeDeleteRequest) -> Result<()> {
+        self.apply_node_delete(request).await.map(|_| ())
+    }
+
+    pub async fn apply_node_delete(
+        &self,
+        request: NodeDeleteRequest,
+    ) -> Result<RuntimeNodeDeleteOutcome> {
         self.delete_node_instance(&request.model, &request.id.to_string())
-            .await
+            .await?;
+        Ok(RuntimeOperationOutcome {
+            value: RuntimeDelete {
+                model: request.model,
+                id: request.id,
+            },
+            durable_op: DurableOperation::DeleteNode { id: request.id },
+        })
     }
 
     pub async fn edge_create(&self, request: EdgeCreateRequest) -> Result<StoredRel> {
+        self.apply_edge_create(request)
+            .await
+            .map(|outcome| outcome.value)
+    }
+
+    pub async fn apply_edge_create(
+        &self,
+        request: EdgeCreateRequest,
+    ) -> Result<RuntimeEdgeOutcome> {
         let raw_values = typed_props_to_raw(request.props)?;
-        self.create_relationship_instance(
-            &request.model,
-            &request.from.to_string(),
-            &request.to.to_string(),
-            &raw_values,
-        )
-        .await
+        let edge = self
+            .create_relationship_instance(
+                &request.model,
+                &request.from.to_string(),
+                &request.to.to_string(),
+                &raw_values,
+            )
+            .await?;
+        Ok(RuntimeOperationOutcome {
+            value: edge.clone(),
+            durable_op: DurableOperation::UpsertRel { rel: edge },
+        })
     }
 
     pub async fn edge_update(&self, request: EdgeUpdateRequest) -> Result<StoredRel> {
-        let raw_values = typed_props_to_raw(request.props)?;
-        self.update_relationship_instance(&request.model, &request.id.to_string(), &raw_values)
+        self.apply_edge_update(request)
             .await
+            .map(|outcome| outcome.value)
+    }
+
+    pub async fn apply_edge_update(
+        &self,
+        request: EdgeUpdateRequest,
+    ) -> Result<RuntimeEdgeOutcome> {
+        let raw_values = typed_props_to_raw(request.props)?;
+        let edge = self
+            .update_relationship_instance(&request.model, &request.id.to_string(), &raw_values)
+            .await?;
+        Ok(RuntimeOperationOutcome {
+            value: edge.clone(),
+            durable_op: DurableOperation::UpsertRel { rel: edge },
+        })
     }
 
     pub async fn edge_delete(&self, request: EdgeDeleteRequest) -> Result<()> {
+        self.apply_edge_delete(request).await.map(|_| ())
+    }
+
+    pub async fn apply_edge_delete(
+        &self,
+        request: EdgeDeleteRequest,
+    ) -> Result<RuntimeEdgeDeleteOutcome> {
         self.delete_relationship_instance(&request.model, &request.id.to_string())
-            .await
+            .await?;
+        Ok(RuntimeOperationOutcome {
+            value: RuntimeDelete {
+                model: request.model,
+                id: request.id,
+            },
+            durable_op: DurableOperation::DeleteRel { id: request.id },
+        })
     }
 
     pub async fn create_instance(
@@ -3225,14 +3332,16 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             });
         }
 
-        let model = RuntimeNodeModel::new(name, id_field_name, self.state.node_id_type(), fields)?;
-        self.state.register_model(model.clone())?;
+        let outcome = self.state.apply_define_node(DefineNodeRequest {
+            name: name.to_string(),
+            id_field: id_field_name.to_string(),
+            fields: field_specs_from_runtime(fields),
+        })?;
+        let model = outcome.value;
         self.script_summary
             .created_node_types
             .push(model.name.clone());
-        self.persist_autocommit_entry(DurableOperation::RegisterNodeModel {
-            model: model.clone(),
-        })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(self.writer, "Model '{}' created from script.", model.name)?;
         }
@@ -3256,21 +3365,18 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             fields.push(self.parse_field_spec(field_spec)?);
         }
 
-        let model = RuntimeRelModel::new(
-            name,
-            from_model,
-            to_model,
-            id_field_name,
-            self.state.rel_id_type(),
-            fields,
-        )?;
-        self.state.register_rel_model(model.clone())?;
+        let outcome = self.state.apply_define_edge(DefineEdgeRequest {
+            name: name.to_string(),
+            from_model: from_model.to_string(),
+            to_model: to_model.to_string(),
+            id_field: id_field_name.to_string(),
+            fields: field_specs_from_runtime(fields),
+        })?;
+        let model = outcome.value;
         self.script_summary
             .created_link_types
             .push(model.name.clone());
-        self.persist_autocommit_entry(DurableOperation::RegisterRelModel {
-            model: model.clone(),
-        })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(self.writer, "Link '{}' created from script.", model.name)?;
         }
@@ -3291,10 +3397,12 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             return Ok(());
         }
 
-        self.state.register_model(model.clone())?;
-        self.persist_autocommit_entry(DurableOperation::RegisterNodeModel {
-            model: model.clone(),
+        let outcome = self.state.apply_define_node(DefineNodeRequest {
+            name: model.name.clone(),
+            id_field: model.id_field_name.clone(),
+            fields: field_specs_from_runtime(model.fields.clone()),
         })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         writeln!(self.writer, "Model '{}' created.", model.name)?;
 
         if self.prompt_yes_no("Create the first instance now? [y/n]: ")? {
@@ -3327,10 +3435,14 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             return Ok(());
         }
 
-        self.state.register_rel_model(model.clone())?;
-        self.persist_autocommit_entry(DurableOperation::RegisterRelModel {
-            model: model.clone(),
+        let outcome = self.state.apply_define_edge(DefineEdgeRequest {
+            name: model.name.clone(),
+            from_model: model.from_model.clone(),
+            to_model: model.to_model.clone(),
+            id_field: model.id_field_name.clone(),
+            fields: field_specs_from_runtime(model.fields.clone()),
         })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         writeln!(self.writer, "Link '{}' created.", model.name)?;
 
         if self.prompt_yes_no("Create the first link now? [y/n]: ")? {
@@ -3345,8 +3457,14 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         model_name: &str,
         assignments: &[KeyValueArg],
     ) -> Result<StoredNode> {
-        let values = collect_assignments(assignments);
-        let created = self.state.create_instance(model_name, &values).await?;
+        let outcome = self
+            .state
+            .apply_node_create(NodeCreateRequest {
+                model: model_name.to_string(),
+                props: typed_props_from_assignments(assignments),
+            })
+            .await?;
+        let created = outcome.value;
         let (model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3359,9 +3477,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .inserted_nodes
             .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit_entry(DurableOperation::UpsertNode {
-            node: created.clone(),
-        })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(
                 self.writer,
@@ -3405,10 +3521,18 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         id: &str,
         assignments: &[KeyValueArg],
     ) -> Result<()> {
-        let updated = self
+        let raw_id = self
             .state
-            .update_node_instance(model_name, id, &collect_assignments(assignments))
+            .parse_backend_id(id, self.state.node_id_type(), "node id")?;
+        let outcome = self
+            .state
+            .apply_node_update(NodeUpdateRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+                props: typed_props_from_assignments(assignments),
+            })
             .await?;
+        let updated = outcome.value;
         let (model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3416,9 +3540,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 .ok_or(crate::GrmError::NotFound)?;
             (model.name.clone(), model.id_field_name.clone())
         };
-        self.persist_autocommit_entry(DurableOperation::UpsertNode {
-            node: updated.clone(),
-        })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         writeln!(
             self.writer,
             "Updated node {} {}={} {}",
@@ -3431,11 +3553,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     async fn handle_node_delete_parsed(&mut self, model_name: &str, id: &str) -> Result<()> {
-        self.state.delete_node_instance(model_name, id).await?;
         let raw_id = self
             .state
             .parse_backend_id(id, self.state.node_id_type(), "node id")?;
-        self.persist_autocommit_entry(DurableOperation::DeleteNode { id: raw_id })?;
+        let outcome = self
+            .state
+            .apply_node_delete(NodeDeleteRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+            })
+            .await?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         writeln!(self.writer, "Deleted node {model_name} {id}.")?;
         Ok(())
     }
@@ -3500,10 +3628,22 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .ok_or_else(|| crate::GrmError::Constraint("edge.create requires to=<id>".into()))?;
         let from_id = self.resolve_binding_or_id(&from_id, "from")?;
         let to_id = self.resolve_binding_or_id(&to_id, "to")?;
-        let created = self
+        let from_id =
+            self.state
+                .parse_backend_id(&from_id, self.state.node_id_type(), "from node")?;
+        let to_id = self
             .state
-            .create_relationship_instance(model_name, &from_id, &to_id, &values)
+            .parse_backend_id(&to_id, self.state.node_id_type(), "to node")?;
+        let outcome = self
+            .state
+            .apply_edge_create(EdgeCreateRequest {
+                model: model_name.to_string(),
+                from: from_id,
+                to: to_id,
+                props: typed_props_from_raw(values),
+            })
             .await?;
+        let created = outcome.value;
         let (rel_type, model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3520,9 +3660,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .inserted_edges
             .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit_entry(DurableOperation::UpsertRel {
-            rel: created.clone(),
-        })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(
                 self.writer,
@@ -3539,10 +3677,18 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         id: &str,
         assignments: &[KeyValueArg],
     ) -> Result<()> {
-        let updated = self
+        let raw_id = self
             .state
-            .update_relationship_instance(model_name, id, &collect_assignments(assignments))
+            .parse_backend_id(id, self.state.rel_id_type(), "edge id")?;
+        let outcome = self
+            .state
+            .apply_edge_update(EdgeUpdateRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+                props: typed_props_from_assignments(assignments),
+            })
             .await?;
+        let updated = outcome.value;
         let (model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3550,9 +3696,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 .ok_or(crate::GrmError::NotFound)?;
             (model.name.clone(), model.id_field_name.clone())
         };
-        self.persist_autocommit_entry(DurableOperation::UpsertRel {
-            rel: updated.clone(),
-        })?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         writeln!(
             self.writer,
             "Updated edge {} {}={} from={} to={} {}",
@@ -3567,13 +3711,17 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     async fn handle_edge_delete_parsed(&mut self, model_name: &str, id: &str) -> Result<()> {
-        self.state
-            .delete_relationship_instance(model_name, id)
-            .await?;
         let raw_id = self
             .state
             .parse_backend_id(id, self.state.rel_id_type(), "edge id")?;
-        self.persist_autocommit_entry(DurableOperation::DeleteRel { id: raw_id })?;
+        let outcome = self
+            .state
+            .apply_edge_delete(EdgeDeleteRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+            })
+            .await?;
+        self.persist_autocommit_entry(outcome.durable_op)?;
         writeln!(self.writer, "Deleted edge {model_name} {id}.")?;
         Ok(())
     }
@@ -6118,6 +6266,37 @@ fn collect_assignments(assignments: &[KeyValueArg]) -> BTreeMap<String, String> 
         .iter()
         .map(|arg| (arg.key.clone(), arg.value.clone()))
         .collect()
+}
+
+fn typed_props_from_assignments(assignments: &[KeyValueArg]) -> BTreeMap<String, Value> {
+    typed_props_from_raw(collect_assignments(assignments))
+}
+
+fn typed_props_from_raw(values: BTreeMap<String, String>) -> BTreeMap<String, Value> {
+    values
+        .into_iter()
+        .map(|(key, value)| (key, Value::String(value)))
+        .collect()
+}
+
+fn field_specs_from_runtime(fields: Vec<RuntimeField>) -> Vec<FieldSpec> {
+    fields
+        .into_iter()
+        .map(|field| FieldSpec {
+            name: field.name,
+            value_type: field_value_type_from_runtime(field.value_type),
+            required: field.required,
+        })
+        .collect()
+}
+
+fn field_value_type_from_runtime(value_type: RuntimeValueType) -> FieldValueType {
+    match value_type {
+        RuntimeValueType::String => FieldValueType::String,
+        RuntimeValueType::Int => FieldValueType::Int,
+        RuntimeValueType::Float => FieldValueType::Float,
+        RuntimeValueType::Bool => FieldValueType::Bool,
+    }
 }
 
 fn is_binding_name_like(value: &str) -> bool {
