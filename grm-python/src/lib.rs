@@ -8,11 +8,13 @@ use std::path::PathBuf;
 
 use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
 use grm_rs::{
-    apply_session_batch, DurabilityFormat, DurableOperation, ExplainRequest, GraphClient,
-    Neo4jBackend, Neo4jConfig, NodeFindRequest, OrderDirection, OrderSpec, PredicateOp,
-    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
-    RuntimeRelModel, RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog,
-    SessionState, StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
+    apply_session_batch, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat, DurableOperation,
+    EdgeCreateRequest, EdgeDeleteRequest, EdgeUpdateRequest, ExplainRequest, FieldSpec,
+    FieldValueType, GraphClient, Neo4jBackend, Neo4jConfig, NodeCreateRequest, NodeDeleteRequest,
+    NodeFindRequest, NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp, ProfileRequest,
+    PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
+    RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState,
+    StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -104,16 +106,15 @@ impl PySession {
         id_field: &str,
         fields: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let model = RuntimeNodeModel::new(
-            name,
-            id_field,
-            self.state.node_id_type(),
-            parse_fields(fields)?,
-        )
-        .map_err(grm_err)?;
-        self.state.register_model(model.clone()).map_err(grm_err)?;
-        self.append_autocommit(DurableOperation::RegisterNodeModel { model })
-            .map_err(grm_err)
+        let outcome = self
+            .state
+            .apply_define_node(DefineNodeRequest {
+                name: name.to_string(),
+                id_field: id_field.to_string(),
+                fields: parse_field_specs(fields)?,
+            })
+            .map_err(grm_err)?;
+        self.append_autocommit(outcome.durable_op).map_err(grm_err)
     }
 
     fn link_create(
@@ -124,20 +125,17 @@ impl PySession {
         id_field: &str,
         fields: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        let model = RuntimeRelModel::new(
-            name,
-            from_model,
-            to_model,
-            id_field,
-            self.state.rel_id_type(),
-            parse_fields(fields)?,
-        )
-        .map_err(grm_err)?;
-        self.state
-            .register_rel_model(model.clone())
+        let outcome = self
+            .state
+            .apply_define_edge(DefineEdgeRequest {
+                name: name.to_string(),
+                from_model: from_model.to_string(),
+                to_model: to_model.to_string(),
+                id_field: id_field.to_string(),
+                fields: parse_field_specs(fields)?,
+            })
             .map_err(grm_err)?;
-        self.append_autocommit(DurableOperation::RegisterRelModel { model })
-            .map_err(grm_err)
+        self.append_autocommit(outcome.durable_op).map_err(grm_err)
     }
 
     fn model_show(&self, py: Python<'_>, name: &str) -> PyResult<Option<PyObject>> {
@@ -177,11 +175,16 @@ impl PySession {
         model_name: &str,
         values: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
-        let raw_values = extract_string_map(values)?;
-        let node = block_on(py, self.state.create_instance(model_name, &raw_values))?;
-        self.append_autocommit(DurableOperation::UpsertNode { node: node.clone() })
+        let outcome = block_on(
+            py,
+            self.state.apply_node_create(NodeCreateRequest {
+                model: model_name.to_string(),
+                props: extract_json_map(values)?,
+            }),
+        )?;
+        self.append_autocommit(outcome.durable_op)
             .map_err(grm_err)?;
-        stored_node_to_py(py, &node)
+        stored_node_to_py(py, &outcome.value)
     }
 
     #[pyo3(signature = (ops, *, atomic=true, response="summary", allow_deletes=false))]
@@ -218,15 +221,21 @@ impl PySession {
         values: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
         let id = python_value_to_string(node_id)?;
-        let raw_values = extract_string_map(values)?;
-        let node = block_on(
-            py,
-            self.state
-                .update_node_instance(model_name, &id, &raw_values),
-        )?;
-        self.append_autocommit(DurableOperation::UpsertNode { node: node.clone() })
+        let raw_id = self
+            .state
+            .parse_backend_id(&id, self.state.node_id_type(), "node id")
             .map_err(grm_err)?;
-        stored_node_to_py(py, &node)
+        let outcome = block_on(
+            py,
+            self.state.apply_node_update(NodeUpdateRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+                props: extract_json_map(values)?,
+            }),
+        )?;
+        self.append_autocommit(outcome.durable_op)
+            .map_err(grm_err)?;
+        stored_node_to_py(py, &outcome.value)
     }
 
     fn node_delete(
@@ -240,9 +249,14 @@ impl PySession {
             .state
             .parse_backend_id(&id, self.state.node_id_type(), "node id")
             .map_err(grm_err)?;
-        block_on(py, self.state.delete_node_instance(model_name, &id))?;
-        self.append_autocommit(DurableOperation::DeleteNode { id: raw_id })
-            .map_err(grm_err)
+        let outcome = block_on(
+            py,
+            self.state.apply_node_delete(NodeDeleteRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+            }),
+        )?;
+        self.append_autocommit(outcome.durable_op).map_err(grm_err)
     }
 
     #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
@@ -397,17 +411,34 @@ impl PySession {
         to_id: &Bound<'_, PyAny>,
         values: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
-        let from_id = python_value_to_string(from_id)?;
-        let to_id = python_value_to_string(to_id)?;
-        let raw_values = extract_string_map(values)?;
-        let rel = block_on(
-            py,
-            self.state
-                .create_relationship_instance(model_name, &from_id, &to_id, &raw_values),
-        )?;
-        self.append_autocommit(DurableOperation::UpsertRel { rel: rel.clone() })
+        let from_id = self
+            .state
+            .parse_backend_id(
+                &python_value_to_string(from_id)?,
+                self.state.node_id_type(),
+                "from node",
+            )
             .map_err(grm_err)?;
-        stored_rel_to_py(py, &rel)
+        let to_id = self
+            .state
+            .parse_backend_id(
+                &python_value_to_string(to_id)?,
+                self.state.node_id_type(),
+                "to node",
+            )
+            .map_err(grm_err)?;
+        let outcome = block_on(
+            py,
+            self.state.apply_edge_create(EdgeCreateRequest {
+                model: model_name.to_string(),
+                from: from_id,
+                to: to_id,
+                props: extract_json_map(values)?,
+            }),
+        )?;
+        self.append_autocommit(outcome.durable_op)
+            .map_err(grm_err)?;
+        stored_rel_to_py(py, &outcome.value)
     }
 
     #[pyo3(signature = (model_name, edge_id, values=None))]
@@ -419,15 +450,21 @@ impl PySession {
         values: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
         let id = python_value_to_string(edge_id)?;
-        let raw_values = extract_string_map(values)?;
-        let rel = block_on(
-            py,
-            self.state
-                .update_relationship_instance(model_name, &id, &raw_values),
-        )?;
-        self.append_autocommit(DurableOperation::UpsertRel { rel: rel.clone() })
+        let raw_id = self
+            .state
+            .parse_backend_id(&id, self.state.rel_id_type(), "edge id")
             .map_err(grm_err)?;
-        stored_rel_to_py(py, &rel)
+        let outcome = block_on(
+            py,
+            self.state.apply_edge_update(EdgeUpdateRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+                props: extract_json_map(values)?,
+            }),
+        )?;
+        self.append_autocommit(outcome.durable_op)
+            .map_err(grm_err)?;
+        stored_rel_to_py(py, &outcome.value)
     }
 
     fn edge_delete(
@@ -441,9 +478,14 @@ impl PySession {
             .state
             .parse_backend_id(&id, self.state.rel_id_type(), "edge id")
             .map_err(grm_err)?;
-        block_on(py, self.state.delete_relationship_instance(model_name, &id))?;
-        self.append_autocommit(DurableOperation::DeleteRel { id: raw_id })
-            .map_err(grm_err)
+        let outcome = block_on(
+            py,
+            self.state.apply_edge_delete(EdgeDeleteRequest {
+                model: model_name.to_string(),
+                id: raw_id,
+            }),
+        )?;
+        self.append_autocommit(outcome.durable_op).map_err(grm_err)
     }
 
     #[pyo3(signature = (model_name, filters=None))]
@@ -806,6 +848,42 @@ fn parse_fields(fields: &Bound<'_, PyAny>) -> PyResult<Vec<RuntimeField>> {
     Ok(parsed)
 }
 
+fn parse_field_specs(fields: &Bound<'_, PyAny>) -> PyResult<Vec<FieldSpec>> {
+    let mut parsed = Vec::new();
+    for item in fields.iter()? {
+        let item = item?;
+        let field = item.downcast::<PyDict>().map_err(|_| {
+            PyTypeError::new_err(
+                "field definitions must be dicts with 'name', 'type', and 'required' keys",
+            )
+        })?;
+        let name = required_string(field, "name")?;
+        let field_type = required_string(field, "type")?;
+        let value_type = parse_field_value_type(&field_type).ok_or_else(|| {
+            PyTypeError::new_err(format!(
+                "unsupported field type '{field_type}', expected one of: string, int, float, bool"
+            ))
+        })?;
+        let required = required_bool(field, "required")?;
+        parsed.push(FieldSpec {
+            name,
+            value_type,
+            required,
+        });
+    }
+    Ok(parsed)
+}
+
+fn parse_field_value_type(raw: &str) -> Option<FieldValueType> {
+    match raw {
+        "string" => Some(FieldValueType::String),
+        "int" => Some(FieldValueType::Int),
+        "float" => Some(FieldValueType::Float),
+        "bool" => Some(FieldValueType::Bool),
+        _ => None,
+    }
+}
+
 fn configure_autocommit(
     autocommit: bool,
     autocommit_path: Option<String>,
@@ -881,6 +959,22 @@ fn extract_string_map(input: Option<&Bound<'_, PyDict>>) -> PyResult<BTreeMap<St
             .extract::<String>()
             .map_err(|_| PyTypeError::new_err("mapping keys must be strings"))?;
         values.insert(key, python_value_to_string(&value)?);
+    }
+
+    Ok(values)
+}
+
+fn extract_json_map(input: Option<&Bound<'_, PyDict>>) -> PyResult<BTreeMap<String, Value>> {
+    let mut values = BTreeMap::new();
+    let Some(input) = input else {
+        return Ok(values);
+    };
+
+    for (key, value) in input {
+        let key = key
+            .extract::<String>()
+            .map_err(|_| PyTypeError::new_err("mapping keys must be strings"))?;
+        values.insert(key, py_any_to_json_value(&value)?);
     }
 
     Ok(values)
