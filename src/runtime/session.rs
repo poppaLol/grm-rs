@@ -24,10 +24,11 @@ use crate::runtime::{
     EdgeFindRequest, EdgeRequest, EdgeResponse, EdgeUpdateRequest, ExplainRequest, FieldSpec,
     FieldValueType, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeRequest,
     NodeResponse, NodeUpdateRequest, OrderDirection, PredicateOp, ProfileRequest,
-    PropertyPredicate, QueryRequest, RuntimeDelete, RuntimeEdgeDeleteOutcome,
-    RuntimeEdgeFindResponse, RuntimeEdgeOutcome, RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse,
-    RuntimeNodeOutcome, RuntimeOperationOutcome, RuntimeRequest, RuntimeResponse, SchemaRequest,
-    SchemaResponse, TraversalDirection, TraversalReturn,
+    PropertyPredicate, QueryRequest, RuntimeDelete, RuntimeDispatchOutcome,
+    RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
+    RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
+    RuntimeRequest, RuntimeResponse, SchemaRequest, SchemaResponse, TraversalDirection,
+    TraversalReturn,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -350,10 +351,12 @@ impl SessionState {
 
     /// Execute the structured runtime request slice intended for future service callers.
     ///
-    /// This dispatcher currently returns values only. Callers that need persistence
-    /// metadata should keep using the `apply_*` helpers until the runtime boundary
-    /// grows a durable outcome shape.
-    pub async fn execute_runtime(&mut self, request: RuntimeRequest) -> Result<RuntimeResponse> {
+    /// Mutation responses include the same durable operations produced by the
+    /// underlying `apply_*` helpers. Read responses return an empty durable-op list.
+    pub async fn execute_runtime(
+        &mut self,
+        request: RuntimeRequest,
+    ) -> Result<RuntimeDispatchOutcome> {
         match request {
             RuntimeRequest::Schema(request) => self.execute_schema_request(request),
             RuntimeRequest::Node(request) => self.execute_node_request(request).await,
@@ -374,60 +377,107 @@ impl SessionState {
         }
     }
 
-    fn execute_schema_request(&mut self, request: SchemaRequest) -> Result<RuntimeResponse> {
-        let response = match request {
+    fn execute_schema_request(&mut self, request: SchemaRequest) -> Result<RuntimeDispatchOutcome> {
+        let (response, durable_op) = match request {
             SchemaRequest::DefineNode(request) => {
-                SchemaResponse::DefineNode(self.apply_define_node(request)?.value)
+                let outcome = self.apply_define_node(request)?;
+                (
+                    SchemaResponse::DefineNode(outcome.value),
+                    outcome.durable_op,
+                )
             }
             SchemaRequest::DefineEdge(request) => {
-                SchemaResponse::DefineEdge(self.apply_define_edge(request)?.value)
+                let outcome = self.apply_define_edge(request)?;
+                (
+                    SchemaResponse::DefineEdge(outcome.value),
+                    outcome.durable_op,
+                )
             }
         };
-        Ok(RuntimeResponse::Schema(response))
+        Ok(RuntimeDispatchOutcome {
+            response: RuntimeResponse::Schema(response),
+            durable_ops: vec![durable_op],
+        })
     }
 
-    async fn execute_node_request(&self, request: NodeRequest) -> Result<RuntimeResponse> {
-        let response = match request {
+    async fn execute_node_request(&self, request: NodeRequest) -> Result<RuntimeDispatchOutcome> {
+        match request {
             NodeRequest::Create(request) => {
-                NodeResponse::Create(self.apply_node_create(request).await?.value)
+                let outcome = self.apply_node_create(request).await?;
+                Ok(RuntimeDispatchOutcome {
+                    response: RuntimeResponse::Node(NodeResponse::Create(outcome.value)),
+                    durable_ops: vec![outcome.durable_op],
+                })
             }
             NodeRequest::Update(request) => {
-                NodeResponse::Update(self.apply_node_update(request).await?.value)
+                let outcome = self.apply_node_update(request).await?;
+                Ok(RuntimeDispatchOutcome {
+                    response: RuntimeResponse::Node(NodeResponse::Update(outcome.value)),
+                    durable_ops: vec![outcome.durable_op],
+                })
             }
             NodeRequest::Delete(request) => {
-                NodeResponse::Delete(self.apply_node_delete(request).await?.value)
+                let outcome = self.apply_node_delete(request).await?;
+                Ok(RuntimeDispatchOutcome {
+                    response: RuntimeResponse::Node(NodeResponse::Delete(outcome.value)),
+                    durable_ops: vec![outcome.durable_op],
+                })
             }
-            NodeRequest::Find(request) => {
-                NodeResponse::Find(self.node_find_response(request).await?)
-            }
-        };
-        Ok(RuntimeResponse::Node(response))
+            NodeRequest::Find(request) => Ok(RuntimeDispatchOutcome {
+                response: RuntimeResponse::Node(NodeResponse::Find(
+                    self.node_find_response(request).await?,
+                )),
+                durable_ops: Vec::new(),
+            }),
+        }
     }
 
-    async fn execute_edge_request(&self, request: EdgeRequest) -> Result<RuntimeResponse> {
-        let response = match request {
+    async fn execute_edge_request(&self, request: EdgeRequest) -> Result<RuntimeDispatchOutcome> {
+        match request {
             EdgeRequest::Create(request) => {
-                EdgeResponse::Create(self.apply_edge_create(request).await?.value)
+                let outcome = self.apply_edge_create(request).await?;
+                Ok(RuntimeDispatchOutcome {
+                    response: RuntimeResponse::Edge(EdgeResponse::Create(outcome.value)),
+                    durable_ops: vec![outcome.durable_op],
+                })
             }
             EdgeRequest::Update(request) => {
-                EdgeResponse::Update(self.apply_edge_update(request).await?.value)
+                let outcome = self.apply_edge_update(request).await?;
+                Ok(RuntimeDispatchOutcome {
+                    response: RuntimeResponse::Edge(EdgeResponse::Update(outcome.value)),
+                    durable_ops: vec![outcome.durable_op],
+                })
             }
             EdgeRequest::Delete(request) => {
-                EdgeResponse::Delete(self.apply_edge_delete(request).await?.value)
+                let outcome = self.apply_edge_delete(request).await?;
+                Ok(RuntimeDispatchOutcome {
+                    response: RuntimeResponse::Edge(EdgeResponse::Delete(outcome.value)),
+                    durable_ops: vec![outcome.durable_op],
+                })
             }
-            EdgeRequest::Find(request) => EdgeResponse::Find(self.edge_find_response(request)?),
-        };
-        Ok(RuntimeResponse::Edge(response))
+            EdgeRequest::Find(request) => Ok(RuntimeDispatchOutcome {
+                response: RuntimeResponse::Edge(EdgeResponse::Find(
+                    self.edge_find_response(request)?,
+                )),
+                durable_ops: Vec::new(),
+            }),
+        }
     }
 
-    async fn execute_query_request(&self, request: QueryRequest) -> Result<RuntimeResponse> {
+    async fn execute_query_request(&self, request: QueryRequest) -> Result<RuntimeDispatchOutcome> {
         match request {
-            QueryRequest::NodeFind(request) => Ok(RuntimeResponse::Node(NodeResponse::Find(
-                self.node_find_response(request).await?,
-            ))),
-            QueryRequest::EdgeFind(request) => Ok(RuntimeResponse::Edge(EdgeResponse::Find(
-                self.edge_find_response(request)?,
-            ))),
+            QueryRequest::NodeFind(request) => Ok(RuntimeDispatchOutcome {
+                response: RuntimeResponse::Node(NodeResponse::Find(
+                    self.node_find_response(request).await?,
+                )),
+                durable_ops: Vec::new(),
+            }),
+            QueryRequest::EdgeFind(request) => Ok(RuntimeDispatchOutcome {
+                response: RuntimeResponse::Edge(EdgeResponse::Find(
+                    self.edge_find_response(request)?,
+                )),
+                durable_ops: Vec::new(),
+            }),
             QueryRequest::Traversal(_) => Err(crate::GrmError::NotSupported(
                 "runtime dispatcher does not support traversal query requests yet",
             )),

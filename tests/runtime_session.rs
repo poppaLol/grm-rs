@@ -1698,6 +1698,34 @@ async fn runtime_edge_find_response_uses_structured_request_fields() {
     assert_eq!(response.edges[0].to, post.id);
 }
 
+fn created_node_id_with_matching_durable(outcome: grm_rs::RuntimeDispatchOutcome) -> i64 {
+    let grm_rs::RuntimeDispatchOutcome {
+        response,
+        durable_ops,
+    } = outcome;
+    match (response, durable_ops.as_slice()) {
+        (
+            RuntimeResponse::Node(NodeResponse::Create(node)),
+            [DurableOperation::UpsertNode { node: durable_node }],
+        ) if durable_node.id == node.id => node.id,
+        other => panic!("expected node create response with matching durable op, got {other:?}"),
+    }
+}
+
+fn created_edge_id_with_matching_durable(outcome: grm_rs::RuntimeDispatchOutcome) -> i64 {
+    let grm_rs::RuntimeDispatchOutcome {
+        response,
+        durable_ops,
+    } = outcome;
+    match (response, durable_ops.as_slice()) {
+        (
+            RuntimeResponse::Edge(EdgeResponse::Create(edge)),
+            [DurableOperation::UpsertRel { rel: durable_edge }],
+        ) if durable_edge.id == edge.id => edge.id,
+        other => panic!("expected edge create response with matching durable op, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
     let mut state = SessionState::new();
@@ -1717,8 +1745,12 @@ async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
+        response.response,
         RuntimeResponse::Schema(SchemaResponse::DefineNode(model)) if model.name == "User"
+    ));
+    assert!(matches!(
+        response.durable_ops.as_slice(),
+        [DurableOperation::RegisterNodeModel { model }] if model.name == "User"
     ));
 
     state
@@ -1749,8 +1781,12 @@ async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
+        response.response,
         RuntimeResponse::Schema(SchemaResponse::DefineEdge(model)) if model.name == "Authored"
+    ));
+    assert!(matches!(
+        response.durable_ops.as_slice(),
+        [DurableOperation::RegisterRelModel { model }] if model.name == "Authored"
     ));
 
     let response = state
@@ -1762,10 +1798,7 @@ async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
         )))
         .await
         .unwrap();
-    let user_id = match response {
-        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
-        other => panic!("expected node create response, got {other:?}"),
-    };
+    let user_id = created_node_id_with_matching_durable(response);
 
     let response = state
         .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
@@ -1776,10 +1809,7 @@ async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
         )))
         .await
         .unwrap();
-    let post_id = match response {
-        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
-        other => panic!("expected node create response, got {other:?}"),
-    };
+    let post_id = created_node_id_with_matching_durable(response);
 
     let response = state
         .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
@@ -1792,10 +1822,7 @@ async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
         )))
         .await
         .unwrap();
-    let edge_id = match response {
-        RuntimeResponse::Edge(EdgeResponse::Create(edge)) => edge.id,
-        other => panic!("expected edge create response, got {other:?}"),
-    };
+    let edge_id = created_edge_id_with_matching_durable(response);
 
     let response = state
         .execute_runtime(RuntimeRequest::Node(NodeRequest::Find(NodeFindRequest {
@@ -1810,10 +1837,11 @@ async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
+        response.response,
         RuntimeResponse::Node(NodeResponse::Find(found))
             if found.model == "User" && found.nodes.len() == 1
     ));
+    assert!(response.durable_ops.is_empty());
 
     let response = state
         .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Find(
@@ -1826,10 +1854,11 @@ async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
+        response.response,
         RuntimeResponse::Edge(EdgeResponse::Find(found))
             if found.model == "Authored" && found.edges.len() == 1
     ));
+    assert!(response.durable_ops.is_empty());
 }
 
 #[tokio::test]
@@ -1876,47 +1905,41 @@ async fn runtime_dispatcher_executes_update_and_delete_requests() {
         .await
         .unwrap();
 
-    let user_id = match state
-        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
-            grm_rs::NodeCreateRequest {
-                model: "User".to_string(),
-                props: BTreeMap::from([("name".to_string(), json!("Alice"))]),
-            },
-        )))
-        .await
-        .unwrap()
-    {
-        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
-        other => panic!("expected node create response, got {other:?}"),
-    };
-    let post_id = match state
-        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
-            grm_rs::NodeCreateRequest {
-                model: "Post".to_string(),
-                props: BTreeMap::new(),
-            },
-        )))
-        .await
-        .unwrap()
-    {
-        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
-        other => panic!("expected node create response, got {other:?}"),
-    };
-    let edge_id = match state
-        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
-            grm_rs::EdgeCreateRequest {
-                model: "Authored".to_string(),
-                from: user_id,
-                to: post_id,
-                props: BTreeMap::new(),
-            },
-        )))
-        .await
-        .unwrap()
-    {
-        RuntimeResponse::Edge(EdgeResponse::Create(edge)) => edge.id,
-        other => panic!("expected edge create response, got {other:?}"),
-    };
+    let user_id = created_node_id_with_matching_durable(
+        state
+            .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+                grm_rs::NodeCreateRequest {
+                    model: "User".to_string(),
+                    props: BTreeMap::from([("name".to_string(), json!("Alice"))]),
+                },
+            )))
+            .await
+            .unwrap(),
+    );
+    let post_id = created_node_id_with_matching_durable(
+        state
+            .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+                grm_rs::NodeCreateRequest {
+                    model: "Post".to_string(),
+                    props: BTreeMap::new(),
+                },
+            )))
+            .await
+            .unwrap(),
+    );
+    let edge_id = created_edge_id_with_matching_durable(
+        state
+            .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
+                grm_rs::EdgeCreateRequest {
+                    model: "Authored".to_string(),
+                    from: user_id,
+                    to: post_id,
+                    props: BTreeMap::new(),
+                },
+            )))
+            .await
+            .unwrap(),
+    );
 
     let response = state
         .execute_runtime(RuntimeRequest::Node(NodeRequest::Update(
@@ -1929,9 +1952,11 @@ async fn runtime_dispatcher_executes_update_and_delete_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
-        RuntimeResponse::Node(NodeResponse::Update(node))
-            if node.props["name"] == json!("Ada")
+        (&response.response, response.durable_ops.as_slice()),
+        (
+            RuntimeResponse::Node(NodeResponse::Update(node)),
+            [DurableOperation::UpsertNode { node: durable_node }]
+        ) if node.id == durable_node.id && node.props["name"] == json!("Ada")
     ));
 
     let response = state
@@ -1945,9 +1970,11 @@ async fn runtime_dispatcher_executes_update_and_delete_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
-        RuntimeResponse::Edge(EdgeResponse::Update(edge))
-            if edge.props["year"] == json!(2026)
+        (&response.response, response.durable_ops.as_slice()),
+        (
+            RuntimeResponse::Edge(EdgeResponse::Update(edge)),
+            [DurableOperation::UpsertRel { rel: durable_edge }]
+        ) if edge.id == durable_edge.id && edge.props["year"] == json!(2026)
     ));
 
     let response = state
@@ -1960,9 +1987,13 @@ async fn runtime_dispatcher_executes_update_and_delete_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
+        response.response,
         RuntimeResponse::Edge(EdgeResponse::Delete(deleted))
             if deleted.model == "Authored" && deleted.id == edge_id
+    ));
+    assert!(matches!(
+        response.durable_ops.as_slice(),
+        [DurableOperation::DeleteRel { id }] if *id == edge_id
     ));
 
     let response = state
@@ -1975,9 +2006,13 @@ async fn runtime_dispatcher_executes_update_and_delete_requests() {
         .await
         .unwrap();
     assert!(matches!(
-        response,
+        response.response,
         RuntimeResponse::Node(NodeResponse::Delete(deleted))
             if deleted.model == "User" && deleted.id == user_id
+    ));
+    assert!(matches!(
+        response.durable_ops.as_slice(),
+        [DurableOperation::DeleteNode { id }] if *id == user_id
     ));
 }
 
@@ -2017,32 +2052,28 @@ async fn runtime_dispatcher_routes_query_find_requests_through_find_responses() 
         .await
         .unwrap();
 
-    let user_id = match state
-        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
-            grm_rs::NodeCreateRequest {
-                model: "User".to_string(),
-                props: BTreeMap::new(),
-            },
-        )))
-        .await
-        .unwrap()
-    {
-        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
-        other => panic!("expected node create response, got {other:?}"),
-    };
-    let post_id = match state
-        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
-            grm_rs::NodeCreateRequest {
-                model: "Post".to_string(),
-                props: BTreeMap::new(),
-            },
-        )))
-        .await
-        .unwrap()
-    {
-        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
-        other => panic!("expected node create response, got {other:?}"),
-    };
+    let user_id = created_node_id_with_matching_durable(
+        state
+            .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+                grm_rs::NodeCreateRequest {
+                    model: "User".to_string(),
+                    props: BTreeMap::new(),
+                },
+            )))
+            .await
+            .unwrap(),
+    );
+    let post_id = created_node_id_with_matching_durable(
+        state
+            .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+                grm_rs::NodeCreateRequest {
+                    model: "Post".to_string(),
+                    props: BTreeMap::new(),
+                },
+            )))
+            .await
+            .unwrap(),
+    );
     state
         .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
             grm_rs::EdgeCreateRequest {
@@ -2066,10 +2097,11 @@ async fn runtime_dispatcher_routes_query_find_requests_through_find_responses() 
         .await
         .unwrap();
     assert!(matches!(
-        node_response,
+        node_response.response,
         RuntimeResponse::Node(NodeResponse::Find(found))
             if found.model == "User" && found.nodes.len() == 1
     ));
+    assert!(node_response.durable_ops.is_empty());
 
     let edge_response = state
         .execute_runtime(RuntimeRequest::Query(QueryRequest::EdgeFind(
@@ -2082,26 +2114,66 @@ async fn runtime_dispatcher_routes_query_find_requests_through_find_responses() 
         .await
         .unwrap();
     assert!(matches!(
-        edge_response,
+        edge_response.response,
         RuntimeResponse::Edge(EdgeResponse::Find(found))
             if found.model == "Authored" && found.edges.len() == 1
     ));
+    assert!(edge_response.durable_ops.is_empty());
 }
 
 #[tokio::test]
 async fn runtime_dispatcher_returns_clear_unsupported_errors_for_excluded_variants() {
     let mut state = SessionState::new();
-    let err = state
-        .execute_runtime(RuntimeRequest::Batch(BatchRequest {
-            atomic: true,
-            allow_deletes: false,
-            response: SessionBatchResponse::Summary,
-            ops: vec![],
-        }))
-        .await
-        .unwrap_err();
+    let unsupported = vec![
+        (
+            RuntimeRequest::Explain(ExplainRequest {
+                query: QueryRequest::NodeFind(NodeFindRequest {
+                    model: "User".to_string(),
+                    ..Default::default()
+                }),
+            }),
+            "explain requests yet",
+        ),
+        (
+            RuntimeRequest::Profile(ProfileRequest {
+                query: QueryRequest::NodeFind(NodeFindRequest {
+                    model: "User".to_string(),
+                    ..Default::default()
+                }),
+            }),
+            "profile requests yet",
+        ),
+        (
+            RuntimeRequest::Query(QueryRequest::Traversal(grm_rs::TraversalRequest {
+                root: NodeFindRequest {
+                    model: "User".to_string(),
+                    ..Default::default()
+                },
+            })),
+            "traversal query requests yet",
+        ),
+        (
+            RuntimeRequest::Batch(BatchRequest {
+                atomic: true,
+                allow_deletes: false,
+                response: SessionBatchResponse::Summary,
+                ops: vec![],
+            }),
+            "batch requests yet",
+        ),
+        (
+            RuntimeRequest::Admin(grm_rs::AdminRequest::SchemaList),
+            "admin requests",
+        ),
+    ];
 
-    assert!(err.to_string().contains("batch requests yet"));
+    for (request, message) in unsupported {
+        let err = state.execute_runtime(request).await.unwrap_err();
+        assert!(
+            err.to_string().contains(message),
+            "expected unsupported error containing {message:?}, got {err}"
+        );
+    }
 }
 
 #[test]
