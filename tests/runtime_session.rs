@@ -4,11 +4,12 @@ use std::io::{Cursor, Write};
 
 use grm_rs::{
     BackendIdType, BatchRequest, CliSession, DefineEdgeRequest, DefineNodeRequest,
-    DurabilityFormat, DurableOperation, EdgeFindRequest, ExplainRequest, FieldSpec, FieldValueType,
-    GraphTx, NodeFindRequest, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
-    QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionBatchResponse, SessionFindResult, SessionModelCatalog, SessionState, TraversalDirection,
-    TraversalReturn, TraversalStepRequest,
+    DurabilityFormat, DurableOperation, EdgeFindRequest, EdgeRequest, EdgeResponse, ExplainRequest,
+    FieldSpec, FieldValueType, GraphTx, NodeFindRequest, NodeRequest, NodeResponse, PredicateOp,
+    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, RuntimeRequest, RuntimeResponse, RuntimeValueType, SchemaRequest,
+    SchemaResponse, SessionBatchResponse, SessionFindResult, SessionModelCatalog, SessionState,
+    TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
 use serde_json::{Value, json};
 
@@ -1695,6 +1696,412 @@ async fn runtime_edge_find_response_uses_structured_request_fields() {
     assert_eq!(response.model, "Authored");
     assert_eq!(response.edges.len(), 1);
     assert_eq!(response.edges[0].to, post.id);
+}
+
+#[tokio::test]
+async fn runtime_dispatcher_executes_schema_node_and_edge_requests() {
+    let mut state = SessionState::new();
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "User".to_string(),
+                id_field: "userId".to_string(),
+                fields: vec![FieldSpec {
+                    name: "name".to_string(),
+                    value_type: FieldValueType::String,
+                    required: true,
+                }],
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Schema(SchemaResponse::DefineNode(model)) if model.name == "User"
+    ));
+
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "Post".to_string(),
+                id_field: "postId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineEdge(
+            DefineEdgeRequest {
+                name: "Authored".to_string(),
+                from_model: "User".to_string(),
+                to_model: "Post".to_string(),
+                id_field: "authoredId".to_string(),
+                fields: vec![FieldSpec {
+                    name: "year".to_string(),
+                    value_type: FieldValueType::Int,
+                    required: true,
+                }],
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Schema(SchemaResponse::DefineEdge(model)) if model.name == "Authored"
+    ));
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+            grm_rs::NodeCreateRequest {
+                model: "User".to_string(),
+                props: BTreeMap::from([("name".to_string(), json!("Alice"))]),
+            },
+        )))
+        .await
+        .unwrap();
+    let user_id = match response {
+        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
+        other => panic!("expected node create response, got {other:?}"),
+    };
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+            grm_rs::NodeCreateRequest {
+                model: "Post".to_string(),
+                props: BTreeMap::new(),
+            },
+        )))
+        .await
+        .unwrap();
+    let post_id = match response {
+        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
+        other => panic!("expected node create response, got {other:?}"),
+    };
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
+            grm_rs::EdgeCreateRequest {
+                model: "Authored".to_string(),
+                from: user_id,
+                to: post_id,
+                props: BTreeMap::from([("year".to_string(), json!(2026))]),
+            },
+        )))
+        .await
+        .unwrap();
+    let edge_id = match response {
+        RuntimeResponse::Edge(EdgeResponse::Create(edge)) => edge.id,
+        other => panic!("expected edge create response, got {other:?}"),
+    };
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Find(NodeFindRequest {
+            model: "User".to_string(),
+            predicates: vec![PropertyPredicate {
+                field: "name".to_string(),
+                op: PredicateOp::Eq,
+                value: json!("Alice"),
+            }],
+            ..Default::default()
+        })))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Node(NodeResponse::Find(found))
+            if found.model == "User" && found.nodes.len() == 1
+    ));
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Find(
+            grm_rs::EdgeFindRequest {
+                model: "Authored".to_string(),
+                id: Some(edge_id),
+                ..Default::default()
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Edge(EdgeResponse::Find(found))
+            if found.model == "Authored" && found.edges.len() == 1
+    ));
+}
+
+#[tokio::test]
+async fn runtime_dispatcher_executes_update_and_delete_requests() {
+    let mut state = SessionState::new();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "User".to_string(),
+                id_field: "userId".to_string(),
+                fields: vec![FieldSpec {
+                    name: "name".to_string(),
+                    value_type: FieldValueType::String,
+                    required: true,
+                }],
+            },
+        )))
+        .await
+        .unwrap();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "Post".to_string(),
+                id_field: "postId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineEdge(
+            DefineEdgeRequest {
+                name: "Authored".to_string(),
+                from_model: "User".to_string(),
+                to_model: "Post".to_string(),
+                id_field: "authoredId".to_string(),
+                fields: vec![FieldSpec {
+                    name: "year".to_string(),
+                    value_type: FieldValueType::Int,
+                    required: false,
+                }],
+            },
+        )))
+        .await
+        .unwrap();
+
+    let user_id = match state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+            grm_rs::NodeCreateRequest {
+                model: "User".to_string(),
+                props: BTreeMap::from([("name".to_string(), json!("Alice"))]),
+            },
+        )))
+        .await
+        .unwrap()
+    {
+        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
+        other => panic!("expected node create response, got {other:?}"),
+    };
+    let post_id = match state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+            grm_rs::NodeCreateRequest {
+                model: "Post".to_string(),
+                props: BTreeMap::new(),
+            },
+        )))
+        .await
+        .unwrap()
+    {
+        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
+        other => panic!("expected node create response, got {other:?}"),
+    };
+    let edge_id = match state
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
+            grm_rs::EdgeCreateRequest {
+                model: "Authored".to_string(),
+                from: user_id,
+                to: post_id,
+                props: BTreeMap::new(),
+            },
+        )))
+        .await
+        .unwrap()
+    {
+        RuntimeResponse::Edge(EdgeResponse::Create(edge)) => edge.id,
+        other => panic!("expected edge create response, got {other:?}"),
+    };
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Update(
+            grm_rs::NodeUpdateRequest {
+                model: "User".to_string(),
+                id: user_id,
+                props: BTreeMap::from([("name".to_string(), json!("Ada"))]),
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Node(NodeResponse::Update(node))
+            if node.props["name"] == json!("Ada")
+    ));
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Update(
+            grm_rs::EdgeUpdateRequest {
+                model: "Authored".to_string(),
+                id: edge_id,
+                props: BTreeMap::from([("year".to_string(), json!(2026))]),
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Edge(EdgeResponse::Update(edge))
+            if edge.props["year"] == json!(2026)
+    ));
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Delete(
+            grm_rs::EdgeDeleteRequest {
+                model: "Authored".to_string(),
+                id: edge_id,
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Edge(EdgeResponse::Delete(deleted))
+            if deleted.model == "Authored" && deleted.id == edge_id
+    ));
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Delete(
+            grm_rs::NodeDeleteRequest {
+                model: "User".to_string(),
+                id: user_id,
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        response,
+        RuntimeResponse::Node(NodeResponse::Delete(deleted))
+            if deleted.model == "User" && deleted.id == user_id
+    ));
+}
+
+#[tokio::test]
+async fn runtime_dispatcher_routes_query_find_requests_through_find_responses() {
+    let mut state = SessionState::new();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "User".to_string(),
+                id_field: "userId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "Post".to_string(),
+                id_field: "postId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineEdge(
+            DefineEdgeRequest {
+                name: "Authored".to_string(),
+                from_model: "User".to_string(),
+                to_model: "Post".to_string(),
+                id_field: "authoredId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+
+    let user_id = match state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+            grm_rs::NodeCreateRequest {
+                model: "User".to_string(),
+                props: BTreeMap::new(),
+            },
+        )))
+        .await
+        .unwrap()
+    {
+        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
+        other => panic!("expected node create response, got {other:?}"),
+    };
+    let post_id = match state
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+            grm_rs::NodeCreateRequest {
+                model: "Post".to_string(),
+                props: BTreeMap::new(),
+            },
+        )))
+        .await
+        .unwrap()
+    {
+        RuntimeResponse::Node(NodeResponse::Create(node)) => node.id,
+        other => panic!("expected node create response, got {other:?}"),
+    };
+    state
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
+            grm_rs::EdgeCreateRequest {
+                model: "Authored".to_string(),
+                from: user_id,
+                to: post_id,
+                props: BTreeMap::new(),
+            },
+        )))
+        .await
+        .unwrap();
+
+    let node_response = state
+        .execute_runtime(RuntimeRequest::Query(QueryRequest::NodeFind(
+            NodeFindRequest {
+                model: "User".to_string(),
+                id: Some(user_id),
+                ..Default::default()
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        node_response,
+        RuntimeResponse::Node(NodeResponse::Find(found))
+            if found.model == "User" && found.nodes.len() == 1
+    ));
+
+    let edge_response = state
+        .execute_runtime(RuntimeRequest::Query(QueryRequest::EdgeFind(
+            grm_rs::EdgeFindRequest {
+                model: "Authored".to_string(),
+                from: Some(user_id),
+                ..Default::default()
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(matches!(
+        edge_response,
+        RuntimeResponse::Edge(EdgeResponse::Find(found))
+            if found.model == "Authored" && found.edges.len() == 1
+    ));
+}
+
+#[tokio::test]
+async fn runtime_dispatcher_returns_clear_unsupported_errors_for_excluded_variants() {
+    let mut state = SessionState::new();
+    let err = state
+        .execute_runtime(RuntimeRequest::Batch(BatchRequest {
+            atomic: true,
+            allow_deletes: false,
+            response: SessionBatchResponse::Summary,
+            ops: vec![],
+        }))
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("batch requests yet"));
 }
 
 #[test]
