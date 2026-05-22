@@ -266,6 +266,7 @@ impl GrmMcpServer {
             let response = match state
                 .execute_runtime(RuntimeRequest::Query(QueryRequest::NodeFind(request)))
                 .await?
+                .response
             {
                 RuntimeResponse::Node(NodeResponse::Find(response)) => response,
                 _ => {
@@ -373,6 +374,7 @@ impl GrmMcpServer {
             let response = match state
                 .execute_runtime(RuntimeRequest::Query(QueryRequest::EdgeFind(request)))
                 .await?
+                .response
             {
                 RuntimeResponse::Edge(EdgeResponse::Find(response)) => response,
                 _ => {

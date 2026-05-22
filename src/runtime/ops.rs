@@ -31,6 +31,13 @@ pub enum RuntimeResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeDispatchOutcome {
+    pub response: RuntimeResponse,
+    #[serde(default)]
+    pub durable_ops: Vec<DurableOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum SchemaRequest {
     DefineNode(DefineNodeRequest),
