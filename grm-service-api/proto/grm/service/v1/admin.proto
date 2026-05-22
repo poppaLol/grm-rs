@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/common.proto";
+import "grm/service/v1/schema.proto";
+
+enum DurabilityFormat {
+  DURABILITY_FORMAT_JSON = 0;
+  DURABILITY_FORMAT_BINARY = 1;
+}
+
+message SaveRequest {
+  DurabilityFormat format = 1;
+  optional string requested_snapshot_id = 2;
+}
+
+message SaveResponse {
+  SnapshotHandle snapshot = 1;
+  DurabilityFormat format = 2;
+}
+
+message LoadRequest {
+  DurabilityFormat format = 1;
+  SnapshotHandle snapshot = 2;
+}
+
+message LoadResponse {
+  SnapshotHandle snapshot = 1;
+  DurabilityFormat format = 2;
+  SchemaListResponse schema = 3;
+}
+
+message SnapshotHandle {
+  string id = 1;
+  string etag = 2;
+}
+
+message ExportRequest {
+  SnapshotHandle snapshot = 1;
+}
+
+message ExportResponse {
+  SnapshotHandle snapshot = 1;
+  bytes document = 2;
+  DurabilityFormat format = 3;
+}
+
+message ImportRequest {
+  bytes document = 1;
+  DurabilityFormat format = 2;
+}
+
+message ImportResponse {
+  SnapshotHandle snapshot = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message IndexListRequest {}
+
+message IndexListResponse {
+  repeated SystemIndex indexes = 1;
+}
+
+message SystemIndex {
+  string name = 1;
+  string model = 2;
+  repeated string fields = 3;
+  bool durable = 4;
+  string note = 5;
+}
+
+message SummaryRequest {}
+
+message SummaryResponse {
+  uint64 node_count = 1;
+  uint64 edge_count = 2;
+  uint64 node_model_count = 3;
+  uint64 edge_model_count = 4;
+  string backend = 5;
+}

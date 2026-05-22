@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/common.proto";
+import "grm/service/v1/edge.proto";
+import "grm/service/v1/node.proto";
+import "grm/service/v1/schema.proto";
+
+enum BatchResponseMode {
+  BATCH_RESPONSE_MODE_SUMMARY = 0;
+  BATCH_RESPONSE_MODE_DETAILED = 1;
+}
+
+message BatchRequest {
+  bool atomic = 1;
+  bool allow_deletes = 2;
+  BatchResponseMode response_mode = 3;
+  repeated BatchOperation ops = 4;
+}
+
+message BatchOperation {
+  oneof op {
+    DefineNodeRequest schema_define_node = 1;
+    DefineEdgeRequest schema_define_edge = 2;
+    BatchNodeCreate node_create = 3;
+    NodeUpdateRequest node_update = 4;
+    NodeDeleteRequest node_delete = 5;
+    BatchEdgeCreate edge_create = 6;
+    EdgeUpdateRequest edge_update = 7;
+    EdgeDeleteRequest edge_delete = 8;
+  }
+}
+
+message BatchNodeCreate {
+  string model = 1;
+  PropertyMap props = 2;
+  optional string local_ref = 3;
+}
+
+message BatchEndpoint {
+  oneof endpoint {
+    int64 id = 1;
+    string local_ref = 2;
+  }
+}
+
+message BatchEdgeCreate {
+  string model = 1;
+  BatchEndpoint from = 2;
+  BatchEndpoint to = 3;
+  PropertyMap props = 4;
+}
+
+message BatchResponse {
+  bool applied = 1;
+  bool atomic = 2;
+  uint32 operation_count = 3;
+  repeated BatchCount counts = 4;
+  repeated BatchError errors = 5;
+  repeated BatchAppliedId ids = 6;
+  DurableMutationOutcome durability = 7;
+}
+
+message BatchCount {
+  string op = 1;
+  string model = 2;
+  uint32 count = 3;
+}
+
+message BatchError {
+  uint32 index = 1;
+  string message = 2;
+  string recovery_hint = 3;
+}
+
+message BatchAppliedId {
+  string op = 1;
+  string model = 2;
+  int64 id = 3;
+  optional string local_ref = 4;
+}

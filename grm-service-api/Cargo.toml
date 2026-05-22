@@ -1,0 +1,17 @@
+[package]
+name = "grm-service-api"
+version = "0.1.0"
+edition = "2024"
+description = "Split-ready protobuf service contract skeleton for GRM typed runtime operations."
+repository = "https://github.com/poppaLol/grm-rs"
+homepage = "https://github.com/poppaLol/grm-rs"
+documentation = "https://docs.rs/grm-service-api"
+license-file = "../LICENSE"
+publish = false
+
+[dev-dependencies]
+grm-rs = { path = ".." }
+prost-build = "0.13"
+protoc-bin-vendored = "3"
+serde_json = "1"
+tempfile = "3"
