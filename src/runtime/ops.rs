@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use super::batch::{SessionBatchOp, SessionBatchParams, SessionBatchResponse};
 use crate::{
-    CompareOp, DurableOperation, GrmError, Result, RuntimeField, RuntimeValueType, StoredNode,
-    StoredRel,
+    CompareOp, DurableOperation, GrmError, Result, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
+    RuntimeValueType, StoredNode, StoredRel,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,10 +23,25 @@ pub enum RuntimeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "response", rename_all = "snake_case")]
+pub enum RuntimeResponse {
+    Schema(SchemaResponse),
+    Node(NodeResponse),
+    Edge(EdgeResponse),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum SchemaRequest {
     DefineNode(DefineNodeRequest),
     DefineEdge(DefineEdgeRequest),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", content = "result", rename_all = "snake_case")]
+pub enum SchemaResponse {
+    DefineNode(RuntimeNodeModel),
+    DefineEdge(RuntimeRelModel),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +54,15 @@ pub enum NodeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", content = "result", rename_all = "snake_case")]
+pub enum NodeResponse {
+    Create(StoredNode),
+    Update(StoredNode),
+    Delete(RuntimeDelete),
+    Find(RuntimeNodeFindResponse),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum EdgeRequest {
     Create(EdgeCreateRequest),
@@ -47,13 +71,22 @@ pub enum EdgeRequest {
     Find(EdgeFindRequest),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", content = "result", rename_all = "snake_case")]
+pub enum EdgeResponse {
+    Create(StoredRel),
+    Update(StoredRel),
+    Delete(RuntimeDelete),
+    Find(RuntimeEdgeFindResponse),
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeOperationOutcome<T> {
     pub value: T,
     pub durable_op: DurableOperation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeDelete {
     pub model: String,
     pub id: i64,

@@ -21,12 +21,13 @@ use crate::fsutil::{backup_path, write_file_atomically, write_file_atomically_wi
 use crate::runtime::durability;
 use crate::runtime::{
     AdminRequest, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
-    EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, FieldSpec, FieldValueType,
-    NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, OrderDirection,
-    PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest, RuntimeDelete,
-    RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
-    RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
-    TraversalDirection, TraversalReturn,
+    EdgeFindRequest, EdgeRequest, EdgeResponse, EdgeUpdateRequest, ExplainRequest, FieldSpec,
+    FieldValueType, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeRequest,
+    NodeResponse, NodeUpdateRequest, OrderDirection, PredicateOp, ProfileRequest,
+    PropertyPredicate, QueryRequest, RuntimeDelete, RuntimeEdgeDeleteOutcome,
+    RuntimeEdgeFindResponse, RuntimeEdgeOutcome, RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse,
+    RuntimeNodeOutcome, RuntimeOperationOutcome, RuntimeRequest, RuntimeResponse, SchemaRequest,
+    SchemaResponse, TraversalDirection, TraversalReturn,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -345,6 +346,92 @@ impl SessionState {
             .backend()
             .replace_store(snapshot.client.backend().snapshot_store());
         self.catalog = snapshot.catalog;
+    }
+
+    /// Execute the structured runtime request slice intended for future service callers.
+    ///
+    /// This dispatcher currently returns values only. Callers that need persistence
+    /// metadata should keep using the `apply_*` helpers until the runtime boundary
+    /// grows a durable outcome shape.
+    pub async fn execute_runtime(&mut self, request: RuntimeRequest) -> Result<RuntimeResponse> {
+        match request {
+            RuntimeRequest::Schema(request) => self.execute_schema_request(request),
+            RuntimeRequest::Node(request) => self.execute_node_request(request).await,
+            RuntimeRequest::Edge(request) => self.execute_edge_request(request).await,
+            RuntimeRequest::Query(request) => self.execute_query_request(request).await,
+            RuntimeRequest::Explain(_) => Err(crate::GrmError::NotSupported(
+                "runtime dispatcher does not support explain requests yet",
+            )),
+            RuntimeRequest::Profile(_) => Err(crate::GrmError::NotSupported(
+                "runtime dispatcher does not support profile requests yet",
+            )),
+            RuntimeRequest::Batch(_) => Err(crate::GrmError::NotSupported(
+                "runtime dispatcher does not support batch requests yet",
+            )),
+            RuntimeRequest::Admin(_) => Err(crate::GrmError::NotSupported(
+                "runtime dispatcher does not support admin requests",
+            )),
+        }
+    }
+
+    fn execute_schema_request(&mut self, request: SchemaRequest) -> Result<RuntimeResponse> {
+        let response = match request {
+            SchemaRequest::DefineNode(request) => {
+                SchemaResponse::DefineNode(self.apply_define_node(request)?.value)
+            }
+            SchemaRequest::DefineEdge(request) => {
+                SchemaResponse::DefineEdge(self.apply_define_edge(request)?.value)
+            }
+        };
+        Ok(RuntimeResponse::Schema(response))
+    }
+
+    async fn execute_node_request(&self, request: NodeRequest) -> Result<RuntimeResponse> {
+        let response = match request {
+            NodeRequest::Create(request) => {
+                NodeResponse::Create(self.apply_node_create(request).await?.value)
+            }
+            NodeRequest::Update(request) => {
+                NodeResponse::Update(self.apply_node_update(request).await?.value)
+            }
+            NodeRequest::Delete(request) => {
+                NodeResponse::Delete(self.apply_node_delete(request).await?.value)
+            }
+            NodeRequest::Find(request) => {
+                NodeResponse::Find(self.node_find_response(request).await?)
+            }
+        };
+        Ok(RuntimeResponse::Node(response))
+    }
+
+    async fn execute_edge_request(&self, request: EdgeRequest) -> Result<RuntimeResponse> {
+        let response = match request {
+            EdgeRequest::Create(request) => {
+                EdgeResponse::Create(self.apply_edge_create(request).await?.value)
+            }
+            EdgeRequest::Update(request) => {
+                EdgeResponse::Update(self.apply_edge_update(request).await?.value)
+            }
+            EdgeRequest::Delete(request) => {
+                EdgeResponse::Delete(self.apply_edge_delete(request).await?.value)
+            }
+            EdgeRequest::Find(request) => EdgeResponse::Find(self.edge_find_response(request)?),
+        };
+        Ok(RuntimeResponse::Edge(response))
+    }
+
+    async fn execute_query_request(&self, request: QueryRequest) -> Result<RuntimeResponse> {
+        match request {
+            QueryRequest::NodeFind(request) => Ok(RuntimeResponse::Node(NodeResponse::Find(
+                self.node_find_response(request).await?,
+            ))),
+            QueryRequest::EdgeFind(request) => Ok(RuntimeResponse::Edge(EdgeResponse::Find(
+                self.edge_find_response(request)?,
+            ))),
+            QueryRequest::Traversal(_) => Err(crate::GrmError::NotSupported(
+                "runtime dispatcher does not support traversal query requests yet",
+            )),
+        }
     }
 
     pub fn catalog(&self) -> &SessionModelCatalog {
