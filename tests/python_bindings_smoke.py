@@ -63,6 +63,11 @@ def main() -> None:
         carol = session.node_create("User", {"name": "Carol", "age": 36})
         knows_bob = session.edge_create("Knows", user["id"], bob["id"], {"since": 2020})
         knows_carol = session.edge_create("Knows", bob["id"], carol["id"], {"since": 2021})
+        ordered_users = session.node_find(
+            "User", {"age>": 35, "order": "age:asc", "limit": 1}
+        )
+        assert [node["props"]["name"] for node in ordered_users] == ["Carol"]
+        assert session.edge_find("Knows", {"from": user["id"]})[0]["id"] == knows_bob["id"]
 
         same_path_reopened = Session(
             autocommit=True,
