@@ -3,11 +3,11 @@ use std::io::Cursor;
 
 use grm_rs::{
     CliSession, DefineEdgeRequest, DefineNodeRequest, DurableOperation, EdgeCreateRequest,
-    EdgeDeleteRequest, EdgeUpdateRequest, FieldSpec, FieldValueType, GraphTx, GrmError,
-    KernelValue, Neo4jTx, NodeCreateRequest, NodeDeleteRequest, NodeUpdateRequest, RuntimeField,
-    RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionBatchEndpoint,
-    SessionBatchFieldParam, SessionBatchOp, SessionBatchParams, SessionBatchResponse, StoredNode,
-    StoredRel, apply_session_batch,
+    EdgeDeleteRequest, EdgeFindRequest, EdgeUpdateRequest, FieldSpec, FieldValueType, GraphTx,
+    GrmError, KernelValue, Neo4jTx, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest,
+    NodeUpdateRequest, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
+    SessionBatchEndpoint, SessionBatchFieldParam, SessionBatchOp, SessionBatchParams,
+    SessionBatchResponse, StoredNode, StoredRel, apply_session_batch,
     client::Transaction,
     runtime::{SessionCommand, parse_command_line},
 };
@@ -260,9 +260,13 @@ impl GrmMcpServer {
         }
 
         self.with_state_mut(false, async |state| {
-            let filters = value_map_to_raw(params.filters)?;
-            let nodes = state.find_nodes(&params.model, &filters)?;
-            Ok(json!({ "model": params.model, "nodes": nodes }))
+            let response = state
+                .node_find_response(NodeFindRequest::from_adapter_filter_values(
+                    params.model,
+                    params.filters,
+                )?)
+                .await?;
+            serde_json::to_value(response).map_err(json_error)
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))
@@ -356,9 +360,10 @@ impl GrmMcpServer {
         }
 
         self.with_state_mut(false, async |state| {
-            let filters = value_map_to_raw(params.filters)?;
-            let edges = state.find_relationships(&params.model, &filters)?;
-            Ok(json!({ "model": params.model, "edges": edges }))
+            let response = state.edge_find_response(
+                EdgeFindRequest::from_adapter_filter_values(params.model, params.filters)?,
+            )?;
+            serde_json::to_value(response).map_err(json_error)
         })
         .await
         .and_then(|value| Ok(Json(to_object(value)?)))

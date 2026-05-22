@@ -1567,6 +1567,167 @@ fn typed_batch_request_has_flat_ordered_batch_shape() {
 }
 
 #[tokio::test]
+async fn runtime_node_find_response_uses_structured_request_fields() {
+    let mut state = SessionState::new();
+    state
+        .define_node(DefineNodeRequest {
+            name: "User".to_string(),
+            id_field: "userId".to_string(),
+            fields: vec![
+                FieldSpec {
+                    name: "name".to_string(),
+                    value_type: FieldValueType::String,
+                    required: true,
+                },
+                FieldSpec {
+                    name: "age".to_string(),
+                    value_type: FieldValueType::Int,
+                    required: true,
+                },
+            ],
+        })
+        .unwrap();
+
+    for (name, age) in [("Alice", 42), ("Bob", 37), ("Carol", 31)] {
+        state
+            .node_create(grm_rs::NodeCreateRequest {
+                model: "User".to_string(),
+                props: BTreeMap::from([
+                    ("name".to_string(), json!(name)),
+                    ("age".to_string(), json!(age)),
+                ]),
+            })
+            .await
+            .unwrap();
+    }
+
+    let response = state
+        .node_find_response(grm_rs::NodeFindRequest {
+            model: "User".to_string(),
+            predicates: vec![PropertyPredicate {
+                field: "age".to_string(),
+                op: PredicateOp::Gt,
+                value: json!(35),
+            }],
+            order: vec![grm_rs::OrderSpec {
+                field: "age".to_string(),
+                direction: grm_rs::OrderDirection::Asc,
+            }],
+            limit: Some(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(response.model, "User");
+    assert_eq!(response.nodes.len(), 1);
+    assert_eq!(response.nodes[0].props["name"], json!("Bob"));
+}
+
+#[tokio::test]
+async fn runtime_edge_find_response_uses_structured_request_fields() {
+    let mut state = SessionState::new();
+    state
+        .define_node(DefineNodeRequest {
+            name: "User".to_string(),
+            id_field: "userId".to_string(),
+            fields: vec![],
+        })
+        .unwrap();
+    state
+        .define_node(DefineNodeRequest {
+            name: "Post".to_string(),
+            id_field: "postId".to_string(),
+            fields: vec![],
+        })
+        .unwrap();
+    state
+        .define_edge(DefineEdgeRequest {
+            name: "Authored".to_string(),
+            from_model: "User".to_string(),
+            to_model: "Post".to_string(),
+            id_field: "authoredId".to_string(),
+            fields: vec![FieldSpec {
+                name: "year".to_string(),
+                value_type: FieldValueType::Int,
+                required: true,
+            }],
+        })
+        .unwrap();
+
+    let user = state
+        .node_create(grm_rs::NodeCreateRequest {
+            model: "User".to_string(),
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+    let post = state
+        .node_create(grm_rs::NodeCreateRequest {
+            model: "Post".to_string(),
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+    state
+        .edge_create(grm_rs::EdgeCreateRequest {
+            model: "Authored".to_string(),
+            from: user.id,
+            to: post.id,
+            props: BTreeMap::from([("year".to_string(), json!(2026))]),
+        })
+        .await
+        .unwrap();
+
+    let response = state
+        .edge_find_response(grm_rs::EdgeFindRequest {
+            model: "Authored".to_string(),
+            from: Some(user.id),
+            predicates: vec![PropertyPredicate {
+                field: "year".to_string(),
+                op: PredicateOp::Eq,
+                value: json!(2026),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert_eq!(response.model, "Authored");
+    assert_eq!(response.edges.len(), 1);
+    assert_eq!(response.edges[0].to, post.id);
+}
+
+#[test]
+fn adapter_filter_values_build_structured_find_requests() {
+    let node = grm_rs::NodeFindRequest::from_adapter_filter_values(
+        "User",
+        BTreeMap::from([
+            ("age>".to_string(), json!(35)),
+            ("order".to_string(), json!("age:asc")),
+            ("limit".to_string(), json!(1)),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(node.model, "User");
+    assert_eq!(node.predicates[0].field, "age");
+    assert_eq!(node.predicates[0].op, PredicateOp::Gt);
+    assert_eq!(node.order[0].field, "age");
+    assert_eq!(node.limit, Some(1));
+
+    let edge = grm_rs::EdgeFindRequest::from_adapter_filter_values(
+        "Authored",
+        BTreeMap::from([
+            ("from".to_string(), json!(7)),
+            ("year<=".to_string(), json!(2026)),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(edge.from, Some(7));
+    assert_eq!(edge.predicates[0].field, "year");
+    assert_eq!(edge.predicates[0].op, PredicateOp::Le);
+}
+
+#[tokio::test]
 async fn session_explain_and_profile_edge_find_render_logical_plan() {
     let input = Cursor::new(
         "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Alice\nnode.create Post title=Hello\nedge.create Authored from=1 to=2 year=2024\nsession.explain edge.find Authored from=1\nsession.profile --verbose edge.find Authored from=1\nsession.exit\n",

@@ -23,9 +23,10 @@ pub use ops::{
     ExplainRequest, ExportRequest, FieldSpec, FieldValueType, ImportRequest, LoadRequest,
     NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeRequest, NodeUpdateRequest,
     OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
-    RuntimeDelete, RuntimeEdgeDeleteOutcome, RuntimeEdgeOutcome, RuntimeNodeDeleteOutcome,
-    RuntimeNodeOutcome, RuntimeOperationOutcome, RuntimeRequest, SaveRequest, SchemaRequest,
-    TraversalDirection, TraversalRequest, TraversalReturn, TraversalStepRequest,
+    RuntimeDelete, RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
+    RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
+    RuntimeRequest, SaveRequest, SchemaRequest, TraversalDirection, TraversalRequest,
+    TraversalReturn, TraversalStepRequest,
 };
 pub use parser::{
     KeyValueArg, QueryTerm, SessionCommand, parse_command_line, parse_query_terms_from_strs,
