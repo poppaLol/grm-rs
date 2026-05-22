@@ -296,7 +296,9 @@ impl PySession {
                 py,
                 self.state
                     .execute_runtime(RuntimeRequest::Query(QueryRequest::NodeFind(request))),
-            )? {
+            )?
+            .response
+            {
                 RuntimeResponse::Node(NodeResponse::Find(response)) => response,
                 _ => {
                     return Err(grm_err(grm_rs::GrmError::NotSupported(
@@ -517,7 +519,9 @@ impl PySession {
             py,
             self.state
                 .execute_runtime(RuntimeRequest::Query(QueryRequest::EdgeFind(request))),
-        )? {
+        )?
+        .response
+        {
             RuntimeResponse::Edge(EdgeResponse::Find(response)) => response,
             _ => {
                 return Err(grm_err(grm_rs::GrmError::NotSupported(

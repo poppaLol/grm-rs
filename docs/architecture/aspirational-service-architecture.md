@@ -105,9 +105,9 @@ GRM is currently converging on a service-hostable runtime core:
   schema, node, edge, and simple find/query paths.
 - CLI, Python, and MCP are moving toward adapter roles that parse friendly
   inputs and call shared runtime behavior.
-- Shared mutation helpers such as `apply_node_create`,
-  `apply_node_update`, `apply_edge_create`, and related delete/update helpers
-  remain the durability-aware paths for write adapters.
+- `SessionState::execute_runtime` returns durable operation metadata for
+  schema, node, and edge mutations while read paths return an empty durable
+  operation list.
 - Explain/profile and index catalog work make query behavior visible enough to
   demo and eventually sell.
 - WAL/checkpoint work has established local durability foundations, but claims
@@ -207,11 +207,10 @@ Progress to avoid:
 ## Near-Term Sequence
 
 1. Finish adapter routing through typed runtime paths where safe.
-2. Decide the durable outcome shape for dispatcher-backed writes.
-3. Add the service API proto crate or design skeleton.
-4. Add mapping tests between protobuf messages and runtime request/response
+2. Add the service API proto crate or design skeleton.
+3. Add mapping tests between protobuf messages and runtime request/response
    types.
-5. Add a minimal daemon only after transport, security posture, durability
+4. Add a minimal daemon only after transport, security posture, durability
    claims, and authorization boundaries are clear enough to review.
 
 The daemon is not the next architectural proof. The next proof is that all
@@ -233,4 +232,3 @@ work and answer:
 - which roadmap item the change advances
 - whether the change is cleanup, new product behavior, or service design
 - what tests prove progress at the right ownership boundary
-

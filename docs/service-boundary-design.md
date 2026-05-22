@@ -321,10 +321,11 @@ introducing a separate textual service language.
 This convergence matters because it gives GRM one core behavior contract across
 embedded Rust, CLI, Python, MCP, and hosted/service mode.
 
-## Recommended Next PR
+## Recommended Near-Term PR
 
-The next implementation PR after this design spike should add a service API
-crate, likely named `grm-proto` or `grm-service-api`.
+After the runtime dispatcher exposes durable mutation outcomes, a follow-up
+implementation PR should add a service API crate, likely named `grm-proto` or
+`grm-service-api`.
 
 Recommended scope:
 
