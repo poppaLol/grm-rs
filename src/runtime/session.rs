@@ -24,8 +24,9 @@ use crate::runtime::{
     EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, FieldSpec, FieldValueType,
     NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, OrderDirection,
     PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest, RuntimeDelete,
-    RuntimeEdgeDeleteOutcome, RuntimeEdgeOutcome, RuntimeNodeDeleteOutcome, RuntimeNodeOutcome,
-    RuntimeOperationOutcome, TraversalDirection, TraversalReturn,
+    RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
+    RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
+    TraversalDirection, TraversalReturn,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -1061,6 +1062,19 @@ impl SessionState {
         }
     }
 
+    pub async fn node_find_response(
+        &self,
+        request: NodeFindRequest,
+    ) -> Result<RuntimeNodeFindResponse> {
+        let model = request.model.clone();
+        match self.node_find(request).await? {
+            SessionFindResult::Nodes(nodes) => Ok(RuntimeNodeFindResponse { model, nodes }),
+            SessionFindResult::Edges(_) => Err(crate::GrmError::NotSupported(
+                "edge return mode is not supported by node find responses",
+            )),
+        }
+    }
+
     pub async fn find_nodes_with_terms(
         &self,
         model_name: &str,
@@ -1105,6 +1119,12 @@ impl SessionState {
     pub fn edge_find(&self, request: EdgeFindRequest) -> Result<Vec<StoredRel>> {
         let query = self.edge_find_query_from_request(&request)?;
         self.find_relationships_with_query(&request.model, &query)
+    }
+
+    pub fn edge_find_response(&self, request: EdgeFindRequest) -> Result<RuntimeEdgeFindResponse> {
+        let model = request.model.clone();
+        let edges = self.edge_find(request)?;
+        Ok(RuntimeEdgeFindResponse { model, edges })
     }
 
     pub fn explain(&self, request: ExplainRequest) -> Result<Value> {

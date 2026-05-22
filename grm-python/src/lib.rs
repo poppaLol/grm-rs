@@ -9,12 +9,12 @@ use std::path::PathBuf;
 use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
 use grm_rs::{
     apply_session_batch, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat, DurableOperation,
-    EdgeCreateRequest, EdgeDeleteRequest, EdgeUpdateRequest, ExplainRequest, FieldSpec,
-    FieldValueType, GraphClient, Neo4jBackend, Neo4jConfig, NodeCreateRequest, NodeDeleteRequest,
-    NodeFindRequest, NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp, ProfileRequest,
-    PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
-    RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState,
-    StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
+    EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeUpdateRequest, ExplainRequest,
+    FieldSpec, FieldValueType, GraphClient, Neo4jBackend, Neo4jConfig, NodeCreateRequest,
+    NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp,
+    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog,
+    SessionState, StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -286,13 +286,14 @@ impl PySession {
             || offset.is_some();
 
         if !has_structured_query {
-            let raw_filters = extract_string_map(filters)?;
-            let nodes = self
-                .state
-                .find_nodes(model_name, &raw_filters)
-                .map_err(grm_err)?;
+            let request = NodeFindRequest::from_adapter_filter_values(
+                model_name.to_string(),
+                extract_json_map(filters)?,
+            )
+            .map_err(grm_err)?;
+            let response = block_on(py, self.state.node_find_response(request))?;
             let items = PyList::empty_bound(py);
-            for node in nodes {
+            for node in response.nodes {
                 items.append(stored_node_to_py(py, &node)?)?;
             }
             return Ok(items.into());
@@ -495,13 +496,14 @@ impl PySession {
         model_name: &str,
         filters: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
-        let raw_filters = extract_string_map(filters)?;
-        let rels = self
-            .state
-            .find_relationships(model_name, &raw_filters)
-            .map_err(grm_err)?;
+        let request = EdgeFindRequest::from_adapter_filter_values(
+            model_name.to_string(),
+            extract_json_map(filters)?,
+        )
+        .map_err(grm_err)?;
+        let response = self.state.edge_find_response(request).map_err(grm_err)?;
         let items = PyList::empty_bound(py);
-        for rel in rels {
+        for rel in response.edges {
             items.append(stored_rel_to_py(py, &rel)?)?;
         }
         Ok(items.into())
