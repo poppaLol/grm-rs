@@ -65,6 +65,18 @@ pub type RuntimeNodeDeleteOutcome = RuntimeOperationOutcome<RuntimeDelete>;
 pub type RuntimeEdgeDeleteOutcome = RuntimeOperationOutcome<RuntimeDelete>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeNodeFindResponse {
+    pub model: String,
+    pub nodes: Vec<StoredNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeEdgeFindResponse {
+    pub model: String,
+    pub edges: Vec<StoredRel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "request", rename_all = "snake_case")]
 pub enum QueryRequest {
     NodeFind(NodeFindRequest),
@@ -151,6 +163,49 @@ pub struct NodeFindRequest {
     pub return_mode: Option<TraversalReturn>,
 }
 
+impl NodeFindRequest {
+    /// Build a structured request from the legacy/simple filter-map shape used by adapters.
+    ///
+    /// This preserves MCP/Python compatibility for keys like `age>`, `title~`, and
+    /// `order="age:asc"`. Future service boundaries should construct `NodeFindRequest`
+    /// directly with `predicates`, `order`, `limit`, `offset`, and `id`.
+    pub fn from_adapter_filter_values(
+        model: impl Into<String>,
+        filters: BTreeMap<String, Value>,
+    ) -> Result<Self> {
+        let mut request = Self {
+            model: model.into(),
+            ..Default::default()
+        };
+
+        for (raw_key, value) in filters {
+            let raw_value = value_to_raw(&value)?;
+            match raw_key.as_str() {
+                "format" => {}
+                "limit" => request.limit = Some(parse_usize_value(&raw_value, "limit")?),
+                "offset" => request.offset = Some(parse_usize_value(&raw_value, "offset")?),
+                "order" => request.order = parse_order_value(&raw_value)?,
+                key if key == "id" => request.id = Some(parse_i64_value(&raw_value, "id")?),
+                _ => {
+                    let (field, op) = split_filter_key(&raw_key)?;
+                    if field == "id" {
+                        return Err(GrmError::Constraint(
+                            "backend id filter 'id' only supports '='".into(),
+                        ));
+                    }
+                    request.predicates.push(PropertyPredicate {
+                        field: field.to_string(),
+                        op,
+                        value,
+                    });
+                }
+            }
+        }
+
+        Ok(request)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeCreateRequest {
     pub model: String,
@@ -191,6 +246,52 @@ pub struct EdgeFindRequest {
     pub from: Option<i64>,
     #[serde(default)]
     pub to: Option<i64>,
+}
+
+impl EdgeFindRequest {
+    /// Build a structured request from the legacy/simple filter-map shape used by adapters.
+    ///
+    /// This preserves MCP/Python compatibility for keys like `year>`, `from`, `to`,
+    /// and `order="year:desc"`. Future service boundaries should construct
+    /// `EdgeFindRequest` directly with `predicates`, `order`, `limit`, `offset`,
+    /// `id`, `from`, and `to`.
+    pub fn from_adapter_filter_values(
+        model: impl Into<String>,
+        filters: BTreeMap<String, Value>,
+    ) -> Result<Self> {
+        let mut request = Self {
+            model: model.into(),
+            ..Default::default()
+        };
+
+        for (raw_key, value) in filters {
+            let raw_value = value_to_raw(&value)?;
+            match raw_key.as_str() {
+                "format" => {}
+                "limit" => request.limit = Some(parse_usize_value(&raw_value, "limit")?),
+                "offset" => request.offset = Some(parse_usize_value(&raw_value, "offset")?),
+                "order" => request.order = parse_order_value(&raw_value)?,
+                "id" => request.id = Some(parse_i64_value(&raw_value, "id")?),
+                "from" => request.from = Some(parse_i64_value(&raw_value, "from")?),
+                "to" => request.to = Some(parse_i64_value(&raw_value, "to")?),
+                _ => {
+                    let (field, op) = split_filter_key(&raw_key)?;
+                    if field == "id" || field == "from" || field == "to" {
+                        return Err(GrmError::Constraint(format!(
+                            "special filter '{field}' only supports '='"
+                        )));
+                    }
+                    request.predicates.push(PropertyPredicate {
+                        field: field.to_string(),
+                        op,
+                        value,
+                    });
+                }
+            }
+        }
+
+        Ok(request)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,4 +472,81 @@ fn default_batch_atomic() -> bool {
 
 fn default_batch_response() -> SessionBatchResponse {
     SessionBatchResponse::Summary
+}
+
+fn split_filter_key(raw_key: &str) -> Result<(&str, PredicateOp)> {
+    for (suffix, op) in [
+        ("!", PredicateOp::Ne),
+        (">=", PredicateOp::Ge),
+        ("<=", PredicateOp::Le),
+        (">", PredicateOp::Gt),
+        ("<", PredicateOp::Lt),
+        ("~", PredicateOp::Contains),
+    ] {
+        if let Some(field) = raw_key.strip_suffix(suffix) {
+            if field.is_empty() {
+                break;
+            }
+            return Ok((field, op));
+        }
+    }
+
+    Ok((raw_key, PredicateOp::Eq))
+}
+
+fn parse_order_value(raw: &str) -> Result<Vec<OrderSpec>> {
+    let mut order = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for segment in raw.split(',') {
+        let Some((field, direction)) = segment.split_once(':') else {
+            return Err(GrmError::Constraint(
+                "order must use order=<field>:asc|desc[,<field>:asc|desc ...]".into(),
+            ));
+        };
+        if !seen.insert(field.to_string()) {
+            return Err(GrmError::Constraint(format!(
+                "duplicate order field '{field}'"
+            )));
+        }
+        let direction = match direction {
+            "asc" => OrderDirection::Asc,
+            "desc" => OrderDirection::Desc,
+            _ => {
+                return Err(GrmError::Constraint(
+                    "order direction must be asc or desc".into(),
+                ));
+            }
+        };
+        order.push(OrderSpec {
+            field: field.to_string(),
+            direction,
+        });
+    }
+    Ok(order)
+}
+
+fn parse_usize_value(raw: &str, field: &str) -> Result<usize> {
+    raw.trim()
+        .parse::<usize>()
+        .map_err(|_| GrmError::Constraint(format!("{field} must be a non-negative integer")))
+}
+
+fn parse_i64_value(raw: &str, field: &str) -> Result<i64> {
+    raw.trim()
+        .parse::<i64>()
+        .map_err(|_| GrmError::Constraint(format!("{field} must be an int id")))
+}
+
+fn value_to_raw(value: &Value) -> Result<String> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        Value::Number(value) => Ok(value.to_string()),
+        Value::Bool(value) => Ok(value.to_string()),
+        Value::Null => Err(GrmError::Constraint(
+            "null property values are not supported by runtime operations".into(),
+        )),
+        Value::Array(_) | Value::Object(_) => Err(GrmError::Constraint(
+            "structured property values are not supported by runtime operations".into(),
+        )),
+    }
 }
