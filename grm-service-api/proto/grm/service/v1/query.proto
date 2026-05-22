@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/common.proto";
+
+enum PredicateOp {
+  PREDICATE_OP_EQ = 0;
+  PREDICATE_OP_NE = 1;
+  PREDICATE_OP_GT = 2;
+  PREDICATE_OP_GE = 3;
+  PREDICATE_OP_LT = 4;
+  PREDICATE_OP_LE = 5;
+  PREDICATE_OP_CONTAINS = 6;
+}
+
+message PropertyPredicate {
+  string field = 1;
+  PredicateOp op = 2;
+  PropertyValue value = 3;
+}
+
+enum OrderDirection {
+  ORDER_DIRECTION_ASC = 0;
+  ORDER_DIRECTION_DESC = 1;
+}
+
+message OrderSpec {
+  string field = 1;
+  OrderDirection direction = 2;
+}
+
+enum TraversalDirection {
+  TRAVERSAL_DIRECTION_OUT = 0;
+  TRAVERSAL_DIRECTION_IN = 1;
+  TRAVERSAL_DIRECTION_BOTH = 2;
+}
+
+enum TraversalReturn {
+  TRAVERSAL_RETURN_END = 0;
+  TRAVERSAL_RETURN_ROOT = 1;
+  TRAVERSAL_RETURN_EDGE = 2;
+}
+
+message TraversalStep {
+  TraversalDirection direction = 1;
+  optional string edge_model = 2;
+  string end_model = 3;
+}
+
+message TraversalRequest {
+  NodeFindShape root = 1;
+}
+
+message NodeFindShape {
+  string model = 1;
+  repeated PropertyPredicate predicates = 2;
+  repeated PropertyPredicate end_predicates = 3;
+  repeated PropertyPredicate edge_predicates = 4;
+  repeated TraversalStep traversals = 5;
+  repeated OrderSpec order = 6;
+  optional uint64 limit = 7;
+  optional uint64 offset = 8;
+  optional int64 id = 9;
+  optional TraversalReturn return_mode = 10;
+}
+
+message QueryRequest {
+  oneof query {
+    NodeFindShape node_find = 1;
+    EdgeFindShape edge_find = 2;
+    TraversalRequest traversal = 3;
+  }
+}
+
+message EdgeFindShape {
+  string model = 1;
+  repeated PropertyPredicate predicates = 2;
+  repeated OrderSpec order = 3;
+  optional uint64 limit = 4;
+  optional uint64 offset = 5;
+  optional int64 id = 6;
+  optional int64 from = 7;
+  optional int64 to = 8;
+}
+
+message QueryResponse {
+  oneof result {
+    NodeSet nodes = 1;
+    EdgeSet edges = 2;
+  }
+}
+
+message NodeSet {
+  string model = 1;
+  repeated StoredNode nodes = 2;
+}
+
+message EdgeSet {
+  string model = 1;
+  repeated StoredEdge edges = 2;
+}
+
+message ExplainRequest {
+  QueryRequest query = 1;
+}
+
+message ExplainResponse {
+  string plan_kind = 1;
+  repeated string steps = 2;
+  repeated string indexes = 3;
+}
+
+message ProfileRequest {
+  QueryRequest query = 1;
+}
+
+message ProfileResponse {
+  ExplainResponse plan = 1;
+  uint64 row_count = 2;
+  uint64 elapsed_micros = 3;
+}

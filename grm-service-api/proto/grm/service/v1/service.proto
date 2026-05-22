@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/admin.proto";
+import "grm/service/v1/batch.proto";
+import "grm/service/v1/edge.proto";
+import "grm/service/v1/node.proto";
+import "grm/service/v1/query.proto";
+import "grm/service/v1/schema.proto";
+
+service GrmService {
+  rpc DefineNode(DefineNodeRequest) returns (DefineNodeResponse);
+  rpc DefineEdge(DefineEdgeRequest) returns (DefineEdgeResponse);
+  rpc SchemaList(SchemaListRequest) returns (SchemaListResponse);
+
+  rpc CreateNode(NodeCreateRequest) returns (NodeCreateResponse);
+  rpc UpdateNode(NodeUpdateRequest) returns (NodeUpdateResponse);
+  rpc DeleteNode(NodeDeleteRequest) returns (NodeDeleteResponse);
+  rpc FindNodes(NodeFindRequest) returns (NodeFindResponse);
+
+  rpc CreateEdge(EdgeCreateRequest) returns (EdgeCreateResponse);
+  rpc UpdateEdge(EdgeUpdateRequest) returns (EdgeUpdateResponse);
+  rpc DeleteEdge(EdgeDeleteRequest) returns (EdgeDeleteResponse);
+  rpc FindEdges(EdgeFindRequest) returns (EdgeFindResponse);
+
+  rpc Query(QueryRequest) returns (QueryResponse);
+  rpc Explain(ExplainRequest) returns (ExplainResponse);
+  rpc Profile(ProfileRequest) returns (ProfileResponse);
+  rpc ApplyBatch(BatchRequest) returns (BatchResponse);
+
+  rpc Save(SaveRequest) returns (SaveResponse);
+  rpc Load(LoadRequest) returns (LoadResponse);
+  rpc Export(ExportRequest) returns (ExportResponse);
+  rpc Import(ImportRequest) returns (ImportResponse);
+  rpc IndexList(IndexListRequest) returns (IndexListResponse);
+  rpc Summary(SummaryRequest) returns (SummaryResponse);
+}

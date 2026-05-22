@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+message PropertyValue {
+  oneof kind {
+    string string_value = 1;
+    int64 int_value = 2;
+    double float_value = 3;
+    bool bool_value = 4;
+  }
+}
+
+message Property {
+  string name = 1;
+  PropertyValue value = 2;
+}
+
+message PropertyMap {
+  repeated Property properties = 1;
+}
+
+enum FieldValueType {
+  FIELD_VALUE_TYPE_UNSPECIFIED = 0;
+  FIELD_VALUE_TYPE_STRING = 1;
+  FIELD_VALUE_TYPE_INT = 2;
+  FIELD_VALUE_TYPE_FLOAT = 3;
+  FIELD_VALUE_TYPE_BOOL = 4;
+}
+
+message FieldSpec {
+  string name = 1;
+  FieldValueType value_type = 2;
+  bool required = 3;
+}
+
+enum IdType {
+  ID_TYPE_UNSPECIFIED = 0;
+  ID_TYPE_INT64 = 1;
+}
+
+message NodeModel {
+  string name = 1;
+  string label = 2;
+  string id_field_name = 3;
+  IdType id_type = 4;
+  repeated FieldSpec fields = 5;
+}
+
+message EdgeModel {
+  string name = 1;
+  string rel_type = 2;
+  string from_model = 3;
+  string to_model = 4;
+  string id_field_name = 5;
+  IdType id_type = 6;
+  repeated FieldSpec fields = 7;
+}
+
+message StoredNode {
+  int64 id = 1;
+  repeated string labels = 2;
+  PropertyMap props = 3;
+}
+
+message StoredEdge {
+  int64 id = 1;
+  string rel_type = 2;
+  int64 from = 3;
+  int64 to = 4;
+  PropertyMap props = 5;
+}
+
+message DeleteResult {
+  string model = 1;
+  int64 id = 2;
+}
+
+message RuntimeError {
+  string code = 1;
+  string message = 2;
+  string recovery_hint = 3;
+}
+
+message DurableOperation {
+  oneof operation {
+    NodeModel register_node_model = 1;
+    EdgeModel register_edge_model = 2;
+    StoredNode upsert_node = 3;
+    int64 delete_node_id = 4;
+    StoredEdge upsert_edge = 5;
+    int64 delete_edge_id = 6;
+    DurableOperationBatch batch = 7;
+  }
+}
+
+message DurableOperationBatch {
+  repeated DurableOperation ops = 1;
+}
+
+message DurableMutationOutcome {
+  repeated DurableOperation durable_ops = 1;
+  uint32 durable_op_count = 2;
+  bool has_durable_mutation = 3;
+}
