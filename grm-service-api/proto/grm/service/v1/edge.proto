@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/common.proto";
+import "grm/service/v1/query.proto";
+
+message EdgeCreateRequest {
+  string model = 1;
+  int64 from = 2;
+  int64 to = 3;
+  PropertyMap props = 4;
+}
+
+message EdgeCreateResponse {
+  StoredEdge edge = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message EdgeUpdateRequest {
+  string model = 1;
+  int64 id = 2;
+  PropertyMap props = 3;
+}
+
+message EdgeUpdateResponse {
+  StoredEdge edge = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message EdgeDeleteRequest {
+  string model = 1;
+  int64 id = 2;
+}
+
+message EdgeDeleteResponse {
+  DeleteResult deleted = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message EdgeFindRequest {
+  string model = 1;
+  repeated PropertyPredicate predicates = 2;
+  repeated OrderSpec order = 3;
+  optional uint64 limit = 4;
+  optional uint64 offset = 5;
+  optional int64 id = 6;
+  optional int64 from = 7;
+  optional int64 to = 8;
+}
+
+message EdgeFindResponse {
+  string model = 1;
+  repeated StoredEdge edges = 2;
+}

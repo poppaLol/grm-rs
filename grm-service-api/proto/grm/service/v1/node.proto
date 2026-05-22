@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/common.proto";
+import "grm/service/v1/query.proto";
+
+message NodeCreateRequest {
+  string model = 1;
+  PropertyMap props = 2;
+}
+
+message NodeCreateResponse {
+  StoredNode node = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message NodeUpdateRequest {
+  string model = 1;
+  int64 id = 2;
+  PropertyMap props = 3;
+}
+
+message NodeUpdateResponse {
+  StoredNode node = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message NodeDeleteRequest {
+  string model = 1;
+  int64 id = 2;
+}
+
+message NodeDeleteResponse {
+  DeleteResult deleted = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message NodeFindRequest {
+  string model = 1;
+  repeated PropertyPredicate predicates = 2;
+  repeated PropertyPredicate end_predicates = 3;
+  repeated PropertyPredicate edge_predicates = 4;
+  repeated TraversalStep traversals = 5;
+  repeated OrderSpec order = 6;
+  optional uint64 limit = 7;
+  optional uint64 offset = 8;
+  optional int64 id = 9;
+  optional TraversalReturn return_mode = 10;
+}
+
+message NodeFindResponse {
+  string model = 1;
+  repeated StoredNode nodes = 2;
+}

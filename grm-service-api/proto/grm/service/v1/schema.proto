@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/common.proto";
+
+message DefineNodeRequest {
+  string name = 1;
+  string id_field = 2;
+  repeated FieldSpec fields = 3;
+}
+
+message DefineNodeResponse {
+  NodeModel model = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message DefineEdgeRequest {
+  string name = 1;
+  string from_model = 2;
+  string to_model = 3;
+  string id_field = 4;
+  repeated FieldSpec fields = 5;
+}
+
+message DefineEdgeResponse {
+  EdgeModel model = 1;
+  DurableMutationOutcome durability = 2;
+}
+
+message SchemaListRequest {}
+
+message SchemaListResponse {
+  repeated NodeModel node_models = 1;
+  repeated EdgeModel edge_models = 2;
+  IdType backend_id_type = 3;
+}
