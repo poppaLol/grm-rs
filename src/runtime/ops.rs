@@ -185,7 +185,7 @@ impl NodeFindRequest {
                 "limit" => request.limit = Some(parse_usize_value(&raw_value, "limit")?),
                 "offset" => request.offset = Some(parse_usize_value(&raw_value, "offset")?),
                 "order" => request.order = parse_order_value(&raw_value)?,
-                key if key == "id" => request.id = Some(parse_i64_value(&raw_value, "id")?),
+                "id" => request.id = Some(parse_i64_value(&raw_value, "id")?),
                 _ => {
                     let (field, op) = split_filter_key(&raw_key)?;
                     if field == "id" {
