@@ -9,12 +9,13 @@ use std::path::PathBuf;
 use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
 use grm_rs::{
     apply_session_batch, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat, DurableOperation,
-    EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeUpdateRequest, ExplainRequest,
-    FieldSpec, FieldValueType, GraphClient, Neo4jBackend, Neo4jConfig, NodeCreateRequest,
-    NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp,
-    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
-    RuntimeRelModel, RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog,
-    SessionState, StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
+    EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeResponse, EdgeUpdateRequest,
+    ExplainRequest, FieldSpec, FieldValueType, GraphClient, Neo4jBackend, Neo4jConfig,
+    NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeResponse, NodeUpdateRequest,
+    OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
+    QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest, RuntimeResponse,
+    RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState,
+    StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -265,7 +266,7 @@ impl PySession {
         reason = "PyO3 method signature mirrors the Python API keyword arguments"
     )]
     fn node_find(
-        &self,
+        &mut self,
         py: Python<'_>,
         model_name: &str,
         filters: Option<&Bound<'_, PyDict>>,
@@ -291,7 +292,18 @@ impl PySession {
                 extract_json_map(filters)?,
             )
             .map_err(grm_err)?;
-            let response = block_on(py, self.state.node_find_response(request))?;
+            let response = match block_on(
+                py,
+                self.state
+                    .execute_runtime(RuntimeRequest::Query(QueryRequest::NodeFind(request))),
+            )? {
+                RuntimeResponse::Node(NodeResponse::Find(response)) => response,
+                _ => {
+                    return Err(grm_err(grm_rs::GrmError::NotSupported(
+                        "runtime dispatcher returned unexpected node find response",
+                    )));
+                }
+            };
             let items = PyList::empty_bound(py);
             for node in response.nodes {
                 items.append(stored_node_to_py(py, &node)?)?;
@@ -491,7 +503,7 @@ impl PySession {
 
     #[pyo3(signature = (model_name, filters=None))]
     fn edge_find(
-        &self,
+        &mut self,
         py: Python<'_>,
         model_name: &str,
         filters: Option<&Bound<'_, PyDict>>,
@@ -501,7 +513,18 @@ impl PySession {
             extract_json_map(filters)?,
         )
         .map_err(grm_err)?;
-        let response = self.state.edge_find_response(request).map_err(grm_err)?;
+        let response = match block_on(
+            py,
+            self.state
+                .execute_runtime(RuntimeRequest::Query(QueryRequest::EdgeFind(request))),
+        )? {
+            RuntimeResponse::Edge(EdgeResponse::Find(response)) => response,
+            _ => {
+                return Err(grm_err(grm_rs::GrmError::NotSupported(
+                    "runtime dispatcher returned unexpected edge find response",
+                )));
+            }
+        };
         let items = PyList::empty_bound(py);
         for rel in response.edges {
             items.append(stored_rel_to_py(py, &rel)?)?;

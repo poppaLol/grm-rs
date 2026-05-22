@@ -3,11 +3,12 @@ use std::io::Cursor;
 
 use grm_rs::{
     CliSession, DefineEdgeRequest, DefineNodeRequest, DurableOperation, EdgeCreateRequest,
-    EdgeDeleteRequest, EdgeFindRequest, EdgeUpdateRequest, FieldSpec, FieldValueType, GraphTx,
-    GrmError, KernelValue, Neo4jTx, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest,
-    NodeUpdateRequest, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType,
-    SessionBatchEndpoint, SessionBatchFieldParam, SessionBatchOp, SessionBatchParams,
-    SessionBatchResponse, StoredNode, StoredRel, apply_session_batch,
+    EdgeDeleteRequest, EdgeFindRequest, EdgeResponse, EdgeUpdateRequest, FieldSpec, FieldValueType,
+    GraphTx, GrmError, KernelValue, Neo4jTx, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest,
+    NodeResponse, NodeUpdateRequest, QueryRequest, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
+    RuntimeRequest, RuntimeResponse, RuntimeValueType, SessionBatchEndpoint,
+    SessionBatchFieldParam, SessionBatchOp, SessionBatchParams, SessionBatchResponse, StoredNode,
+    StoredRel, apply_session_batch,
     client::Transaction,
     runtime::{SessionCommand, parse_command_line},
 };
@@ -260,12 +261,19 @@ impl GrmMcpServer {
         }
 
         self.with_state_mut(false, async |state| {
-            let response = state
-                .node_find_response(NodeFindRequest::from_adapter_filter_values(
-                    params.model,
-                    params.filters,
-                )?)
-                .await?;
+            let request =
+                NodeFindRequest::from_adapter_filter_values(params.model, params.filters)?;
+            let response = match state
+                .execute_runtime(RuntimeRequest::Query(QueryRequest::NodeFind(request)))
+                .await?
+            {
+                RuntimeResponse::Node(NodeResponse::Find(response)) => response,
+                _ => {
+                    return Err(GrmError::NotSupported(
+                        "runtime dispatcher returned unexpected node find response",
+                    ));
+                }
+            };
             serde_json::to_value(response).map_err(json_error)
         })
         .await
@@ -360,9 +368,19 @@ impl GrmMcpServer {
         }
 
         self.with_state_mut(false, async |state| {
-            let response = state.edge_find_response(
-                EdgeFindRequest::from_adapter_filter_values(params.model, params.filters)?,
-            )?;
+            let request =
+                EdgeFindRequest::from_adapter_filter_values(params.model, params.filters)?;
+            let response = match state
+                .execute_runtime(RuntimeRequest::Query(QueryRequest::EdgeFind(request)))
+                .await?
+            {
+                RuntimeResponse::Edge(EdgeResponse::Find(response)) => response,
+                _ => {
+                    return Err(GrmError::NotSupported(
+                        "runtime dispatcher returned unexpected edge find response",
+                    ));
+                }
+            };
             serde_json::to_value(response).map_err(json_error)
         })
         .await

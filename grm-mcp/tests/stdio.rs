@@ -320,6 +320,107 @@ async fn schema_define_tools_expose_structured_field_objects() {
 }
 
 #[tokio::test]
+async fn find_tools_accept_adapter_filters_through_public_mcp_surface() {
+    let client = client(&[]).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "User",
+            "id_field": "userId",
+            "fields": [
+                { "name": "name", "type": "string", "required": true },
+                { "name": "age", "type": "int", "required": true }
+            ]
+        }),
+    )
+    .await;
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Post",
+            "id_field": "postId",
+            "fields": [
+                { "name": "title", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+    call(
+        &client,
+        "grm_schema_define_edge",
+        json!({
+            "name": "Authored",
+            "from_model": "User",
+            "to_model": "Post",
+            "id_field": "authoredId",
+            "fields": [
+                { "name": "year", "type": "int", "required": true }
+            ]
+        }),
+    )
+    .await;
+
+    call(
+        &client,
+        "grm_node_create",
+        json!({ "model": "User", "props": { "name": "Alice", "age": 42 } }),
+    )
+    .await;
+    let bob = call(
+        &client,
+        "grm_node_create",
+        json!({ "model": "User", "props": { "name": "Bob", "age": 37 } }),
+    )
+    .await;
+    let post = call(
+        &client,
+        "grm_node_create",
+        json!({ "model": "Post", "props": { "title": "Hello" } }),
+    )
+    .await;
+    call(
+        &client,
+        "grm_edge_create",
+        json!({
+            "model": "Authored",
+            "from": bob["id"],
+            "to": post["id"],
+            "props": { "year": 2026 }
+        }),
+    )
+    .await;
+
+    let found_nodes = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "User",
+            "filters": { "age>": 35, "order": "age:asc", "limit": 1 }
+        }),
+    )
+    .await;
+    assert_eq!(found_nodes["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(found_nodes["nodes"][0]["props"]["name"], json!("Bob"));
+
+    let found_edges = call(
+        &client,
+        "grm_edge_find",
+        json!({
+            "model": "Authored",
+            "filters": { "from": bob["id"], "year": 2026 }
+        }),
+    )
+    .await;
+    assert_eq!(found_edges["edges"].as_array().unwrap().len(), 1);
+    assert_eq!(found_edges["edges"][0]["to"], post["id"]);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn batch_tool_exposes_structured_operation_objects() {
     let client = client(&[]).await;
     let tools = client.list_tools(None).await.expect("list tools");
