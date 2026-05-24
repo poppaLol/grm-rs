@@ -636,6 +636,7 @@ dependencies = [
  "protoc-bin-vendored",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

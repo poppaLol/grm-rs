@@ -4,6 +4,7 @@ use grm_rs::{
     BatchRequest, DurableOperation, EdgeRequest, NodeRequest, QueryRequest, RuntimeDispatchOutcome,
     RuntimeRequest, RuntimeResponse, SchemaRequest,
 };
+use grm_service_api as svc;
 use grm_service_api::{PROTO_FILES, proto_files};
 use serde_json::json;
 
@@ -201,6 +202,134 @@ fn runtime_family_mapping_notes_stay_true_for_public_types() {
     assert_eq!(mapped, ["schema", "node", "edge", "query", "batch"]);
 }
 
+#[tokio::test]
+async fn service_shaped_schema_request_executes_through_runtime_dispatcher() {
+    let mut state = grm_rs::SessionState::new();
+
+    let outcome = svc::ServiceRequest::DefineNode(svc::DefineNodeRequest {
+        name: "User".into(),
+        id_field: "userId".into(),
+        fields: vec![svc::FieldSpec {
+            name: "name".into(),
+            value_type: svc::FieldValueType::String,
+            required: true,
+        }],
+    })
+    .execute(&mut state)
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        outcome.response,
+        RuntimeResponse::Schema(grm_rs::SchemaResponse::DefineNode(model))
+            if model.name == "User" && model.fields[0].name == "name"
+    ));
+    assert!(matches!(
+        outcome.durable_ops.as_slice(),
+        [DurableOperation::RegisterNodeModel { model }] if model.name == "User"
+    ));
+}
+
+#[tokio::test]
+async fn service_shaped_node_and_edge_requests_execute_through_runtime_dispatcher() {
+    let mut state = grm_rs::SessionState::new();
+    define_user_post_schema(&mut state).await;
+
+    let user_outcome = svc::ServiceRequest::CreateNode(svc::NodeCreateRequest {
+        model: "User".into(),
+        props: property_map([("name", svc::PropertyValue::String("Ada".into()))]),
+    })
+    .execute(&mut state)
+    .await
+    .unwrap();
+    let RuntimeResponse::Node(grm_rs::NodeResponse::Create(user)) = user_outcome.response else {
+        panic!("expected node create response");
+    };
+    assert!(matches!(
+        user_outcome.durable_ops.as_slice(),
+        [DurableOperation::UpsertNode { node }] if node.id == user.id
+    ));
+
+    let post_outcome = svc::ServiceRequest::CreateNode(svc::NodeCreateRequest {
+        model: "Post".into(),
+        props: property_map([]),
+    })
+    .execute(&mut state)
+    .await
+    .unwrap();
+    let RuntimeResponse::Node(grm_rs::NodeResponse::Create(post)) = post_outcome.response else {
+        panic!("expected node create response");
+    };
+
+    let edge_outcome = svc::ServiceRequest::CreateEdge(svc::EdgeCreateRequest {
+        model: "Authored".into(),
+        from: user.id,
+        to: post.id,
+        props: property_map([("year", svc::PropertyValue::Int(2026))]),
+    })
+    .execute(&mut state)
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        edge_outcome.response,
+        RuntimeResponse::Edge(grm_rs::EdgeResponse::Create(edge))
+            if edge.from == user.id && edge.to == post.id
+    ));
+    assert!(matches!(
+        edge_outcome.durable_ops.as_slice(),
+        [DurableOperation::UpsertRel { rel }] if rel.rel_type == "Authored"
+    ));
+
+    let found = svc::ServiceRequest::FindEdges(svc::EdgeFindRequest {
+        model: "Authored".into(),
+        predicates: Vec::new(),
+        order: Vec::new(),
+        limit: None,
+        offset: None,
+        id: None,
+        from: Some(user.id),
+        to: Some(post.id),
+    })
+    .execute(&mut state)
+    .await
+    .unwrap();
+    assert!(matches!(
+        found.response,
+        RuntimeResponse::Edge(grm_rs::EdgeResponse::Find(found))
+            if found.model == "Authored" && found.edges.len() == 1
+    ));
+    assert!(found.durable_ops.is_empty());
+}
+
+#[tokio::test]
+async fn service_shaped_unsupported_request_returns_explicit_runtime_error() {
+    let mut state = grm_rs::SessionState::new();
+
+    let err = svc::ServiceRequest::Explain(svc::ExplainRequest {
+        query: svc::QueryRequest {
+            query: svc::Query::NodeFind(svc::NodeFindShape {
+                model: "User".into(),
+                predicates: Vec::new(),
+                end_predicates: Vec::new(),
+                edge_predicates: Vec::new(),
+                traversals: Vec::new(),
+                order: Vec::new(),
+                limit: None,
+                offset: None,
+                id: None,
+                return_mode: None,
+            }),
+        },
+    })
+    .execute(&mut state)
+    .await
+    .unwrap_err();
+
+    assert!(matches!(err, grm_rs::GrmError::NotSupported(_)));
+    assert!(err.to_string().contains("explain requests yet"));
+}
+
 fn read_proto(relative: &str) -> String {
     fs::read_to_string(grm_service_api::proto_root().join(relative))
         .unwrap_or_else(|err| panic!("failed to read {relative}: {err}"))
@@ -224,4 +353,48 @@ fn message_body<'a>(proto: &'a str, message: &str) -> &'a str {
         .find("\n}")
         .unwrap_or_else(|| panic!("missing end for message {message}"));
     &rest[..end]
+}
+
+async fn define_user_post_schema(state: &mut grm_rs::SessionState) {
+    for request in [
+        svc::ServiceRequest::DefineNode(svc::DefineNodeRequest {
+            name: "User".into(),
+            id_field: "userId".into(),
+            fields: vec![svc::FieldSpec {
+                name: "name".into(),
+                value_type: svc::FieldValueType::String,
+                required: true,
+            }],
+        }),
+        svc::ServiceRequest::DefineNode(svc::DefineNodeRequest {
+            name: "Post".into(),
+            id_field: "postId".into(),
+            fields: Vec::new(),
+        }),
+        svc::ServiceRequest::DefineEdge(svc::DefineEdgeRequest {
+            name: "Authored".into(),
+            from_model: "User".into(),
+            to_model: "Post".into(),
+            id_field: "authoredId".into(),
+            fields: vec![svc::FieldSpec {
+                name: "year".into(),
+                value_type: svc::FieldValueType::Int,
+                required: true,
+            }],
+        }),
+    ] {
+        request.execute(state).await.unwrap();
+    }
+}
+
+fn property_map<const N: usize>(properties: [(&str, svc::PropertyValue); N]) -> svc::PropertyMap {
+    svc::PropertyMap {
+        properties: properties
+            .into_iter()
+            .map(|(name, value)| svc::Property {
+                name: name.to_string(),
+                value,
+            })
+            .collect(),
+    }
 }
