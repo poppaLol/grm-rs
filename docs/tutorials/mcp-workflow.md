@@ -324,10 +324,11 @@ molecules such as octane and benzene, citric acid atoms and bonds, and the
 payload with `grm_batch`.
 
 Neo4j mode supports this style of `grm_batch` with `atomic=true` for
-`node_create` and `edge_create` operations, including batch-local refs. It still
-does not support batch updates, deletes, snapshots, import/export, autocommit,
-explain/profile, or traversal/query parity. Graph durability comes from Neo4j;
-schema metadata remains session-local.
+`node_create`, `node_update`, `node_delete`, `edge_create`, `edge_update`, and
+`edge_delete` operations, including batch-local refs for creates. It still does
+not support snapshots, import/export, autocommit, explain/profile, or
+traversal/query parity. Graph durability comes from Neo4j; schema metadata
+remains session-local.
 
 A good agent response after the batch is:
 
