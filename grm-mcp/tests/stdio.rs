@@ -260,6 +260,30 @@ async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
     .await;
     assert_eq!(found_nodes["nodes"].as_array().unwrap().len(), 1);
 
+    call(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "GrmMcpSmokeUser",
+            "props": { "name": "Zoe", "smoke_id": smoke_id }
+        }),
+    )
+    .await;
+    let paged_nodes = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "GrmMcpSmokeUser",
+            "filters": { "smoke_id": smoke_id, "order": "userId:asc", "limit": 1 }
+        }),
+    )
+    .await;
+    assert_eq!(paged_nodes["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        paged_nodes["nodes"][0]["props"]["name"],
+        json!("Alice Updated")
+    );
+
     let updated_edge = call(
         &client,
         "grm_edge_update",
@@ -279,6 +303,17 @@ async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
     )
     .await;
     assert_eq!(found_edges["edges"].as_array().unwrap().len(), 1);
+
+    let paged_edges = call(
+        &client,
+        "grm_edge_find",
+        json!({
+            "model": "GRM_MCP_SMOKE_AUTHORED",
+            "filters": { "smoke_id": smoke_id, "order": "from:asc,to:asc", "limit": 1 }
+        }),
+    )
+    .await;
+    assert_eq!(paged_edges["edges"].as_array().unwrap().len(), 1);
 
     let delete_rejected = call(
         &client,

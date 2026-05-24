@@ -5,10 +5,10 @@ use grm_rs::{
     CliSession, DefineEdgeRequest, DefineNodeRequest, DurableOperation, EdgeCreateRequest,
     EdgeDeleteRequest, EdgeFindRequest, EdgeResponse, EdgeUpdateRequest, FieldSpec, FieldValueType,
     GraphTx, GrmError, KernelValue, Neo4jTx, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest,
-    NodeResponse, NodeUpdateRequest, QueryRequest, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
-    RuntimeRequest, RuntimeResponse, RuntimeValueType, SessionBatchEndpoint,
-    SessionBatchFieldParam, SessionBatchOp, SessionBatchParams, SessionBatchResponse, StoredNode,
-    StoredRel, apply_session_batch,
+    NodeResponse, NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp, PropertyPredicate,
+    QueryRequest, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest, RuntimeResponse,
+    RuntimeValueType, SessionBatchEndpoint, SessionBatchFieldParam, SessionBatchOp,
+    SessionBatchParams, SessionBatchResponse, StoredNode, StoredRel, apply_session_batch,
     client::Transaction,
     runtime::{SessionCommand, parse_command_line},
 };
@@ -824,34 +824,66 @@ impl GrmMcpServer {
     }
 
     async fn neo4j_node_find(&self, params: NodeFindParams) -> grm_rs::Result<Value> {
-        let raw = value_map_to_raw(params.filters)?;
-        let (label, id_filter, props) = {
+        let (request, label, predicates, order, id_field_name) = {
             let state = self.state.lock().await;
             let model = state
                 .catalog()
                 .get_node_model(&params.model)
                 .ok_or_else(|| missing_node_schema(&params.model))?
                 .clone();
-            let id_filter = parse_optional_id_filter(&raw, &model.id_field_name, "node")?;
-            let props = model_filters(&raw, &model.fields, &model.name, &[&model.id_field_name])?;
-            (model.label.clone(), id_filter, props)
+            let request = parse_neo4j_node_find_request(params, &model)?;
+            reject_neo4j_node_find_traversal(&request)?;
+            let predicates = typed_predicates(&request.predicates, &model.fields, &model.name)?;
+            validate_node_order_fields(&request.order, &model)?;
+            (
+                request.clone(),
+                model.label.clone(),
+                predicates,
+                request.order.clone(),
+                model.id_field_name.clone(),
+            )
         };
 
         let mut clauses = vec![format!("MATCH (n:{})", cypher_name(&label))];
         let mut params_json = serde_json::Map::new();
-        if let Some(id) = id_filter {
-            clauses.push("WHERE id(n) = $grm_id".to_string());
+        let mut cypher_predicates = Vec::new();
+        if let Some(id) = request.id {
+            cypher_predicates.push("id(n) = $grm_id".to_string());
             params_json.insert("grm_id".to_string(), Value::from(id));
         }
-        for (index, (key, value)) in props.into_iter().enumerate() {
-            clauses.push(if index == 0 && id_filter.is_none() {
-                format!("WHERE n.{} = $p{index}", cypher_name(&key))
-            } else {
-                format!("AND n.{} = $p{index}", cypher_name(&key))
-            });
+        for (index, (predicate, value)) in predicates.into_iter().enumerate() {
+            cypher_predicates.push(format!(
+                "n.{} {} $p{index}",
+                cypher_name(&predicate.field),
+                cypher_predicate_op(predicate.op)
+            ));
             params_json.insert(format!("p{index}"), value);
         }
+        if !cypher_predicates.is_empty() {
+            clauses.push(format!("WHERE {}", cypher_predicates.join(" AND ")));
+        }
         clauses.push("RETURN n".to_string());
+        if !order.is_empty() {
+            let terms = order
+                .into_iter()
+                .map(|spec| {
+                    format!(
+                        "{} {}",
+                        cypher_node_order_expression(&spec, &id_field_name),
+                        cypher_order_direction(spec.direction)
+                    )
+                })
+                .collect::<Vec<_>>();
+            clauses.push(format!("ORDER BY {}", terms.join(", ")));
+        }
+        if let Some(offset) = request.offset {
+            clauses.push("SKIP $grm_offset".to_string());
+            params_json.insert("grm_offset".to_string(), Value::from(offset as i64));
+        }
+        if let Some(limit) = request.limit {
+            clauses.push("LIMIT $grm_limit".to_string());
+            params_json.insert("grm_limit".to_string(), Value::from(limit as i64));
+        }
 
         let mut tx = self.neo4j_client()?.transaction().await?;
         let result = tx
@@ -875,59 +907,77 @@ impl GrmMcpServer {
                 )),
             })
             .collect::<grm_rs::Result<Vec<_>>>()?;
-        Ok(json!({ "model": params.model, "nodes": nodes }))
+        Ok(json!({ "model": request.model, "nodes": nodes }))
     }
 
     async fn neo4j_edge_find(&self, params: EdgeFindParams) -> grm_rs::Result<Value> {
-        let raw = value_map_to_raw(params.filters)?;
-        let (rel_type, id_filter, from_filter, to_filter, props) = {
+        let (request, rel_type, edge_predicates, order, id_field_name) = {
             let state = self.state.lock().await;
             let model = state
                 .catalog()
                 .get_rel_model(&params.model)
                 .ok_or_else(|| missing_edge_schema(&params.model))?
                 .clone();
-            let id_filter = parse_optional_id_filter(&raw, &model.id_field_name, "edge")?;
-            let from_filter = parse_named_id_filter(&raw, "from")?;
-            let to_filter = parse_named_id_filter(&raw, "to")?;
-            let props = model_filters(
-                &raw,
-                &model.fields,
-                &model.name,
-                &[&model.id_field_name, "from", "to"],
-            )?;
+            let request = parse_neo4j_edge_find_request(params, &model)?;
+            let predicates = typed_predicates(&request.predicates, &model.fields, &model.name)?;
+            validate_edge_order_fields(&request.order, &model)?;
             (
+                request.clone(),
                 model.rel_type.clone(),
-                id_filter,
-                from_filter,
-                to_filter,
-                props,
+                predicates,
+                request.order.clone(),
+                model.id_field_name.clone(),
             )
         };
 
         let mut clauses = vec![format!("MATCH ()-[r:{}]->()", cypher_name(&rel_type))];
         let mut params_json = serde_json::Map::new();
         let mut predicates = Vec::new();
-        if let Some(id) = id_filter {
+        if let Some(id) = request.id {
             predicates.push("id(r) = $grm_id".to_string());
             params_json.insert("grm_id".to_string(), Value::from(id));
         }
-        if let Some(id) = from_filter {
+        if let Some(id) = request.from {
             predicates.push("id(startNode(r)) = $from_id".to_string());
             params_json.insert("from_id".to_string(), Value::from(id));
         }
-        if let Some(id) = to_filter {
+        if let Some(id) = request.to {
             predicates.push("id(endNode(r)) = $to_id".to_string());
             params_json.insert("to_id".to_string(), Value::from(id));
         }
-        for (index, (key, value)) in props.into_iter().enumerate() {
-            predicates.push(format!("r.{} = $p{index}", cypher_name(&key)));
+        for (index, (predicate, value)) in edge_predicates.into_iter().enumerate() {
+            predicates.push(format!(
+                "r.{} {} $p{index}",
+                cypher_name(&predicate.field),
+                cypher_predicate_op(predicate.op)
+            ));
             params_json.insert(format!("p{index}"), value);
         }
         if !predicates.is_empty() {
             clauses.push(format!("WHERE {}", predicates.join(" AND ")));
         }
         clauses.push("RETURN r".to_string());
+        if !order.is_empty() {
+            let terms = order
+                .into_iter()
+                .map(|spec| {
+                    format!(
+                        "{} {}",
+                        cypher_edge_order_expression(&spec, &id_field_name),
+                        cypher_order_direction(spec.direction)
+                    )
+                })
+                .collect::<Vec<_>>();
+            clauses.push(format!("ORDER BY {}", terms.join(", ")));
+        }
+        if let Some(offset) = request.offset {
+            clauses.push("SKIP $grm_offset".to_string());
+            params_json.insert("grm_offset".to_string(), Value::from(offset as i64));
+        }
+        if let Some(limit) = request.limit {
+            clauses.push("LIMIT $grm_limit".to_string());
+            params_json.insert("grm_limit".to_string(), Value::from(limit as i64));
+        }
 
         let mut tx = self.neo4j_client()?.transaction().await?;
         let result = tx
@@ -953,27 +1003,181 @@ impl GrmMcpServer {
                 )),
             })
             .collect::<grm_rs::Result<Vec<_>>>()?;
-        Ok(json!({ "model": params.model, "edges": edges }))
+        Ok(json!({ "model": request.model, "edges": edges }))
     }
 }
 
-fn parse_optional_id_filter(
-    raw: &BTreeMap<String, String>,
+fn parse_neo4j_node_find_request(
+    params: NodeFindParams,
+    model: &RuntimeNodeModel,
+) -> grm_rs::Result<NodeFindRequest> {
+    let mut filters = params.filters;
+    let model_id = remove_model_id_alias(&mut filters, &model.id_field_name)?;
+    let mut request = NodeFindRequest::from_adapter_filter_values(params.model, filters)?;
+    merge_model_id_alias(&mut request.id, model_id, "node", &model.id_field_name)?;
+    Ok(request)
+}
+
+fn parse_neo4j_edge_find_request(
+    params: EdgeFindParams,
+    model: &RuntimeRelModel,
+) -> grm_rs::Result<EdgeFindRequest> {
+    let mut filters = params.filters;
+    let model_id = remove_model_id_alias(&mut filters, &model.id_field_name)?;
+    let mut request = EdgeFindRequest::from_adapter_filter_values(params.model, filters)?;
+    merge_model_id_alias(&mut request.id, model_id, "edge", &model.id_field_name)?;
+    Ok(request)
+}
+
+fn remove_model_id_alias(
+    filters: &mut BTreeMap<String, Value>,
     id_field_name: &str,
-    subject: &str,
 ) -> grm_rs::Result<Option<i64>> {
-    let id = parse_named_id_filter(raw, "id")?;
-    let model_id = if id_field_name == "id" {
-        None
-    } else {
-        parse_named_id_filter(raw, id_field_name)?
+    if id_field_name == "id" {
+        return Ok(None);
+    }
+    let Some(value) = filters.remove(id_field_name) else {
+        return Ok(None);
     };
-    match (id, model_id) {
+    let raw = value_map_to_raw(BTreeMap::from([(id_field_name.to_string(), value)]))?;
+    parse_named_id_filter(&raw, id_field_name)
+}
+
+fn merge_model_id_alias(
+    request_id: &mut Option<i64>,
+    model_id: Option<i64>,
+    subject: &str,
+    id_field_name: &str,
+) -> grm_rs::Result<()> {
+    match (*request_id, model_id) {
         (Some(left), Some(right)) if left != right => Err(GrmError::Constraint(format!(
             "conflicting {subject} id filters 'id' and '{id_field_name}'"
         ))),
-        (Some(id), _) | (_, Some(id)) => Ok(Some(id)),
-        (None, None) => Ok(None),
+        (None, Some(id)) => {
+            *request_id = Some(id);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn reject_neo4j_node_find_traversal(request: &NodeFindRequest) -> grm_rs::Result<()> {
+    if request.traversals.is_empty()
+        && request.end_predicates.is_empty()
+        && request.edge_predicates.is_empty()
+        && request.return_mode.is_none()
+    {
+        return Ok(());
+    }
+    Err(GrmError::NotSupported(
+        "Neo4j MCP mode supports simple grm_node_find only; traversal queries are not supported yet",
+    ))
+}
+
+fn typed_predicates(
+    predicates: &[PropertyPredicate],
+    fields: &[RuntimeField],
+    model_name: &str,
+) -> grm_rs::Result<Vec<(PropertyPredicate, Value)>> {
+    let mut typed = Vec::new();
+    for predicate in predicates {
+        let Some(field) = fields.iter().find(|field| field.name == predicate.field) else {
+            return Err(GrmError::Constraint(format!(
+                "unknown field '{}' for model '{model_name}'",
+                predicate.field
+            )));
+        };
+        if predicate.op == PredicateOp::Contains
+            && !matches!(field.value_type, RuntimeValueType::String)
+        {
+            return Err(GrmError::Constraint(format!(
+                "contains filter '{}' requires a string field",
+                predicate.field
+            )));
+        }
+        let raw = value_map_to_raw(BTreeMap::from([(
+            predicate.field.clone(),
+            predicate.value.clone(),
+        )]))?;
+        let raw_value = raw.get(&predicate.field).ok_or_else(|| {
+            GrmError::Mapping(format!(
+                "missing parsed value for field '{}'",
+                predicate.field
+            ))
+        })?;
+        typed.push((predicate.clone(), field.value_type.parse_value(raw_value)?));
+    }
+    Ok(typed)
+}
+
+fn validate_node_order_fields(order: &[OrderSpec], model: &RuntimeNodeModel) -> grm_rs::Result<()> {
+    for spec in order {
+        if spec.field == "id" || spec.field == model.id_field_name {
+            continue;
+        }
+        if model.field(&spec.field).is_none() {
+            return Err(GrmError::Constraint(format!(
+                "unknown order field '{}' for model '{}'",
+                spec.field, model.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_edge_order_fields(order: &[OrderSpec], model: &RuntimeRelModel) -> grm_rs::Result<()> {
+    for spec in order {
+        if spec.field == "id"
+            || spec.field == model.id_field_name
+            || spec.field == "from"
+            || spec.field == "to"
+        {
+            continue;
+        }
+        if model.field(&spec.field).is_none() {
+            return Err(GrmError::Constraint(format!(
+                "unknown order field '{}' for link '{}'",
+                spec.field, model.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn cypher_node_order_expression(spec: &OrderSpec, id_field_name: &str) -> String {
+    if spec.field == "id" || spec.field == id_field_name {
+        "id(n)".to_string()
+    } else {
+        format!("n.{}", cypher_name(&spec.field))
+    }
+}
+
+fn cypher_edge_order_expression(spec: &OrderSpec, id_field_name: &str) -> String {
+    match spec.field.as_str() {
+        "id" => "id(r)".to_string(),
+        "from" => "id(startNode(r))".to_string(),
+        "to" => "id(endNode(r))".to_string(),
+        field if field == id_field_name => "id(r)".to_string(),
+        _ => format!("r.{}", cypher_name(&spec.field)),
+    }
+}
+
+fn cypher_predicate_op(op: PredicateOp) -> &'static str {
+    match op {
+        PredicateOp::Eq => "=",
+        PredicateOp::Ne => "<>",
+        PredicateOp::Gt => ">",
+        PredicateOp::Ge => ">=",
+        PredicateOp::Lt => "<",
+        PredicateOp::Le => "<=",
+        PredicateOp::Contains => "CONTAINS",
+    }
+}
+
+fn cypher_order_direction(direction: OrderDirection) -> &'static str {
+    match direction {
+        OrderDirection::Asc => "ASC",
+        OrderDirection::Desc => "DESC",
     }
 }
 
@@ -985,27 +1189,6 @@ fn parse_named_id_filter(raw: &BTreeMap<String, String>, key: &str) -> grm_rs::R
             })
         })
         .transpose()
-}
-
-fn model_filters(
-    raw: &BTreeMap<String, String>,
-    fields: &[RuntimeField],
-    model_name: &str,
-    special_keys: &[&str],
-) -> grm_rs::Result<BTreeMap<String, Value>> {
-    let mut parsed = BTreeMap::new();
-    for (key, value) in raw {
-        if key == "id" || special_keys.iter().any(|special| key == special) {
-            continue;
-        }
-        let Some(field) = fields.iter().find(|field| field.name == *key) else {
-            return Err(GrmError::Constraint(format!(
-                "unknown field '{key}' for model '{model_name}'"
-            )));
-        };
-        parsed.insert(key.clone(), field.value_type.parse_value(value)?);
-    }
-    Ok(parsed)
 }
 
 struct Neo4jBatchApplied {
@@ -1650,4 +1833,135 @@ fn compact_query_doc() -> String {
         .take_while(|line| !line.starts_with("## Output Design"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grm_rs::BackendIdType;
+
+    fn user_model() -> RuntimeNodeModel {
+        RuntimeNodeModel::new(
+            "User",
+            "userId",
+            BackendIdType::Int64,
+            vec![
+                RuntimeField {
+                    name: "name".into(),
+                    value_type: RuntimeValueType::String,
+                    required: true,
+                },
+                RuntimeField {
+                    name: "age".into(),
+                    value_type: RuntimeValueType::Int,
+                    required: true,
+                },
+            ],
+        )
+        .unwrap()
+    }
+
+    fn authored_model() -> RuntimeRelModel {
+        RuntimeRelModel::new(
+            "Authored",
+            "User",
+            "Post",
+            "authoredId",
+            BackendIdType::Int64,
+            vec![RuntimeField {
+                name: "year".into(),
+                value_type: RuntimeValueType::Int,
+                required: true,
+            }],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn neo4j_node_find_parses_adapter_controls_as_request_fields() {
+        let request = parse_neo4j_node_find_request(
+            NodeFindParams {
+                model: "User".into(),
+                filters: BTreeMap::from([
+                    ("age>".into(), json!(35)),
+                    ("order".into(), json!("age:asc")),
+                    ("limit".into(), json!(1)),
+                    ("userId".into(), json!(7)),
+                ]),
+            },
+            &user_model(),
+        )
+        .unwrap();
+
+        assert_eq!(request.id, Some(7));
+        assert_eq!(request.limit, Some(1));
+        assert_eq!(request.order[0].field, "age");
+        assert_eq!(request.predicates[0].field, "age");
+        assert_eq!(request.predicates[0].op, PredicateOp::Gt);
+    }
+
+    #[test]
+    fn neo4j_find_rejects_unknown_predicate_and_order_fields() {
+        let model = user_model();
+        let request = NodeFindRequest::from_adapter_filter_values(
+            "User",
+            BTreeMap::from([("limit".into(), json!(1))]),
+        )
+        .unwrap();
+        assert!(typed_predicates(&request.predicates, &model.fields, &model.name).is_ok());
+
+        let bad_order = NodeFindRequest::from_adapter_filter_values(
+            "User",
+            BTreeMap::from([("order".into(), json!("missing:asc"))]),
+        )
+        .unwrap();
+        let err = validate_node_order_fields(&bad_order.order, &model).unwrap_err();
+        assert!(err.to_string().contains("unknown order field 'missing'"));
+    }
+
+    #[test]
+    fn neo4j_order_validation_matches_runtime_special_fields() {
+        let node_model = user_model();
+        let node_order = NodeFindRequest::from_adapter_filter_values(
+            "User",
+            BTreeMap::from([("order".into(), json!("id:asc,userId:desc,name:asc"))]),
+        )
+        .unwrap();
+        validate_node_order_fields(&node_order.order, &node_model).unwrap();
+        assert_eq!(
+            cypher_node_order_expression(&node_order.order[0], &node_model.id_field_name),
+            "id(n)"
+        );
+        assert_eq!(
+            cypher_node_order_expression(&node_order.order[1], &node_model.id_field_name),
+            "id(n)"
+        );
+
+        let edge_model = authored_model();
+        let edge_order = EdgeFindRequest::from_adapter_filter_values(
+            "Authored",
+            BTreeMap::from([(
+                "order".into(),
+                json!("id:asc,authoredId:desc,from:asc,to:desc,year:asc"),
+            )]),
+        )
+        .unwrap();
+        validate_edge_order_fields(&edge_order.order, &edge_model).unwrap();
+        assert_eq!(
+            cypher_edge_order_expression(&edge_order.order[0], &edge_model.id_field_name),
+            "id(r)"
+        );
+        assert_eq!(
+            cypher_edge_order_expression(&edge_order.order[1], &edge_model.id_field_name),
+            "id(r)"
+        );
+        assert_eq!(
+            cypher_edge_order_expression(&edge_order.order[2], &edge_model.id_field_name),
+            "id(startNode(r))"
+        );
+        assert_eq!(
+            cypher_edge_order_expression(&edge_order.order[3], &edge_model.id_field_name),
+            "id(endNode(r))"
+        );
+    }
 }
