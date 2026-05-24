@@ -5,9 +5,10 @@ Status: Draft
 Date: 2026-05-22
 
 This document describes the target architecture GRM is moving toward as it
-separates embedded runtime behavior from a future service backend. It is
-aspirational: it should guide roadmap and review decisions, but it is not a
-claim that every component exists today.
+separates embedded runtime behavior from a future service backend and adopts the
+Structured Operational Memory Layer framing from ADR 0004. It is aspirational:
+it should guide roadmap and review decisions, but it is not a claim that every
+component exists today.
 
 See also:
 
@@ -31,6 +32,38 @@ and future browser consoles can remain ergonomic adapters, but they should
 translate into typed requests before crossing the trusted runtime or service
 boundary.
 
+ADR 0004 adds this concept vocabulary to the architecture:
+
+| Concept | Architecture meaning |
+| --- | --- |
+| Session | Operational memory context |
+| Traversal | Explainable state resolution |
+| Delta | Durable operational mutation |
+| Projection | Contextual memory surface |
+| Attestation | Verifiable operational proof |
+| Runtime | Executable memory substrate |
+
+These concepts should guide naming in new docs, graph memory, service API
+design, UI/sync planning, and agent-facing examples. They should not trigger a
+mechanical rename of existing Rust modules, tests, or adapter APIs before the
+semantics exist.
+
+## Current Architecture Against SOML
+
+GRM is partially aligned with the SOML target:
+
+| Boundary | Current state | SOML gap |
+| --- | --- | --- |
+| Adapter | CLI, Python, and MCP exist. MCP already accepts structured tool JSON, and Python/MCP routes some read paths through structured runtime requests. Adapter filter maps still preserve legacy ergonomics before conversion. | Keep adapter-specific syntax at the edge. Do not let CLI/filter-map conveniences become the canonical operational memory contract. |
+| Runtime | `RuntimeRequest`, `RuntimeResponse`, and `SessionState::execute_runtime` exist for schema, node, edge, query, explain/profile, batch, and admin families. Durable mutation outcomes are explicit for writes. | Runtime concepts are still graph CRUD/query shaped. Session, delta, projection, and attestation are not first-class runtime request families yet. |
+| Service | `grm-service-api` exists as a split-ready protobuf source crate. The proto skeleton is typed and compiles with codegen tests. | The proto still mirrors current graph/runtime operation families. It does not yet model SOML concepts such as session context, projections, attestations, or provenance evidence. |
+| Backend | In-memory and Neo4j backends sit behind common contracts with visible capability differences. Neo4j MCP mode supports schema-aware CRUD and simple find, but not full traversal/query/import/export/explain/profile parity. | Backend capability reporting should evolve toward operational memory capabilities, not just storage capability lists. |
+| Storage | User graph data, schema memory metadata, durable logs/checkpoints, and derived index/catalog state are conceptually separate. | Durable state should increasingly be described and tested as operational deltas. Projection and attestation storage models are still design work. |
+
+The important conclusion is that GRM has a typed runtime spine, not a completed
+SOML implementation. The architecture should adopt SOML as the target product
+model while keeping product claims grounded in implemented and tested behavior.
+
 ## Architecture Diagram
 
 ```mermaid
@@ -39,18 +72,21 @@ flowchart TB
         CLI["CLI session commands"]
         PY["Python bindings"]
         MCP["MCP tools"]
-        HTTPUI["Future HTTP admin and graph UI"]
+        HTTPUI["Future UI runtime"]
+        Agent["Agent runtime"]
         SDK["Future generated SDKs"]
     end
 
     subgraph Service["Future service layer"]
         Gateway["Optional HTTP/JSON gateway"]
         GRPC["gRPC/protobuf API"]
-        Auth["TLS, mTLS, authz, limits, audit"]
+        SAM["Secure access model: authz, limits, audit"]
         Telemetry["OpenTelemetry spans and metrics"]
+        Sync["Sync/projection distribution"]
     end
 
     subgraph Runtime["Service-hostable runtime core"]
+        SOML["SOML semantics: session, traversal, delta, projection, attestation"]
         Requests["Typed RuntimeRequest and RuntimeResponse"]
         Dispatcher["SessionState execute_runtime"]
         Ops["Shared schema, node, edge, query, batch operations"]
@@ -71,18 +107,23 @@ flowchart TB
         SchemaStore["Schema memory metadata"]
         WAL["Durable log and checkpoints"]
         Indexes["Derived index/catalog state"]
+        ProjectionStore["Projection and attestation metadata"]
     end
 
     CLI --> Requests
     PY --> Requests
     MCP --> Requests
+    Agent --> MCP
     HTTPUI --> Gateway
     SDK --> GRPC
     Gateway --> GRPC
-    GRPC --> Auth
-    Auth --> Requests
-    Auth --> Telemetry
-    Requests --> Dispatcher
+    GRPC --> SAM
+    SAM --> Requests
+    SAM --> Telemetry
+    Sync --> Gateway
+    Sync --> GRPC
+    Requests --> SOML
+    SOML --> Dispatcher
     Dispatcher --> Ops
     Ops --> Explain
     Ops --> Durability
@@ -97,6 +138,7 @@ flowchart TB
     SchemaMemory --> SchemaStore
     Durability --> WAL
     BackendTrait --> Indexes
+    SOML --> ProjectionStore
 ```
 
 ## Current Direction
@@ -117,6 +159,40 @@ GRM is currently converging on a service-hostable runtime core:
   must remain grounded in tested single-writer local filesystem behavior.
 - Neo4j MCP mode is useful for dogfooding graph memory and visualization, but
   it is not full in-memory backend parity.
+- `grm-service-api` is a split-ready protobuf contract crate, not a daemon or
+  private service implementation.
+- SOML/SAM vocabulary is now accepted product architecture, but session,
+  projection, attestation, and provenance semantics remain aspirational unless
+  backed by code and tests.
+
+## Aspirational Goals After ADR 0004
+
+ADR 0004 shifts the target from "service-hostable graph runtime" to
+"service-hostable operational memory runtime." The practical goals are:
+
+1. Treat `RuntimeRequest`/`RuntimeResponse` as the implementation spine, but
+   evaluate new request families by whether they express operational memory
+   concepts rather than only graph CRUD.
+2. Introduce session context deliberately: runtime/service requests should have
+   a path to carry operational context, limits, identity/audit metadata, and
+   capability expectations without smuggling those concerns through adapter
+   globals.
+3. Treat successful writes as durable deltas. Existing durable operation
+   metadata is the starting point, but future WAL/protobuf design should make
+   operational mutation grouping, replay, and recovery evidence explicit.
+4. Make traversal and explain/profile the trust model for state resolution.
+   Plans, access paths, backend capability notes, row counts, and timing should
+   support "why this memory state was returned," not just query debugging.
+5. Model projections as contextual memory surfaces for UI, sync, and agents.
+   A projection is not merely a formatted query result; it is a bounded view
+   with provenance, refresh/distribution expectations, and explainable source
+   semantics.
+6. Defer attestation until there is a minimal credible proof model. Do not
+   market attestation/provenance as delivered before the runtime can emit and
+   tests can verify concrete evidence.
+7. Keep storage subordinate to runtime semantics. In-memory, Neo4j, future GRM
+   service storage, indexes, and acceleration structures are implementation
+   choices behind operational memory behavior.
 
 ## Target Boundaries
 
@@ -158,6 +234,16 @@ and telemetry should be designed before marketplace packaging.
 Textual command strings may appear in human tools, but they should not become
 the service contract.
 
+Under the SOML framing, the service boundary should also reserve design space
+for:
+
+- session context and backend capability negotiation
+- durable delta outcomes and recovery evidence
+- projection requests and projection distribution
+- provenance and attestation evidence
+- secure structured access policy around operational memory concepts, not only
+  graph models and CRUD verbs
+
 ### Backend Boundary
 
 Backends should implement graph storage behavior behind a common contract while
@@ -178,6 +264,17 @@ GRM should preserve the distinction between:
 Schema memory may eventually live inside a backend as GRM metadata, but it
 should remain conceptually distinct from user graph data.
 
+ADR 0004 adds two future storage concerns:
+
+- durable operational deltas: replayable mutation records that explain state
+  transitions
+- projection/attestation metadata: derived or recorded evidence used to explain
+  contextual memory surfaces and prove execution claims
+
+Like indexes and acceleration structures, projection caches should be treated as
+derived unless a future design explicitly makes them durable source-of-truth
+records.
+
 ## What Progress Looks Like
 
 Good progress moves behavior toward one shared typed core without widening
@@ -188,6 +285,8 @@ Acceptable near-term progress:
 - adapters route more read behavior through `execute_runtime`
 - write paths converge only when durable operation metadata remains explicit
 - structured request and response types become easier to map to protobuf
+- service API objects gain SOML-oriented shape only where runtime semantics are
+  clear enough to implement and test
 - tests prove behavior through runtime, MCP, Python, CLI, or backend public
   surfaces as appropriate
 - explain/profile exposes access paths and costs without pretending all
@@ -206,19 +305,28 @@ Progress to avoid:
   to map cleanly
 - overstating crash recovery, multi-writer, clustering, or hosted durability
   guarantees
+- renaming graph CRUD concepts to SOML terms without implementing the stronger
+  session, delta, projection, provenance, or attestation semantics
+- implying projection, sync, secure access, or attestation are delivered product
+  capabilities before public surfaces and tests make those claims true
 
 ## Near-Term Sequence
 
 1. Finish adapter routing through typed runtime paths where safe.
-2. Add the service API proto crate or design skeleton.
-3. Add mapping tests between protobuf messages and runtime request/response
-   types.
-4. Add a minimal daemon only after transport, security posture, durability
+2. Map existing protobuf messages to runtime request/response types with tests,
+   keeping unsupported semantics explicit.
+3. Add a design note for the minimum SOML service additions: session context,
+   delta outcome, projection request, and attestation evidence.
+4. Tighten durability language and tests around operational deltas, replay, and
+   recovery evidence before widening product claims.
+5. Add a minimal daemon only after transport, security posture, durability
    claims, and authorization boundaries are clear enough to review.
 
 The daemon is not the next architectural proof. The next proof is that all
 surfaces can share the same typed runtime semantics without depending on a
-textual language or duplicating behavior.
+textual language or duplicating behavior. The next SOML proof is that those
+typed semantics can carry one operational memory concept end to end without
+renaming unsupported behavior into existence.
 
 ## Future Graph Representation
 
