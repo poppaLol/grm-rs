@@ -459,13 +459,18 @@ nodes or relationships, because a fresh agent can call `grm_schema_list`
 immediately after restart and see the recovered model surface.
 
 This mode is a live graph backend for agent-authored graph memory. It supports
-schema-aware creation and simple lookup through:
+schema-aware mutation and simple lookup through:
 
 - `grm_schema_list`
 - `grm_schema_define_node`
 - `grm_schema_define_edge`
+- `grm_batch` for schema/node/edge create/update/delete operations
 - `grm_node_create`
+- `grm_node_update`
+- `grm_node_delete`
 - `grm_edge_create`
+- `grm_edge_update`
+- `grm_edge_delete`
 - simple `grm_node_find`
 - simple `grm_edge_find`
 
@@ -475,9 +480,9 @@ graph data remains, but the agent must define the runtime schema again before
 finding or extending that data. Agents should still call `grm_schema_list` and
 inspect `grm://backend/status` before writes, even when schema memory is
 recovered from a local file.
-Neo4j durability comes from Neo4j, and GRM snapshot/import, non-create batch
-operations, explain/profile, traversal parity, and CLI Neo4j session mode are
-not part of this workflow yet.
+Neo4j durability comes from Neo4j, and GRM snapshot/import, autocommit,
+explain/profile, traversal parity, and CLI Neo4j session mode are not part of
+this workflow yet.
 
 The built-in help text is conservative and tells agents to ask before inventing
 a schema. For autonomous schema-design work, make the permission explicit in
@@ -512,7 +517,7 @@ Common recovery moves are:
 - use `grm_batch` for related writes so validation and rollback happen together
 - use `grm_export` when a user needs a handoff file for another system
 - use `GRM_BACKEND=neo4j` when the target is live Neo4j and the workflow fits
-  the supported schema/create/simple-find tool slice
+  the supported schema/mutation/simple-find tool slice
 
 ## Where To Go Next
 

@@ -3,10 +3,11 @@
 Status: requirements draft
 
 The initial MCP implementation exposes clear single-operation tools such as
-`grm_node_create`, `grm_edge_create`, `grm_node_update`, and `grm_edge_update`.
-That is useful for small edits, but agents naturally follow visible affordances:
-if the only obvious write tools create one entity at a time, agents will tend to
-insert graphs node-by-node and edge-by-edge.
+`grm_node_create`, `grm_edge_create`, `grm_node_update`, `grm_edge_update`,
+`grm_node_delete`, and `grm_edge_delete`. That is useful for small edits, but
+agents naturally follow visible affordances: if the only obvious write tools
+operate on one entity at a time, agents will tend to change graphs node-by-node
+and edge-by-edge.
 
 For larger graph construction and update workflows, MCP should expose explicit
 batch-oriented affordances and make them the recommended path.
@@ -164,8 +165,9 @@ Required guidance changes:
 
 - `grm_help` should say to prefer `grm_batch` or `grm_graph_patch` when creating
   or updating more than a few entities.
-- `grm_node_create`, `grm_edge_create`, `grm_node_update`, and `grm_edge_update`
-  descriptions should mention the batch/patch tools for repeated operations.
+- `grm_node_create`, `grm_edge_create`, `grm_node_update`, `grm_edge_update`,
+  `grm_node_delete`, and `grm_edge_delete` descriptions should mention the
+  batch/patch tools for repeated operations.
 - `grm_tool_help` for single-entity write tools should include a batching note.
 - `known_tools` should group these under a new `bulk` or `batch` category.
 - `grm_batch` and `grm_graph_patch` responses should be more token-efficient
