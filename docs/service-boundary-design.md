@@ -11,25 +11,29 @@ for the product architecture principle that future backends should store user
 graph data separately from schema memory that communicates and validates the
 intended shape of that graph.
 
+See also [ADR 0004: Frame GRM As A Structured Operational Memory Layer](adr/0004-structured-operational-memory-layer.md)
+for the accepted framing that GRM's product surface is operational memory
+semantics rather than a traditional graph database or CRUD API.
+
 ## Product Position
 
-GRM's sellable surface is:
+GRM's sellable surface is a Structured Operational Memory Layer:
 
-> typed, secure, explainable graph memory for applications and agents
+> typed, secure, explainable operational memory for applications and agents
 
 It is not:
 
 > learn our database query dialect
 
-The future service contract should be typed graph operations over
+The future service contract should be typed operational memory requests over
 gRPC/protobuf. CLI command text can remain a human adapter. Python helpers, MCP
 tools, and future SDKs can remain ergonomic wrappers. The service boundary
-itself should receive structured request objects for schema operations, node and
-edge CRUD, batch patches, query/traversal, explain/profile, and durability/admin
-work.
+itself should receive structured request objects for schema/session operations,
+node and edge mutation where appropriate, batch deltas, traversal/state
+resolution, projections, explain/profile, and durability/admin work.
 
 This keeps the trusted boundary aligned with GRM's core value: applications and
-agents send typed graph/database requests, not arbitrary script text.
+agents send typed operational memory requests, not arbitrary script text.
 
 ## Protocol Choice
 
