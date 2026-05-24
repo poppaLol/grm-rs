@@ -12,12 +12,12 @@ and which next slice moves it forward without distorting the product.
 
 ## North Star
 
-GRM is moving toward typed, secure, explainable graph memory for applications
-and agents.
+GRM is moving toward a Structured Operational Memory Layer for applications and
+agents: typed, secure, explainable operational memory over a graph substrate.
 
-The future service boundary should receive structured typed graph operations and
-request objects, not textual CLI/query-language strings. CLI text and other
-ergonomic syntaxes are adapter conveniences, not the canonical service contract.
+The future service boundary should receive structured typed operational memory
+requests, not textual CLI/query-language strings. CLI text and other ergonomic
+syntaxes are adapter conveniences, not the canonical service contract.
 
 ## Skill Routing
 
@@ -109,7 +109,7 @@ Useful claims to strengthen:
 
 - fast local graph memory with explainable query plans
 - durable agent/project memory
-- typed secure graph service boundary
+- typed secure operational memory service boundary
 - MCP-native graph memory for agents
 - Python, CLI, MCP, and future service surfaces sharing semantics
 - local-to-hosted graph backend path
