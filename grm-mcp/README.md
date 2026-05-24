@@ -58,11 +58,15 @@ Neo4j mode is intentionally narrow. It supports:
 
 - `grm_schema_list`
 - `grm_batch` for `schema_define_node`, `schema_define_edge`, `node_create`,
-  and `edge_create`
+  `node_update`, `node_delete`, `edge_create`, `edge_update`, and `edge_delete`
 - `grm_schema_define_node`
 - `grm_schema_define_edge`
 - `grm_node_create`
+- `grm_node_update`
+- `grm_node_delete`
 - `grm_edge_create`
+- `grm_edge_update`
+- `grm_edge_delete`
 - simple `grm_node_find`
 - simple `grm_edge_find`
 
@@ -90,8 +94,9 @@ Agent/tool flow after startup:
    containing `schema_define_node`/`schema_define_edge` ops. If
    `schema_template_persistence_enabled` is `true`, those schema definitions are
    persisted to the configured local file.
-5. Only then write graph data with `grm_batch`, `grm_node_create`, or
-   `grm_edge_create`.
+5. Only then write graph data with `grm_batch`, `grm_node_create`,
+   `grm_node_update`, `grm_node_delete`, `grm_edge_create`, `grm_edge_update`,
+   or `grm_edge_delete`.
 
 For autonomous schema-design tasks, grant that permission in the task prompt
 rather than relying on the conservative built-in help text. For example:
@@ -107,8 +112,8 @@ not write anything until the runtime schema contains the target models.
 
 Graph durability comes from Neo4j, not the GRM WAL/autocommit layer. Neo4j mode
 does not support snapshots, import/export, autocommit, explain/profile,
-traversal/query parity, updates, or deletes yet. Unsupported tools and
-unsupported Neo4j batch operations return clear not-supported errors.
+or traversal/query parity yet. Unsupported tools and unsupported Neo4j batch
+operations return clear not-supported errors.
 
 ## Startup Flags
 
@@ -242,9 +247,9 @@ use either numeric ids or those earlier refs as endpoints. Refs must be unique
 within a batch. Delete operations are rejected unless `allow_deletes` is set to
 `true`.
 
-In Neo4j mode, `grm_batch` currently requires `atomic=true` and supports only
-schema definition, node create, and edge create operations. It stages
-session-local schema metadata and executes Neo4j graph creates in one
+In Neo4j mode, `grm_batch` currently requires `atomic=true` and supports
+schema definition plus single node/edge create, update, and delete operations.
+It stages session-local schema metadata and executes Neo4j graph mutations in one
 transaction, committing only after every supported operation succeeds. It does
 not auto-create schema from data writes; creating or finding a model that is not
 registered in the session-local runtime schema fails with guidance to define

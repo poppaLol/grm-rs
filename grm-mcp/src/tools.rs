@@ -206,8 +206,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if let Some(err) = self.unsupported_in_neo4j("grm_node_update") {
-            return Err(err);
+        if self.is_neo4j() {
+            let value = self.neo4j_node_update(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
         }
         self.with_state_mut_durable(async |state| {
             let outcome = state
@@ -229,8 +230,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if let Some(err) = self.unsupported_in_neo4j("grm_node_delete") {
-            return Err(err);
+        if self.is_neo4j() {
+            let value = self.neo4j_node_delete(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
         }
         self.with_state_mut_durable(async |state| {
             let outcome = state
@@ -314,8 +316,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if let Some(err) = self.unsupported_in_neo4j("grm_edge_update") {
-            return Err(err);
+        if self.is_neo4j() {
+            let value = self.neo4j_edge_update(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
         }
         self.with_state_mut_durable(async |state| {
             let outcome = state
@@ -337,8 +340,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if let Some(err) = self.unsupported_in_neo4j("grm_edge_delete") {
-            return Err(err);
+        if self.is_neo4j() {
+            let value = self.neo4j_edge_delete(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
         }
         self.with_state_mut_durable(async |state| {
             let outcome = state
@@ -575,6 +579,14 @@ impl GrmMcpServer {
                 let _ = tx.rollback().await;
                 return Err(GrmError::Constraint(err));
             }
+            if op.is_delete() && !params.allow_deletes {
+                let _ = tx.rollback().await;
+                summary.record_error(
+                    index,
+                    format!("{} requires allow_deletes=true on grm_batch", op.op_name()),
+                );
+                return Ok(summary.into_value());
+            }
 
             let op_name = op.op_name();
             let result = match op {
@@ -629,10 +641,18 @@ impl GrmMcpServer {
                 SessionBatchOp::EdgeCreate(params) => {
                     create_neo4j_batch_edge(&mut tx, &staged, &refs, params, op_name).await
                 }
-                SessionBatchOp::NodeUpdate(_)
-                | SessionBatchOp::NodeDelete(_)
-                | SessionBatchOp::EdgeUpdate(_)
-                | SessionBatchOp::EdgeDelete(_) => unreachable!("unsupported ops checked above"),
+                SessionBatchOp::NodeUpdate(params) => {
+                    update_neo4j_batch_node(&mut tx, &staged, params, op_name).await
+                }
+                SessionBatchOp::NodeDelete(params) => {
+                    delete_neo4j_batch_node(&mut tx, &staged, params, op_name).await
+                }
+                SessionBatchOp::EdgeUpdate(params) => {
+                    update_neo4j_batch_edge(&mut tx, &staged, params, op_name).await
+                }
+                SessionBatchOp::EdgeDelete(params) => {
+                    delete_neo4j_batch_edge(&mut tx, &staged, params, op_name).await
+                }
             };
 
             let applied = match result {
@@ -668,6 +688,42 @@ impl GrmMcpServer {
         let node = tx.tx_mut()?.create_node(vec![label], props).await?;
         tx.commit().await?;
         serde_json::to_value(node).map_err(json_error)
+    }
+
+    async fn neo4j_node_update(&self, params: NodeUpdateParams) -> grm_rs::Result<Value> {
+        let raw = value_map_to_raw(params.props)?;
+        let (model_name, label, props) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_node_model(&params.model)
+                .ok_or_else(|| missing_node_schema(&params.model))?
+                .clone();
+            let props = node_update_props(&model, &raw)?;
+            (model.name.clone(), model.label.clone(), props)
+        };
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        let updated = update_neo4j_node(&mut tx, params.id, &model_name, &label, props).await?;
+        tx.commit().await?;
+        serde_json::to_value(updated).map_err(json_error)
+    }
+
+    async fn neo4j_node_delete(&self, params: NodeDeleteParams) -> grm_rs::Result<Value> {
+        let (model_name, label) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_node_model(&params.model)
+                .ok_or_else(|| missing_node_schema(&params.model))?
+                .clone();
+            (model.name.clone(), model.label.clone())
+        };
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        delete_neo4j_node(&mut tx, params.id, &model_name, &label).await?;
+        tx.commit().await?;
+        Ok(json!({ "deleted": true, "model": params.model, "id": params.id }))
     }
 
     async fn neo4j_edge_create(&self, params: EdgeCreateParams) -> grm_rs::Result<Value> {
@@ -729,6 +785,42 @@ impl GrmMcpServer {
             .await?;
         tx.commit().await?;
         serde_json::to_value(edge).map_err(json_error)
+    }
+
+    async fn neo4j_edge_update(&self, params: EdgeUpdateParams) -> grm_rs::Result<Value> {
+        let raw = value_map_to_raw(params.props)?;
+        let (model_name, rel_type, props) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_rel_model(&params.model)
+                .ok_or_else(|| missing_edge_schema(&params.model))?
+                .clone();
+            let props = edge_update_props(&model, &raw)?;
+            (model.name.clone(), model.rel_type.clone(), props)
+        };
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        let updated = update_neo4j_edge(&mut tx, params.id, &model_name, &rel_type, props).await?;
+        tx.commit().await?;
+        serde_json::to_value(updated).map_err(json_error)
+    }
+
+    async fn neo4j_edge_delete(&self, params: EdgeDeleteParams) -> grm_rs::Result<Value> {
+        let (model_name, rel_type) = {
+            let state = self.state.lock().await;
+            let model = state
+                .catalog()
+                .get_rel_model(&params.model)
+                .ok_or_else(|| missing_edge_schema(&params.model))?
+                .clone();
+            (model.name.clone(), model.rel_type.clone())
+        };
+
+        let mut tx = self.neo4j_client()?.transaction().await?;
+        delete_neo4j_edge(&mut tx, params.id, &model_name, &rel_type).await?;
+        tx.commit().await?;
+        Ok(json!({ "deleted": true, "model": params.model, "id": params.id }))
     }
 
     async fn neo4j_node_find(&self, params: NodeFindParams) -> grm_rs::Result<Value> {
@@ -1002,12 +1094,252 @@ fn ensure_neo4j_batch_op_supported(op: &SessionBatchOp) -> Result<(), String> {
         SessionBatchOp::SchemaDefineNode(_)
         | SessionBatchOp::SchemaDefineEdge(_)
         | SessionBatchOp::NodeCreate(_)
-        | SessionBatchOp::EdgeCreate(_) => Ok(()),
-        _ => Err(format!(
-            "{} is not supported in Neo4j grm_batch yet; supported Neo4j batch operations are schema_define_node, schema_define_edge, node_create, and edge_create",
-            op.op_name()
-        )),
+        | SessionBatchOp::NodeUpdate(_)
+        | SessionBatchOp::NodeDelete(_)
+        | SessionBatchOp::EdgeCreate(_)
+        | SessionBatchOp::EdgeUpdate(_)
+        | SessionBatchOp::EdgeDelete(_) => Ok(()),
     }
+}
+
+async fn update_neo4j_batch_node(
+    tx: &mut Transaction<Neo4jTx>,
+    state: &grm_rs::SessionState,
+    params: grm_rs::SessionBatchNodeUpdateParams,
+    op_name: &'static str,
+) -> grm_rs::Result<Neo4jBatchApplied> {
+    let raw = value_map_to_raw(params.props)?;
+    let model = state
+        .catalog()
+        .get_node_model(&params.model)
+        .ok_or_else(|| missing_node_schema(&params.model))?
+        .clone();
+    let props = node_update_props(&model, &raw)?;
+    let node = update_neo4j_node(tx, params.id, &model.name, &model.label, props).await?;
+    Ok(Neo4jBatchApplied {
+        op: op_name,
+        model: params.model,
+        id: Some(node.id),
+        local_ref: None,
+    })
+}
+
+async fn delete_neo4j_batch_node(
+    tx: &mut Transaction<Neo4jTx>,
+    state: &grm_rs::SessionState,
+    params: grm_rs::SessionBatchNodeDeleteParams,
+    op_name: &'static str,
+) -> grm_rs::Result<Neo4jBatchApplied> {
+    let model = state
+        .catalog()
+        .get_node_model(&params.model)
+        .ok_or_else(|| missing_node_schema(&params.model))?
+        .clone();
+    delete_neo4j_node(tx, params.id, &model.name, &model.label).await?;
+    Ok(Neo4jBatchApplied {
+        op: op_name,
+        model: params.model,
+        id: Some(params.id),
+        local_ref: None,
+    })
+}
+
+async fn update_neo4j_batch_edge(
+    tx: &mut Transaction<Neo4jTx>,
+    state: &grm_rs::SessionState,
+    params: grm_rs::SessionBatchEdgeUpdateParams,
+    op_name: &'static str,
+) -> grm_rs::Result<Neo4jBatchApplied> {
+    let raw = value_map_to_raw(params.props)?;
+    let model = state
+        .catalog()
+        .get_rel_model(&params.model)
+        .ok_or_else(|| missing_edge_schema(&params.model))?
+        .clone();
+    let props = edge_update_props(&model, &raw)?;
+    let edge = update_neo4j_edge(tx, params.id, &model.name, &model.rel_type, props).await?;
+    Ok(Neo4jBatchApplied {
+        op: op_name,
+        model: params.model,
+        id: Some(edge.id),
+        local_ref: None,
+    })
+}
+
+async fn delete_neo4j_batch_edge(
+    tx: &mut Transaction<Neo4jTx>,
+    state: &grm_rs::SessionState,
+    params: grm_rs::SessionBatchEdgeDeleteParams,
+    op_name: &'static str,
+) -> grm_rs::Result<Neo4jBatchApplied> {
+    let model = state
+        .catalog()
+        .get_rel_model(&params.model)
+        .ok_or_else(|| missing_edge_schema(&params.model))?
+        .clone();
+    delete_neo4j_edge(tx, params.id, &model.name, &model.rel_type).await?;
+    Ok(Neo4jBatchApplied {
+        op: op_name,
+        model: params.model,
+        id: Some(params.id),
+        local_ref: None,
+    })
+}
+
+async fn update_neo4j_node(
+    tx: &mut Transaction<Neo4jTx>,
+    id: i64,
+    model_name: &str,
+    label: &str,
+    props: BTreeMap<String, Value>,
+) -> grm_rs::Result<StoredNode> {
+    let existing = tx
+        .tx_mut()?
+        .find_node_by_id(id)
+        .await?
+        .ok_or_else(|| GrmError::Constraint(format!("node '{id}' was not found")))?;
+    if !existing.labels.iter().any(|candidate| candidate == label) {
+        return Err(GrmError::Constraint(format!(
+            "node '{id}' does not match model '{model_name}'"
+        )));
+    }
+    tx.tx_mut()?
+        .update_node(id, props)
+        .await?
+        .ok_or_else(|| GrmError::Constraint(format!("node '{id}' was not found")))
+}
+
+async fn delete_neo4j_node(
+    tx: &mut Transaction<Neo4jTx>,
+    id: i64,
+    model_name: &str,
+    label: &str,
+) -> grm_rs::Result<()> {
+    let existing = tx
+        .tx_mut()?
+        .find_node_by_id(id)
+        .await?
+        .ok_or_else(|| GrmError::Constraint(format!("node '{id}' was not found")))?;
+    if !existing.labels.iter().any(|candidate| candidate == label) {
+        return Err(GrmError::Constraint(format!(
+            "node '{id}' does not match model '{model_name}'"
+        )));
+    }
+    tx.tx_mut()?.delete_node(id).await
+}
+
+async fn update_neo4j_edge(
+    tx: &mut Transaction<Neo4jTx>,
+    id: i64,
+    model_name: &str,
+    rel_type: &str,
+    props: BTreeMap<String, Value>,
+) -> grm_rs::Result<StoredRel> {
+    find_neo4j_edge(tx, id, rel_type)
+        .await?
+        .ok_or_else(|| GrmError::Constraint(format!("edge '{id}' was not found")))?;
+    tx.tx_mut()?
+        .update_relationship(id, props)
+        .await?
+        .ok_or_else(|| GrmError::Constraint(format!("edge '{id}' was not found")))
+        .and_then(|edge| {
+            if edge.rel_type == rel_type {
+                Ok(edge)
+            } else {
+                Err(GrmError::Constraint(format!(
+                    "edge '{id}' does not match model '{model_name}'"
+                )))
+            }
+        })
+}
+
+async fn delete_neo4j_edge(
+    tx: &mut Transaction<Neo4jTx>,
+    id: i64,
+    model_name: &str,
+    rel_type: &str,
+) -> grm_rs::Result<()> {
+    find_neo4j_edge(tx, id, rel_type).await?.ok_or_else(|| {
+        GrmError::Constraint(format!(
+            "edge '{id}' was not found for model '{model_name}'"
+        ))
+    })?;
+    tx.tx_mut()?.delete_relationship(id).await
+}
+
+async fn find_neo4j_edge(
+    tx: &mut Transaction<Neo4jTx>,
+    id: i64,
+    rel_type: &str,
+) -> grm_rs::Result<Option<StoredRel>> {
+    let result = tx
+        .tx_mut()?
+        .execute_query(
+            &format!(
+                "MATCH ()-[r:{}]->() WHERE id(r) = $grm_id RETURN r",
+                cypher_name(rel_type)
+            ),
+            json!({ "grm_id": id }),
+        )
+        .await?;
+    result
+        .rows
+        .into_iter()
+        .next()
+        .and_then(|row| row.values.into_values().next())
+        .map(|value| match value {
+            KernelValue::Rel(rel) => Ok(StoredRel {
+                id: rel.id,
+                rel_type: rel.ty,
+                from: rel.from,
+                to: rel.to,
+                props: rel.props,
+            }),
+            _ => Err(GrmError::Mapping(
+                "Neo4j edge lookup returned a non-edge value".into(),
+            )),
+        })
+        .transpose()
+}
+
+fn node_update_props(
+    model: &RuntimeNodeModel,
+    raw: &BTreeMap<String, String>,
+) -> grm_rs::Result<BTreeMap<String, Value>> {
+    model_update_props(&model.fields, &model.name, raw, &[&model.id_field_name])
+}
+
+fn edge_update_props(
+    model: &RuntimeRelModel,
+    raw: &BTreeMap<String, String>,
+) -> grm_rs::Result<BTreeMap<String, Value>> {
+    model_update_props(
+        &model.fields,
+        &model.name,
+        raw,
+        &[&model.id_field_name, "from", "to"],
+    )
+}
+
+fn model_update_props(
+    fields: &[RuntimeField],
+    model_name: &str,
+    raw: &BTreeMap<String, String>,
+    special_keys: &[&str],
+) -> grm_rs::Result<BTreeMap<String, Value>> {
+    let mut parsed = BTreeMap::new();
+    for (key, value) in raw {
+        if key == "id" || special_keys.iter().any(|special| key == special) {
+            continue;
+        }
+        let Some(field) = fields.iter().find(|field| field.name == *key) else {
+            return Err(GrmError::Constraint(format!(
+                "unknown field '{key}' for model '{model_name}'"
+            )));
+        };
+        parsed.insert(key.clone(), field.value_type.parse_value(value)?);
+    }
+    Ok(parsed)
 }
 
 async fn create_neo4j_batch_node(
@@ -1197,7 +1529,7 @@ fn cypher_name(name: &str) -> String {
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.is_neo4j() {
-            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge creation, node_create, edge_create, and simple node/edge find."
+            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and simple node/edge find."
         } else {
             "Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible."
         };
