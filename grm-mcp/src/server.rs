@@ -116,7 +116,7 @@ impl GrmMcpServer {
         self.is_neo4j().then(|| {
             McpError::internal_error(
                 format!(
-                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge creation, grm_node_create, grm_edge_create, simple grm_node_find, and simple grm_edge_find"
+                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, simple grm_node_find, and simple grm_edge_find"
                 ),
                 None,
             )
@@ -284,6 +284,27 @@ fn neo4j_backend_status_value(
             "schema_memory_persistence_enabled": schema_template_source.is_some(),
             "schema_memory_source": schema_template_source.map(|path| path.display().to_string()),
             "note": "Runtime schema metadata is session-local; GRM_SCHEMA_TEMPLATE can back it with a local GRM session file while Neo4j stores graph data.",
+            "supported_tools": [
+                "grm_schema_list",
+                "grm_schema_define_node",
+                "grm_schema_define_edge",
+                "grm_batch",
+                "grm_node_create",
+                "grm_node_update",
+                "grm_node_delete",
+                "grm_edge_create",
+                "grm_edge_update",
+                "grm_edge_delete",
+                "grm_node_find",
+                "grm_edge_find"
+            ],
+            "unsupported_surfaces": [
+                "snapshots",
+                "import/export",
+                "autocommit",
+                "explain/profile",
+                "traversal/query parity"
+            ],
             "future_orientation_tools": ["grm_backend_status", "grm_store_summary", "grm_schema_introspect"]
         },
         "recommended_startup_flow": [
@@ -373,6 +394,18 @@ mod tests {
         assert_eq!(
             status["backend"]["schema_memory_source"],
             json!("project-memory-schema.json")
+        );
+        assert!(
+            status["backend"]["supported_tools"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("grm_node_update"))
+        );
+        assert!(
+            status["backend"]["supported_tools"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("grm_edge_delete"))
         );
     }
 

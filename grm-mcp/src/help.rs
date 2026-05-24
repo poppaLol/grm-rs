@@ -19,7 +19,7 @@ Neo4j mode note:
 - GRM_SCHEMA_TEMPLATE is an optional server startup environment variable, not a tool call. When set by the operator, it points at a local GRM JSON session file used as durable schema memory while Neo4j stores graph data.
 - If the file is missing, startup creates a fresh schema memory file. If it exists, startup recovers runtime schema from it. Invalid files fail startup loudly.
 - On startup, call grm_schema_list and inspect grm://backend/status. If schema_template_loaded is true, verify the recovered models before writing. If schema is empty, ask whether to define a fresh schema or reconstruct one from project docs.
-- Neo4j mode supports grm_batch for schema_define_node, schema_define_edge, node_create, and edge_create. Updates, deletes, snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
+- Neo4j mode supports grm_batch for schema_define_node, schema_define_edge, node_create, node_update, node_delete, edge_create, edge_update, and edge_delete. Snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
 
 Schema richness vs sparseness:
 - Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.
@@ -210,9 +210,13 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 "schema_define_node",
                 "schema_define_edge",
                 "node_create",
-                "edge_create"
+                "node_update",
+                "node_delete",
+                "edge_create",
+                "edge_update",
+                "edge_delete"
             ],
-            "neo4j_note": "Neo4j mode currently requires atomic=true. It applies supported batch operations in order, writes graph creates in one Neo4j transaction, and stages session-local schema until commit. It does not auto-create schema from data writes. If GRM_SCHEMA_TEMPLATE recovered schema memory at startup, omit schema_define_* ops only when grm_schema_list already shows the needed models and fields. New schema definitions are persisted to the local schema memory file when configured.",
+            "neo4j_note": "Neo4j mode currently requires atomic=true. It applies supported batch operations in order, writes graph mutations in one Neo4j transaction, and stages session-local schema until commit. It does not auto-create schema from data writes. If GRM_SCHEMA_TEMPLATE recovered schema memory at startup, omit schema_define_* ops only when grm_schema_list already shows the needed models and fields. New schema definitions are persisted to the local schema memory file when configured.",
             "before_calling": [
                 "Use this for more than 3 creates or updates.",
                 "In Neo4j mode, read grm://backend/status and call grm_schema_list first; recovered schema memory may already contain the needed schema metadata.",

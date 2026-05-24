@@ -158,27 +158,6 @@ async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
     assert!(missing_schema.contains("define schema first"));
     assert!(missing_schema.contains("grm_schema_list"));
 
-    let unsupported_batch_op = call_error(
-        &client,
-        "grm_batch",
-        json!({
-            "ops": [
-                {
-                    "op": "node_update",
-                    "args": {
-                        "model": "GrmMcpSmokeUser",
-                        "id": 1,
-                        "props": { "name": "Alice Updated" }
-                    }
-                }
-            ]
-        }),
-    )
-    .await;
-    assert!(unsupported_batch_op.contains("node_update"));
-    assert!(unsupported_batch_op.contains("schema_define_node"));
-    assert!(unsupported_batch_op.contains("edge_create"));
-
     let result = call(
         &client,
         "grm_batch",
@@ -257,22 +236,203 @@ async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
         json!(1)
     );
     assert_eq!(result["ids"].as_array().unwrap().len(), 3);
+    let user_id = result["ids"][0]["id"].as_i64().unwrap();
+    let post_id = result["ids"][1]["id"].as_i64().unwrap();
+    let edge_id = result["ids"][2]["id"].as_i64().unwrap();
+
+    let updated_user = call(
+        &client,
+        "grm_node_update",
+        json!({
+            "model": "GrmMcpSmokeUser",
+            "id": user_id,
+            "props": { "name": "Alice Updated" }
+        }),
+    )
+    .await;
+    assert_eq!(updated_user["props"]["name"], json!("Alice Updated"));
 
     let found_nodes = call(
         &client,
         "grm_node_find",
-        json!({ "model": "GrmMcpSmokeUser", "filters": { "smoke_id": smoke_id } }),
+        json!({ "model": "GrmMcpSmokeUser", "filters": { "id": user_id, "name": "Alice Updated" } }),
     )
     .await;
     assert_eq!(found_nodes["nodes"].as_array().unwrap().len(), 1);
 
+    let updated_edge = call(
+        &client,
+        "grm_edge_update",
+        json!({
+            "model": "GRM_MCP_SMOKE_AUTHORED",
+            "id": edge_id,
+            "props": { "smoke_id": smoke_id }
+        }),
+    )
+    .await;
+    assert_eq!(updated_edge["id"], json!(edge_id));
+
     let found_edges = call(
         &client,
         "grm_edge_find",
-        json!({ "model": "GRM_MCP_SMOKE_AUTHORED", "filters": { "smoke_id": smoke_id } }),
+        json!({ "model": "GRM_MCP_SMOKE_AUTHORED", "filters": { "id": edge_id, "from": user_id, "to": post_id } }),
     )
     .await;
     assert_eq!(found_edges["edges"].as_array().unwrap().len(), 1);
+
+    let delete_rejected = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "ops": [
+                {
+                    "op": "edge_delete",
+                    "args": { "model": "GRM_MCP_SMOKE_AUTHORED", "id": edge_id }
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(delete_rejected["applied"], json!(false));
+    assert!(
+        delete_rejected["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires allow_deletes=true")
+    );
+
+    let mutation_result = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "allow_deletes": true,
+            "response": "detailed",
+            "ops": [
+                {
+                    "op": "node_update",
+                    "args": {
+                        "model": "GrmMcpSmokePost",
+                        "id": post_id,
+                        "props": { "title": "Neo4j MCP batch smoke updated" }
+                    }
+                },
+                {
+                    "op": "edge_update",
+                    "args": {
+                        "model": "GRM_MCP_SMOKE_AUTHORED",
+                        "id": edge_id,
+                        "props": { "smoke_id": smoke_id }
+                    }
+                },
+                {
+                    "op": "edge_delete",
+                    "args": { "model": "GRM_MCP_SMOKE_AUTHORED", "id": edge_id }
+                },
+                {
+                    "op": "node_delete",
+                    "args": { "model": "GrmMcpSmokePost", "id": post_id }
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(mutation_result["applied"], json!(true));
+    assert_eq!(
+        mutation_result["counts"]["node_update"]["GrmMcpSmokePost"],
+        json!(1)
+    );
+    assert_eq!(
+        mutation_result["counts"]["edge_update"]["GRM_MCP_SMOKE_AUTHORED"],
+        json!(1)
+    );
+    assert_eq!(
+        mutation_result["counts"]["edge_delete"]["GRM_MCP_SMOKE_AUTHORED"],
+        json!(1)
+    );
+    assert_eq!(
+        mutation_result["counts"]["node_delete"]["GrmMcpSmokePost"],
+        json!(1)
+    );
+
+    let deleted_edge = call(
+        &client,
+        "grm_edge_find",
+        json!({ "model": "GRM_MCP_SMOKE_AUTHORED", "filters": { "id": edge_id } }),
+    )
+    .await;
+    assert_eq!(deleted_edge["edges"].as_array().unwrap().len(), 0);
+
+    let deleted_post = call(
+        &client,
+        "grm_node_find",
+        json!({ "model": "GrmMcpSmokePost", "filters": { "id": post_id } }),
+    )
+    .await;
+    assert_eq!(deleted_post["nodes"].as_array().unwrap().len(), 0);
+
+    let delete_target_post = call(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "GrmMcpSmokePost",
+            "props": { "title": "Neo4j MCP single delete target", "smoke_id": smoke_id }
+        }),
+    )
+    .await;
+    let delete_target_post_id = delete_target_post["id"].as_i64().unwrap();
+    let delete_target_edge = call(
+        &client,
+        "grm_edge_create",
+        json!({
+            "model": "GRM_MCP_SMOKE_AUTHORED",
+            "from": user_id,
+            "to": delete_target_post_id,
+            "props": { "smoke_id": smoke_id }
+        }),
+    )
+    .await;
+    let delete_target_edge_id = delete_target_edge["id"].as_i64().unwrap();
+
+    let edge_delete = call(
+        &client,
+        "grm_edge_delete",
+        json!({ "model": "GRM_MCP_SMOKE_AUTHORED", "id": delete_target_edge_id }),
+    )
+    .await;
+    assert_eq!(edge_delete["deleted"], json!(true));
+
+    let deleted_single_edge = call(
+        &client,
+        "grm_edge_find",
+        json!({ "model": "GRM_MCP_SMOKE_AUTHORED", "filters": { "id": delete_target_edge_id } }),
+    )
+    .await;
+    assert_eq!(deleted_single_edge["edges"].as_array().unwrap().len(), 0);
+
+    call(
+        &client,
+        "grm_node_delete",
+        json!({ "model": "GrmMcpSmokePost", "id": delete_target_post_id }),
+    )
+    .await;
+
+    let user_delete = call(
+        &client,
+        "grm_node_delete",
+        json!({ "model": "GrmMcpSmokeUser", "id": user_id }),
+    )
+    .await;
+    assert_eq!(user_delete["deleted"], json!(true));
+
+    let deleted_user = call(
+        &client,
+        "grm_node_find",
+        json!({ "model": "GrmMcpSmokeUser", "filters": { "id": user_id } }),
+    )
+    .await;
+    assert_eq!(deleted_user["nodes"].as_array().unwrap().len(), 0);
 
     client.cancel().await.unwrap();
     cleanup_neo4j_smoke_graph(&smoke_id).await;
