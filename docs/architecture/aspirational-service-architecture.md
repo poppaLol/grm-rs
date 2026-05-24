@@ -13,20 +13,23 @@ See also:
 
 - [Service Boundary Design Spike](../service-boundary-design.md)
 - [ADR 0001: Separate Graph Data From Schema Memory](../adr/0001-graph-data-and-schema-memory.md)
+- [ADR 0004: Frame GRM As A Structured Operational Memory Layer](../adr/0004-structured-operational-memory-layer.md)
 - [Testing Policy](../testing-policy.md)
 
 ## Product Shape
 
-GRM should become:
+GRM should become a Structured Operational Memory Layer:
 
-> typed, secure, explainable graph memory for applications and agents
+> typed, secure, explainable operational memory for applications and agents
 
 The sellable surface is not a database language. The future service boundary
-should receive structured typed operations for schema, graph CRUD, query,
-batch, explain/profile, and durability/admin work. CLI commands, Python helper
-methods, MCP tools, and future browser consoles can remain ergonomic adapters,
-but they should translate into typed requests before crossing the trusted
-runtime or service boundary.
+should receive structured typed operations for sessions, traversal/state
+resolution, durable deltas, projections, attestation/provenance, explain/profile,
+and durability/admin work. Graph CRUD remains an implementation subset beneath
+operational memory semantics. CLI commands, Python helper methods, MCP tools,
+and future browser consoles can remain ergonomic adapters, but they should
+translate into typed requests before crossing the trusted runtime or service
+boundary.
 
 ## Architecture Diagram
 
