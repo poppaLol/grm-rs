@@ -15,6 +15,7 @@ See also:
 - [Service Boundary Design Spike](../service-boundary-design.md)
 - [ADR 0001: Separate Graph Data From Schema Memory](../adr/0001-graph-data-and-schema-memory.md)
 - [ADR 0004: Frame GRM As A Structured Operational Memory Layer](../adr/0004-structured-operational-memory-layer.md)
+- [ADR 0005: Use Graph Workspaces And Durable Envelopes](../adr/0005-graph-workspace-and-durable-envelope.md)
 - [Testing Policy](../testing-policy.md)
 
 ## Product Shape
@@ -158,8 +159,9 @@ GRM is currently converging on a service-hostable runtime core:
   service-hostable runtime contract, but it is not a network service.
 - Explain/profile and index catalog work make query behavior visible enough to
   demo and eventually sell.
-- WAL/checkpoint work has established local durability foundations, but claims
-  must remain grounded in tested single-writer local filesystem behavior.
+- WAL/checkpoint work has established local durability foundations for a future
+  durable workspace envelope, but claims must remain grounded in tested
+  single-writer local filesystem behavior.
 - Neo4j MCP mode is useful for dogfooding graph memory and visualization, but
   it is not full in-memory backend parity.
 - `grm-service-api` is a split-ready protobuf contract crate, not a daemon or
