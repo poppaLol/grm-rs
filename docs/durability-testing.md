@@ -6,13 +6,22 @@ It is not a promise of universal filesystem safety. It is a guide for how `grm-r
 
 ## Current Intent
 
-The immediate goal is to make local session persistence safer without changing the simple user-facing session model.
+The immediate goal is to make local session/workspace persistence safer without
+changing the simple user-facing session model.
 
 The conservative product claim is:
 
 > Durable local graph memory for agents and projects.
 
-More precisely: after a successful autocommit write returns, the write is present in either the append log or a checkpoint on a single local filesystem, assuming one writer owns the session or store.
+More precisely: after a successful autocommit write returns, the write is
+present in either the append log or a checkpoint on a single local filesystem,
+assuming one writer owns the session or workspace.
+
+This is a local operational-memory durability claim, not a claim that GRM is a
+general-purpose file database. The durable artifact should evolve into a
+workspace envelope that lets GRM reopen the same typed memory context with graph
+data, runtime schema, schema memory metadata, durable deltas, and recovery
+boundaries.
 
 That means focusing on:
 
@@ -53,7 +62,7 @@ This matters more than broad but shallow “it ran on many machines” coverage.
 
 The first scoped claim should stay conservative:
 
-- single-machine local session files
+- single-machine local workspace envelopes/session files
 - normal local filesystem semantics
 - one writer at a time
 

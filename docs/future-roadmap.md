@@ -58,11 +58,14 @@ Long-term direction:
 - enough Cypher compliance to support serious graph workloads rather than only
   smoke tests
 
-### 3. Durable Local Graph Engine
+### 3. Durable Local Operational Workspace
 
-The in-memory backend should remain useful for tests and local workflows, but it
-can grow toward Redis-like operational expectations: fast, local, inspectable,
-and resilient.
+The in-memory backend should remain useful for tests and local workflows, but a
+closed-loop, autocommit, reloadable workspace can also serve as a local
+operational memory deployment mode without requiring a service. The product
+target is not a standalone file database; it is a durable workspace envelope
+that reopens typed operational memory with schema, deltas, recovery metadata,
+and rebuildable derived state.
 
 Long-term direction:
 
@@ -70,7 +73,7 @@ Long-term direction:
   paths
 - append-friendly durability and recovery decisions after transaction deltas are
   stable
-- compaction, repair, and operational tooling for local persisted graphs
+- compaction, repair, and operational tooling for local workspace envelopes
 - clear durability claims grounded in tested failure modes
 
 ### 4. Demo-Driven Product Proof
@@ -89,7 +92,8 @@ Long-term direction:
 
 ### 5. Durable Graph Workspace
 
-The current session model already points toward a real workspace product.
+The current session model already points toward a real workspace product: a
+resumable operational memory context rather than a saved graph file.
 
 Long-term direction:
 
