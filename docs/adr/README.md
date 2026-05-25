@@ -17,3 +17,4 @@ Current records:
 - [ADR 0002: Keep Monorepo While Designing Split-Ready Service Boundaries](0002-monorepo-with-split-ready-service-boundaries.md)
 - [ADR 0003: Transparent Backend Acceleration From Profiled Workloads](0003-transparent-backend-acceleration.md)
 - [ADR 0004: Frame GRM As A Structured Operational Memory Layer](0004-structured-operational-memory-layer.md)
+- [ADR 0005: Use Graph Workspaces And Durable Envelopes](0005-graph-workspace-and-durable-envelope.md)

@@ -29,10 +29,15 @@ of storage:
    including node models, edge models, fields, constraints, capabilities,
    indexes, query/recall affordances, and other orientation data.
 
-The exact scope of schema memory is still open. It may be per instance, per
-collection, per database, per tenant, or another unit decided later. The core
-decision is that schema memory is first-class architecture, not an incidental
-cache inferred only from existing data.
+The canonical persisted unit for schema memory is now a graph workspace. For the
+current product direction, one workspace contains one logical graph space with
+one runtime schema and one operational history. Future hosted/service work may
+manage multiple workspaces, but multi-workspace service semantics are not part
+of this ADR's current implementation scope. See
+[Persistence And Schema Memory Contract](../persistence-schema-memory-contract.md).
+
+The core decision is that schema memory is first-class architecture, not an
+incidental cache inferred only from existing data.
 
 Schema memory may be validated strictly at GRM write boundaries. This lets GRM
 enforce that typed tools, SDKs, MCP calls, and future service requests create
@@ -97,8 +102,6 @@ Tradeoffs:
 
 ## Open Questions
 
-- What is the durable scope of schema memory: instance, collection, database,
-  tenant, project, or workspace?
 - Should schema memory eventually be stored inside Neo4j/graph backends as GRM
   metadata nodes and edges, or remain in a GRM-owned metadata store?
 - How should schema memory versioning, migrations, compatibility checks, and
