@@ -23,6 +23,10 @@ fn service_surface_covers_runtime_request_families() {
     let service = read_proto("grm/service/v1/service.proto");
 
     for rpc in [
+        "CreateWorkspace",
+        "OpenWorkspace",
+        "ExecuteWorkspace",
+        "CloseWorkspace",
         "DefineNode",
         "DefineEdge",
         "SchemaList",
@@ -87,17 +91,18 @@ fn proto_contract_keeps_query_typed_instead_of_textual() {
 
 #[test]
 fn public_admin_contract_does_not_accept_server_file_paths() {
-    let proto = read_proto("grm/service/v1/admin.proto");
+    let proto = all_proto_text();
 
     assert!(
         !proto.contains("string path") && !proto.contains("optional string path"),
-        "public admin proto must not expose client-supplied server file paths"
+        "public service proto must not expose client-supplied server file paths"
     );
     assert!(
         proto.contains("message SnapshotHandle")
             && proto.contains("bytes document")
-            && proto.contains("SnapshotHandle snapshot"),
-        "admin proto should use managed handles and bytes for snapshot import/export"
+            && proto.contains("message WorkspaceHandle")
+            && proto.contains("message WorkspaceRuntimeRequest"),
+        "service proto should use managed handles and bytes for workspace/snapshot flows"
     );
 }
 
@@ -381,6 +386,223 @@ async fn service_shaped_unsupported_request_returns_explicit_runtime_error() {
 
     assert!(matches!(err, grm_rs::GrmError::NotSupported(_)));
     assert!(err.to_string().contains("explain requests yet"));
+}
+
+#[tokio::test]
+async fn in_process_workspace_service_executes_generated_requests_against_handle() {
+    let mut service = svc::InProcessWorkspaceService::new();
+    let created = service
+        .create_workspace(
+            svc::proto::WorkspaceCreateRequest {
+                mode: svc::proto::WorkspaceCreateMode::InMemory as i32,
+            }
+            .try_into()
+            .unwrap(),
+        )
+        .unwrap();
+    let generated_created: svc::proto::WorkspaceCreateResponse = created.clone().into();
+    assert_eq!(generated_created.handle.unwrap().id, created.handle.id);
+    assert!(!created.handle.id.is_empty());
+
+    let generated_schema = svc::proto::DefineNodeRequest {
+        name: "User".into(),
+        id_field: "userId".into(),
+        fields: vec![svc::proto::FieldSpec {
+            name: "name".into(),
+            value_type: svc::proto::FieldValueType::String as i32,
+            required: true,
+        }],
+    };
+    let schema_response = service
+        .execute_runtime(
+            svc::proto::WorkspaceRuntimeRequest {
+                handle: Some(created.handle.clone().into()),
+                request: Some(svc::proto::RuntimeRequest {
+                    request: Some(svc::proto::runtime_request::Request::DefineNode(
+                        generated_schema,
+                    )),
+                }),
+            }
+            .try_into()
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(schema_response.handle, created.handle);
+    assert!(matches!(
+        schema_response.response,
+        RuntimeResponse::Schema(grm_rs::SchemaResponse::DefineNode(ref model))
+            if model.name == "User"
+    ));
+    assert!(matches!(
+        schema_response.durable_operations.as_slice(),
+        [DurableOperation::RegisterNodeModel { model }] if model.name == "User"
+    ));
+    let generated_schema_response: svc::proto::WorkspaceRuntimeResponse =
+        schema_response.try_into().unwrap();
+    assert!(matches!(
+        generated_schema_response
+            .response
+            .and_then(|response| response.response),
+        Some(svc::proto::runtime_response::Response::DefineNode(response))
+            if response.model.as_ref().unwrap().name == "User"
+                && response.durability.as_ref().unwrap().has_durable_mutation
+    ));
+
+    let generated_batch = svc::proto::BatchRequest {
+        atomic: true,
+        allow_deletes: false,
+        response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+        ops: vec![svc::proto::BatchOperation {
+            op: Some(svc::proto::batch_operation::Op::NodeCreate(
+                svc::proto::BatchNodeCreate {
+                    model: "User".into(),
+                    props: Some(proto_property_map([(
+                        "name",
+                        svc::proto::property_value::Kind::StringValue("Ada".into()),
+                    )])),
+                    local_ref: Some("ada".into()),
+                },
+            )),
+        }],
+    };
+    let batch_response = service
+        .execute_runtime(
+            svc::proto::WorkspaceRuntimeRequest {
+                handle: Some(created.handle.clone().into()),
+                request: Some(svc::proto::RuntimeRequest {
+                    request: Some(svc::proto::runtime_request::Request::ApplyBatch(
+                        generated_batch,
+                    )),
+                }),
+            }
+            .try_into()
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(batch_response.handle, created.handle);
+    assert!(matches!(
+        batch_response.response,
+        RuntimeResponse::Batch(ref batch)
+            if batch.value["applied"] == json!(true)
+                && batch.value["ids"][0]["ref"] == json!("ada")
+    ));
+    assert!(matches!(
+        batch_response.durable_operations.as_slice(),
+        [DurableOperation::UpsertNode { node }] if node.labels.iter().any(|label| label == "User")
+    ));
+    let generated_batch_response: svc::proto::WorkspaceRuntimeResponse =
+        batch_response.try_into().unwrap();
+    assert!(matches!(
+        generated_batch_response
+            .response
+            .and_then(|response| response.response),
+        Some(svc::proto::runtime_response::Response::ApplyBatch(response))
+            if response.applied
+                && response.ids[0].local_ref.as_deref() == Some("ada")
+                && response.durability.as_ref().unwrap().durable_op_count == 1
+    ));
+}
+
+#[tokio::test]
+async fn in_process_workspace_service_reopens_closed_loop_snapshot_by_handle() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("workspace.json");
+    let mut service = svc::InProcessWorkspaceService::new();
+    let created = service
+        .create_workspace(svc::WorkspaceCreateRequest {
+            mode: svc::WorkspaceCreateMode::InMemory,
+        })
+        .unwrap();
+
+    service
+        .execute_runtime(svc::WorkspaceRuntimeRequest {
+            handle: created.handle.clone(),
+            request: svc::ServiceRequest::DefineNode(svc::DefineNodeRequest {
+                name: "User".into(),
+                id_field: "userId".into(),
+                fields: vec![svc::FieldSpec {
+                    name: "email".into(),
+                    value_type: svc::FieldValueType::String,
+                    required: false,
+                }],
+            }),
+        })
+        .await
+        .unwrap();
+    let snapshot = service
+        .save_workspace_to_local_snapshot(
+            &created.handle,
+            svc::LocalWorkspaceSnapshotRequest {
+                format: svc::DurabilityFormat::Json,
+                path,
+            },
+        )
+        .unwrap();
+    let closed = service
+        .close_workspace(
+            svc::proto::WorkspaceCloseRequest {
+                handle: Some(created.handle.clone().into()),
+            }
+            .try_into()
+            .unwrap(),
+        )
+        .unwrap();
+    let generated_closed: svc::proto::WorkspaceCloseResponse = closed.into();
+    assert_eq!(generated_closed.handle.unwrap().id, created.handle.id);
+
+    let opened = service
+        .open_workspace(
+            svc::proto::WorkspaceOpenRequest {
+                snapshot: Some(snapshot.into()),
+                format: svc::proto::DurabilityFormat::Json as i32,
+            }
+            .try_into()
+            .unwrap(),
+        )
+        .unwrap();
+    let generated_opened: svc::proto::WorkspaceOpenResponse = opened.clone().into();
+    assert_eq!(generated_opened.handle.unwrap().id, opened.handle.id);
+    assert_ne!(opened.handle, created.handle);
+
+    let reopened = service.workspace(&opened.handle).unwrap();
+    let model = reopened.state().model("User").unwrap();
+    assert_eq!(model.origin, grm_rs::RuntimeSchemaOrigin::Declared);
+    assert!(model.field("email").is_some());
+}
+
+#[tokio::test]
+async fn in_process_workspace_service_returns_structured_errors() {
+    let mut service = svc::InProcessWorkspaceService::new();
+    let unknown = svc::WorkspaceHandle {
+        id: "missing-workspace".into(),
+    };
+
+    let err = service
+        .execute_runtime(svc::WorkspaceRuntimeRequest {
+            handle: unknown.clone(),
+            request: svc::ServiceRequest::SchemaList(svc::SchemaListRequest {}),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        svc::WorkspaceServiceError::UnknownWorkspaceHandle { handle }
+            if handle == unknown
+    ));
+
+    let err = service
+        .unsupported_workspace_operation(svc::WorkspaceUnsupportedRequest {
+            operation: svc::WorkspaceUnsupportedOperation::OpenLoopExternalInference,
+        })
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        svc::WorkspaceServiceError::UnsupportedWorkspaceOperation("open-loop external inference")
+    ));
 }
 
 fn read_proto(relative: &str) -> String {
