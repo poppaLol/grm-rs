@@ -1,20 +1,26 @@
 //! Split-ready service API contract artifacts for GRM.
 //!
 //! This crate intentionally contains the protobuf source contract rather than a
-//! daemon, transport policy, or generated client. It is client-facing and can be
-//! split from the monorepo later without depending on private daemon internals.
+//! daemon or hosted transport policy. It is client-facing and can be split from
+//! the monorepo later without depending on private daemon internals. The local
+//! gRPC shell is a transport proof over the in-process workspace service.
 
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
+use tokio::sync::Mutex;
+use tonic::{Request, Response, Status};
 
 #[allow(warnings)]
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/grm.service.v1.rs"));
 }
+
+pub use proto::grm_service_server::GrmServiceServer;
 
 pub const PROTO_PACKAGE: &str = "grm.service.v1";
 pub const PROTO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/proto");
@@ -320,6 +326,262 @@ impl InProcessWorkspaceService {
             etag: String::new(),
         }
     }
+}
+
+#[derive(Clone, Default)]
+pub struct GrpcWorkspaceService {
+    inner: Arc<Mutex<InProcessWorkspaceService>>,
+}
+
+impl GrpcWorkspaceService {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_in_process(service: InProcessWorkspaceService) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(service)),
+        }
+    }
+
+    pub fn into_server(self) -> GrmServiceServer<Self> {
+        GrmServiceServer::new(self)
+    }
+}
+
+#[tonic::async_trait]
+impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
+    async fn create_workspace(
+        &self,
+        request: Request<proto::WorkspaceCreateRequest>,
+    ) -> Result<Response<proto::WorkspaceCreateResponse>, Status> {
+        let request = request.into_inner().try_into().map_err(proto_status)?;
+        let response = self
+            .inner
+            .lock()
+            .await
+            .create_workspace(request)
+            .map_err(workspace_status)?;
+        Ok(Response::new(response.into()))
+    }
+
+    async fn open_workspace(
+        &self,
+        request: Request<proto::WorkspaceOpenRequest>,
+    ) -> Result<Response<proto::WorkspaceOpenResponse>, Status> {
+        let request = request.into_inner().try_into().map_err(proto_status)?;
+        let response = self
+            .inner
+            .lock()
+            .await
+            .open_workspace(request)
+            .map_err(workspace_status)?;
+        Ok(Response::new(response.into()))
+    }
+
+    async fn execute_workspace(
+        &self,
+        request: Request<proto::WorkspaceRuntimeRequest>,
+    ) -> Result<Response<proto::WorkspaceRuntimeResponse>, Status> {
+        let request = request.into_inner().try_into().map_err(proto_status)?;
+        let response = self
+            .inner
+            .lock()
+            .await
+            .execute_runtime(request)
+            .await
+            .map_err(workspace_status)?
+            .try_into()
+            .map_err(proto_status)?;
+        Ok(Response::new(response))
+    }
+
+    async fn close_workspace(
+        &self,
+        request: Request<proto::WorkspaceCloseRequest>,
+    ) -> Result<Response<proto::WorkspaceCloseResponse>, Status> {
+        let request = request.into_inner().try_into().map_err(proto_status)?;
+        let response = self
+            .inner
+            .lock()
+            .await
+            .close_workspace(request)
+            .map_err(workspace_status)?;
+        Ok(Response::new(response.into()))
+    }
+
+    async fn define_node(
+        &self,
+        _request: Request<proto::DefineNodeRequest>,
+    ) -> Result<Response<proto::DefineNodeResponse>, Status> {
+        Err(unsupported_rpc("DefineNode"))
+    }
+
+    async fn define_edge(
+        &self,
+        _request: Request<proto::DefineEdgeRequest>,
+    ) -> Result<Response<proto::DefineEdgeResponse>, Status> {
+        Err(unsupported_rpc("DefineEdge"))
+    }
+
+    async fn schema_list(
+        &self,
+        _request: Request<proto::SchemaListRequest>,
+    ) -> Result<Response<proto::SchemaListResponse>, Status> {
+        Err(unsupported_rpc("SchemaList"))
+    }
+
+    async fn create_node(
+        &self,
+        _request: Request<proto::NodeCreateRequest>,
+    ) -> Result<Response<proto::NodeCreateResponse>, Status> {
+        Err(unsupported_rpc("CreateNode"))
+    }
+
+    async fn update_node(
+        &self,
+        _request: Request<proto::NodeUpdateRequest>,
+    ) -> Result<Response<proto::NodeUpdateResponse>, Status> {
+        Err(unsupported_rpc("UpdateNode"))
+    }
+
+    async fn delete_node(
+        &self,
+        _request: Request<proto::NodeDeleteRequest>,
+    ) -> Result<Response<proto::NodeDeleteResponse>, Status> {
+        Err(unsupported_rpc("DeleteNode"))
+    }
+
+    async fn find_nodes(
+        &self,
+        _request: Request<proto::NodeFindRequest>,
+    ) -> Result<Response<proto::NodeFindResponse>, Status> {
+        Err(unsupported_rpc("FindNodes"))
+    }
+
+    async fn create_edge(
+        &self,
+        _request: Request<proto::EdgeCreateRequest>,
+    ) -> Result<Response<proto::EdgeCreateResponse>, Status> {
+        Err(unsupported_rpc("CreateEdge"))
+    }
+
+    async fn update_edge(
+        &self,
+        _request: Request<proto::EdgeUpdateRequest>,
+    ) -> Result<Response<proto::EdgeUpdateResponse>, Status> {
+        Err(unsupported_rpc("UpdateEdge"))
+    }
+
+    async fn delete_edge(
+        &self,
+        _request: Request<proto::EdgeDeleteRequest>,
+    ) -> Result<Response<proto::EdgeDeleteResponse>, Status> {
+        Err(unsupported_rpc("DeleteEdge"))
+    }
+
+    async fn find_edges(
+        &self,
+        _request: Request<proto::EdgeFindRequest>,
+    ) -> Result<Response<proto::EdgeFindResponse>, Status> {
+        Err(unsupported_rpc("FindEdges"))
+    }
+
+    async fn query(
+        &self,
+        _request: Request<proto::QueryRequest>,
+    ) -> Result<Response<proto::QueryResponse>, Status> {
+        Err(unsupported_rpc("Query"))
+    }
+
+    async fn explain(
+        &self,
+        _request: Request<proto::ExplainRequest>,
+    ) -> Result<Response<proto::ExplainResponse>, Status> {
+        Err(unsupported_rpc("Explain"))
+    }
+
+    async fn profile(
+        &self,
+        _request: Request<proto::ProfileRequest>,
+    ) -> Result<Response<proto::ProfileResponse>, Status> {
+        Err(unsupported_rpc("Profile"))
+    }
+
+    async fn apply_batch(
+        &self,
+        _request: Request<proto::BatchRequest>,
+    ) -> Result<Response<proto::BatchResponse>, Status> {
+        Err(unsupported_rpc("ApplyBatch"))
+    }
+
+    async fn save(
+        &self,
+        _request: Request<proto::SaveRequest>,
+    ) -> Result<Response<proto::SaveResponse>, Status> {
+        Err(unsupported_rpc("Save"))
+    }
+
+    async fn load(
+        &self,
+        _request: Request<proto::LoadRequest>,
+    ) -> Result<Response<proto::LoadResponse>, Status> {
+        Err(unsupported_rpc("Load"))
+    }
+
+    async fn export(
+        &self,
+        _request: Request<proto::ExportRequest>,
+    ) -> Result<Response<proto::ExportResponse>, Status> {
+        Err(unsupported_rpc("Export"))
+    }
+
+    async fn import(
+        &self,
+        _request: Request<proto::ImportRequest>,
+    ) -> Result<Response<proto::ImportResponse>, Status> {
+        Err(unsupported_rpc("Import"))
+    }
+
+    async fn index_list(
+        &self,
+        _request: Request<proto::IndexListRequest>,
+    ) -> Result<Response<proto::IndexListResponse>, Status> {
+        Err(unsupported_rpc("IndexList"))
+    }
+
+    async fn summary(
+        &self,
+        _request: Request<proto::SummaryRequest>,
+    ) -> Result<Response<proto::SummaryResponse>, Status> {
+        Err(unsupported_rpc("Summary"))
+    }
+}
+
+fn workspace_status(error: WorkspaceServiceError) -> Status {
+    match error {
+        WorkspaceServiceError::UnknownWorkspaceHandle { .. }
+        | WorkspaceServiceError::UnknownSnapshotHandle { .. } => {
+            Status::not_found(error.to_string())
+        }
+        WorkspaceServiceError::UnsupportedWorkspaceOperation(_) => {
+            Status::unimplemented(error.to_string())
+        }
+        WorkspaceServiceError::Runtime(error) => proto_status(error),
+    }
+}
+
+fn proto_status(error: grm_rs::GrmError) -> Status {
+    match error {
+        grm_rs::GrmError::NotSupported(message) => Status::unimplemented(message),
+        other => Status::invalid_argument(other.to_string()),
+    }
+}
+
+fn unsupported_rpc(name: &'static str) -> Status {
+    Status::unimplemented(format!(
+        "{name} is not exposed by this local gRPC workspace shell; use ExecuteWorkspace for workspace-scoped runtime requests"
+    ))
 }
 
 impl TryFrom<proto::WorkspaceCreateRequest> for WorkspaceCreateRequest {

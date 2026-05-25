@@ -21,9 +21,10 @@ fn main() {
     }
 
     let protoc = protoc_bin_vendored::protoc_bin_path().unwrap();
-    let mut config = prost_build::Config::new();
-    config.protoc_executable(protoc);
+    let mut prost_config = prost_build::Config::new();
+    prost_config.protoc_executable(protoc);
+    let config = tonic_build::configure();
     config
-        .compile_protos(&files, &[proto_root])
+        .compile_protos_with_config(prost_config, &files, &[proto_root])
         .expect("GRM service protobuf contract should compile");
 }
