@@ -55,8 +55,8 @@ GRM is partially aligned with the SOML target:
 | Boundary | Current state | SOML gap |
 | --- | --- | --- |
 | Adapter | CLI, Python, and MCP exist. MCP already accepts structured tool JSON, and Python/MCP routes some read paths through structured runtime requests. Adapter filter maps still preserve legacy ergonomics before conversion. | Keep adapter-specific syntax at the edge. Do not let CLI/filter-map conveniences become the canonical operational memory contract. |
-| Runtime | `RuntimeRequest`, `RuntimeResponse`, and `SessionState::execute_runtime` exist for schema, node, edge, query, explain/profile, batch, and admin families. Durable mutation outcomes are explicit for writes. | Runtime concepts are still graph CRUD/query shaped. Session, delta, projection, and attestation are not first-class runtime request families yet. |
-| Service | `grm-service-api` exists as a split-ready protobuf source crate. The proto skeleton is typed and compiles with codegen tests. | The proto still mirrors current graph/runtime operation families. It does not yet model SOML concepts such as session context, projections, attestations, or provenance evidence. |
+| Runtime | `RuntimeRequest`, `RuntimeResponse`, and `SessionState::execute_runtime` exist for schema, node, edge, query, batch, explain/profile, and admin families. Schema, node, edge, simple find/query, and batch requests execute through shared runtime behavior and preserve durable operation metadata where writes occur. Explain/profile, traversal query, and admin remain explicitly unsupported in the runtime dispatcher where they are not implemented. | Runtime concepts are still graph CRUD/query shaped. Session, delta, projection, and attestation are not first-class runtime request families yet. |
+| Service | `grm-service-api` exists as a split-ready protobuf contract crate. It now compiles generated protobuf DTOs, converts generated schema/node/edge/query/batch shapes into service/runtime requests, and proves generated schema and batch requests can execute through `SessionState::execute_runtime` without a daemon. | The proto still mirrors current graph/runtime operation families. It does not yet model SOML concepts such as session context, projections, attestations, or provenance evidence. |
 | Backend | In-memory and Neo4j backends sit behind common contracts with visible capability differences. Neo4j MCP mode supports schema-aware CRUD and simple find, but not full traversal/query/import/export/explain/profile parity. | Backend capability reporting should evolve toward operational memory capabilities, not just storage capability lists. |
 | Storage | User graph data, schema memory metadata, durable logs/checkpoints, and derived index/catalog state are conceptually separate. | Durable state should increasingly be described and tested as operational deltas. Projection and attestation storage models are still design work. |
 
@@ -147,12 +147,15 @@ GRM is currently converging on a service-hostable runtime core:
 
 - `RuntimeRequest` and related request enums describe typed operation families.
 - `SessionState::execute_runtime` provides an early typed runtime dispatcher for
-  schema, node, edge, and simple find/query paths.
+  schema, node, edge, simple find/query paths, and batch graph patches.
 - CLI, Python, and MCP are moving toward adapter roles that parse friendly
   inputs and call shared runtime behavior.
 - `SessionState::execute_runtime` returns durable operation metadata for
-  schema, node, and edge mutations while read paths return an empty durable
-  operation list.
+  schema, node, edge, and batch mutations while read paths return an empty
+  durable operation list.
+- `grm-service-api` now includes generated protobuf DTOs and conversion paths
+  that drive existing runtime behavior in-process. This proves a
+  service-hostable runtime contract, but it is not a network service.
 - Explain/profile and index catalog work make query behavior visible enough to
   demo and eventually sell.
 - WAL/checkpoint work has established local durability foundations, but claims
@@ -284,7 +287,8 @@ Acceptable near-term progress:
 
 - adapters route more read behavior through `execute_runtime`
 - write paths converge only when durable operation metadata remains explicit
-- structured request and response types become easier to map to protobuf
+- generated protobuf request DTOs map to typed runtime requests without adding a
+  daemon, transport, security policy, or new mutation semantics
 - service API objects gain SOML-oriented shape only where runtime semantics are
   clear enough to implement and test
 - tests prove behavior through runtime, MCP, Python, CLI, or backend public
@@ -312,21 +316,22 @@ Progress to avoid:
 
 ## Near-Term Sequence
 
-1. Finish adapter routing through typed runtime paths where safe.
-2. Map existing protobuf messages to runtime request/response types with tests,
-   keeping unsupported semantics explicit.
-3. Add a design note for the minimum SOML service additions: session context,
+1. Finish adapter routing through typed runtime paths where safe, and shrink
+   adapter-owned backend execution logic when it can move behind runtime/backend
+   boundaries.
+2. Add a design note for the minimum SOML service additions: session context,
    delta outcome, projection request, and attestation evidence.
-4. Tighten durability language and tests around operational deltas, replay, and
+3. Tighten durability language and tests around operational deltas, replay, and
    recovery evidence before widening product claims.
-5. Add a minimal daemon only after transport, security posture, durability
+4. Add a minimal daemon only after transport, security posture, durability
    claims, and authorization boundaries are clear enough to review.
 
 The daemon is not the next architectural proof. The next proof is that all
 surfaces can share the same typed runtime semantics without depending on a
-textual language or duplicating behavior. The next SOML proof is that those
-typed semantics can carry one operational memory concept end to end without
-renaming unsupported behavior into existence.
+textual language or duplicating behavior; the generated protobuf to runtime
+mapping is the first concrete service-hostable proof. The next SOML proof is
+that those typed semantics can carry one operational memory concept end to end
+without renaming unsupported behavior into existence.
 
 ## Future Graph Representation
 
