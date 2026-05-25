@@ -28,6 +28,7 @@ pub enum RuntimeResponse {
     Schema(SchemaResponse),
     Node(NodeResponse),
     Edge(EdgeResponse),
+    Batch(RuntimeBatchResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +36,12 @@ pub struct RuntimeDispatchOutcome {
     pub response: RuntimeResponse,
     #[serde(default)]
     pub durable_ops: Vec<DurableOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeBatchResponse {
+    pub value: Value,
+    pub should_persist: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
