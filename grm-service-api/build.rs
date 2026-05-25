@@ -11,6 +11,7 @@ fn main() {
         "grm/service/v1/query.proto",
         "grm/service/v1/batch.proto",
         "grm/service/v1/admin.proto",
+        "grm/service/v1/workspace.proto",
         "grm/service/v1/service.proto",
     ]
     .map(|file| proto_root.join(file));
