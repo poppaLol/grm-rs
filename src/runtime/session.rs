@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::batch::apply_session_batch;
 use super::{DurabilityFormat, DurableOperation};
 use crate::backend::{
     AccessPath, BinaryPersistedGraphStore, ExecutionPlan, GraphStore, PersistedGraphStore,
@@ -20,12 +21,12 @@ use crate::dsl::{
 use crate::fsutil::{backup_path, write_file_atomically, write_file_atomically_with_backup};
 use crate::runtime::durability;
 use crate::runtime::{
-    AdminRequest, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
-    EdgeFindRequest, EdgeRequest, EdgeResponse, EdgeUpdateRequest, ExplainRequest, FieldSpec,
-    FieldValueType, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeRequest,
-    NodeResponse, NodeUpdateRequest, OrderDirection, PredicateOp, ProfileRequest,
-    PropertyPredicate, QueryRequest, RuntimeDelete, RuntimeDispatchOutcome,
-    RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
+    AdminRequest, BatchRequest, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest,
+    EdgeDeleteRequest, EdgeFindRequest, EdgeRequest, EdgeResponse, EdgeUpdateRequest,
+    ExplainRequest, FieldSpec, FieldValueType, NodeCreateRequest, NodeDeleteRequest,
+    NodeFindRequest, NodeRequest, NodeResponse, NodeUpdateRequest, OrderDirection, PredicateOp,
+    ProfileRequest, PropertyPredicate, QueryRequest, RuntimeBatchResponse, RuntimeDelete,
+    RuntimeDispatchOutcome, RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
     RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
     RuntimeRequest, RuntimeResponse, SchemaRequest, SchemaResponse, TraversalDirection,
     TraversalReturn,
@@ -368,9 +369,7 @@ impl SessionState {
             RuntimeRequest::Profile(_) => Err(crate::GrmError::NotSupported(
                 "runtime dispatcher does not support profile requests yet",
             )),
-            RuntimeRequest::Batch(_) => Err(crate::GrmError::NotSupported(
-                "runtime dispatcher does not support batch requests yet",
-            )),
+            RuntimeRequest::Batch(request) => self.execute_batch_request(request).await,
             RuntimeRequest::Admin(_) => Err(crate::GrmError::NotSupported(
                 "runtime dispatcher does not support admin requests",
             )),
@@ -482,6 +481,20 @@ impl SessionState {
                 "runtime dispatcher does not support traversal query requests yet",
             )),
         }
+    }
+
+    async fn execute_batch_request(
+        &mut self,
+        request: BatchRequest,
+    ) -> Result<RuntimeDispatchOutcome> {
+        let outcome = apply_session_batch(self, request.into()).await?;
+        Ok(RuntimeDispatchOutcome {
+            response: RuntimeResponse::Batch(RuntimeBatchResponse {
+                value: outcome.value,
+                should_persist: outcome.should_persist,
+            }),
+            durable_ops: outcome.durable_ops,
+        })
     }
 
     pub fn catalog(&self) -> &SessionModelCatalog {

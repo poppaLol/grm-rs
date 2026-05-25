@@ -2122,6 +2122,48 @@ async fn runtime_dispatcher_routes_query_find_requests_through_find_responses() 
 }
 
 #[tokio::test]
+async fn runtime_dispatcher_executes_batch_request_through_existing_batch_path() {
+    let mut state = SessionState::new();
+
+    let response = state
+        .execute_runtime(RuntimeRequest::Batch(BatchRequest {
+            atomic: true,
+            allow_deletes: false,
+            response: SessionBatchResponse::Detailed,
+            ops: vec![
+                grm_rs::SessionBatchOp::SchemaDefineNode(grm_rs::SessionBatchDefineNodeParams {
+                    name: "User".to_string(),
+                    id_field: "userId".to_string(),
+                    fields: vec![grm_rs::SessionBatchFieldParam {
+                        name: "name".to_string(),
+                        value_type: "string".to_string(),
+                        required: true,
+                    }],
+                }),
+                grm_rs::SessionBatchOp::NodeCreate(grm_rs::SessionBatchNodeCreateParams {
+                    model: "User".to_string(),
+                    props: BTreeMap::from([("name".to_string(), json!("Ada"))]),
+                    local_ref: Some("ada".to_string()),
+                }),
+            ],
+        }))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        response.response,
+        RuntimeResponse::Batch(batch)
+            if batch.should_persist
+                && batch.value["applied"] == json!(true)
+                && batch.value["ids"][0]["ref"] == json!("ada")
+    ));
+    assert!(matches!(
+        response.durable_ops.as_slice(),
+        [DurableOperation::Batch { ops }] if ops.len() == 2
+    ));
+}
+
+#[tokio::test]
 async fn runtime_dispatcher_returns_clear_unsupported_errors_for_excluded_variants() {
     let mut state = SessionState::new();
     let unsupported = vec![
@@ -2151,15 +2193,6 @@ async fn runtime_dispatcher_returns_clear_unsupported_errors_for_excluded_varian
                 },
             })),
             "traversal query requests yet",
-        ),
-        (
-            RuntimeRequest::Batch(BatchRequest {
-                atomic: true,
-                allow_deletes: false,
-                response: SessionBatchResponse::Summary,
-                ops: vec![],
-            }),
-            "batch requests yet",
         ),
         (
             RuntimeRequest::Admin(grm_rs::AdminRequest::SchemaList),
