@@ -1,10 +1,12 @@
 # Service Boundary Design Spike
 
 This document captures the intended service boundary for GRM after Shared WAL
-durability core changes. It is a docs-only design spike: the goal is to make
-the future hosted/service contract concrete enough that security work, daemon
-work, SDKs, and packaging can be designed against it without prematurely
-building the service.
+durability core changes. It began as a docs-only design spike; the current
+codebase now contains a split-ready `grm-service-api` contract crate with
+generated protobuf DTOs and in-process mappings into the existing runtime
+dispatcher. The goal remains to make the future hosted/service contract concrete
+enough that security work, daemon work, SDKs, and packaging can be designed
+against it without prematurely building the service.
 
 See also [ADR 0001: Separate Graph Data From Schema Memory](adr/0001-graph-data-and-schema-memory.md)
 for the product architecture principle that future backends should store user
@@ -86,8 +88,10 @@ not become the default for production-like daemon or hosted configurations.
 
 ## Service Surface Sketch
 
-The exact `.proto` package layout can wait for an implementation PR, but the
-first service boundary should organize around explicit operation families.
+The first `.proto` package layout now exists in `grm-service-api`. It organizes
+the service boundary around explicit operation families and codegen-checked
+protobuf files. The crate deliberately stops short of a daemon, transport, TLS,
+auth, or authorization implementation.
 
 ### SchemaService
 
@@ -145,6 +149,12 @@ Candidate RPC:
 The durable operation grouping should remain explicit. A successful atomic
 patch maps naturally to one durable grouped operation, while non-atomic patches
 may expose per-operation success and failure semantics.
+
+Current implementation note: generated protobuf batch DTOs can be converted into
+the service/runtime request shape and executed in-process through
+`SessionState::execute_runtime`, which routes batch requests to the existing
+`apply_session_batch` path. The response preserves the runtime batch value,
+`should_persist`, and grouped durable operation metadata.
 
 ### QueryService
 
@@ -325,24 +335,21 @@ introducing a separate textual service language.
 This convergence matters because it gives GRM one core behavior contract across
 embedded Rust, CLI, Python, MCP, and hosted/service mode.
 
-## Recommended Near-Term PR
+## Current Service API Progress
 
-After the runtime dispatcher exposes durable mutation outcomes, a follow-up
-implementation PR should add a service API crate, likely named `grm-proto` or
-`grm-service-api`.
+The near-term service API proof has moved from design into code:
 
-Recommended scope:
+- `grm-service-api` contains the initial typed protobuf files for schema, node,
+  edge, batch, query, introspection, and durability/admin messages.
+- The crate generates Rust DTOs from those protobuf definitions at build time.
+- Generated protobuf schema and batch requests are converted into typed service
+  request shapes and executed through the existing runtime dispatcher in tests.
+- Runtime dispatcher batch support now reuses the existing batch implementation
+  rather than introducing a new service-only mutation path.
+- Unsupported runtime surfaces remain explicit: traversal query, explain,
+  profile, and admin operations are not silently claimed as implemented.
 
-- add initial `.proto` files for schema, node, edge, batch, query,
-  introspection, and durability/admin messages
-- generate Rust types from those protobuf definitions
-- include mapping notes between generated types and existing runtime request
-  types
-- optionally add a tiny in-process harness if it helps validate mappings, but do
-  not require a daemon yet
-- leave the embedded runtime behavior untouched except for narrow mapping or
-  documentation changes
-
-That PR should make the service API concrete without forcing transport,
-daemon lifecycle, TLS, certificate management, authorization engines, or hosted
-operations into the repository prematurely.
+This is a service-hostable runtime contract proof, not a hosted service. The
+next service-boundary work should avoid adding transport until request context,
+security posture, authorization, durability claims, and unsupported semantics
+are clear enough to review.

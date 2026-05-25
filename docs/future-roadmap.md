@@ -124,6 +124,32 @@ Long-term direction:
 
 This should become a deliberate product strategy rather than an accidental collection of entrypoints.
 
+### 8. Service-Hostable Runtime Contract
+
+GRM now has the first concrete proof that the future service boundary can drive
+existing runtime behavior without introducing a daemon or a second semantics
+path.
+
+Current progress:
+
+- `grm-service-api` contains codegen-checked protobuf source files and generated
+  Rust DTOs for typed service operation families.
+- Generated protobuf schema and batch requests can be converted into typed
+  runtime requests and executed in-process through `SessionState::execute_runtime`.
+- Runtime dispatcher batch execution reuses the existing batch implementation
+  and preserves grouped durable operation metadata.
+
+Long-term direction:
+
+- keep service DTOs mapped to shared runtime behavior rather than adapter or
+  backend-specific shortcuts
+- add service context, authorization, limits, audit, and transport only after
+  the typed runtime boundary is stable enough to review
+- introduce SOML concepts such as session context, durable deltas, projections,
+  and attestations only when the runtime can make and test those claims
+- keep unsupported surfaces explicit instead of filling gaps with textual query
+  language or service-only behavior
+
 ## Product Directions Not Yet Fully Represented
 
 ### Schema Migration And Versioning
@@ -362,6 +388,9 @@ This keeps `.grm` useful for authored workflows while allowing import/export to 
 ### Nearer Long-Term
 
 - Python and MCP parity over schema, CRUD, traversal, import/export, and batch operations
+- service API DTO mapping over shared runtime behavior, then minimum SOML
+  service additions for session context, durable deltas, projections, and
+  attestation evidence
 - minimal live Neo4j backend, then broader Cypher-compliant backend support
 - indexed transaction overlay/read-view for the local backend
 - demo scenarios covering typed Rust, query-style usage, Python, and MCP
