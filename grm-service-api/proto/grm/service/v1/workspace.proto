@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package grm.service.v1;
+
+import "grm/service/v1/admin.proto";
+import "grm/service/v1/batch.proto";
+import "grm/service/v1/common.proto";
+import "grm/service/v1/edge.proto";
+import "grm/service/v1/node.proto";
+import "grm/service/v1/query.proto";
+import "grm/service/v1/schema.proto";
+
+message WorkspaceHandle {
+  string id = 1;
+}
+
+message WorkspaceCreateRequest {
+  WorkspaceCreateMode mode = 1;
+}
+
+enum WorkspaceCreateMode {
+  WORKSPACE_CREATE_MODE_IN_MEMORY = 0;
+}
+
+message WorkspaceCreateResponse {
+  WorkspaceHandle handle = 1;
+}
+
+message WorkspaceOpenRequest {
+  SnapshotHandle snapshot = 1;
+  DurabilityFormat format = 2;
+}
+
+message WorkspaceOpenResponse {
+  WorkspaceHandle handle = 1;
+}
+
+message WorkspaceRuntimeRequest {
+  WorkspaceHandle handle = 1;
+  RuntimeRequest request = 2;
+}
+
+message WorkspaceRuntimeResponse {
+  WorkspaceHandle handle = 1;
+  RuntimeResponse response = 2;
+  repeated DurableOperation durable_operations = 3;
+}
+
+message WorkspaceCloseRequest {
+  WorkspaceHandle handle = 1;
+}
+
+message WorkspaceCloseResponse {
+  WorkspaceHandle handle = 1;
+}
+
+message RuntimeRequest {
+  oneof request {
+    DefineNodeRequest define_node = 1;
+    DefineEdgeRequest define_edge = 2;
+    SchemaListRequest schema_list = 3;
+    NodeCreateRequest create_node = 4;
+    NodeUpdateRequest update_node = 5;
+    NodeDeleteRequest delete_node = 6;
+    NodeFindRequest find_nodes = 7;
+    EdgeCreateRequest create_edge = 8;
+    EdgeUpdateRequest update_edge = 9;
+    EdgeDeleteRequest delete_edge = 10;
+    EdgeFindRequest find_edges = 11;
+    QueryRequest query = 12;
+    ExplainRequest explain = 13;
+    ProfileRequest profile = 14;
+    BatchRequest apply_batch = 15;
+    IndexListRequest index_list = 16;
+    SummaryRequest summary = 17;
+  }
+}
+
+message RuntimeResponse {
+  oneof response {
+    DefineNodeResponse define_node = 1;
+    DefineEdgeResponse define_edge = 2;
+    SchemaListResponse schema_list = 3;
+    NodeCreateResponse create_node = 4;
+    NodeUpdateResponse update_node = 5;
+    NodeDeleteResponse delete_node = 6;
+    NodeFindResponse find_nodes = 7;
+    EdgeCreateResponse create_edge = 8;
+    EdgeUpdateResponse update_edge = 9;
+    EdgeDeleteResponse delete_edge = 10;
+    EdgeFindResponse find_edges = 11;
+    QueryResponse query = 12;
+    ExplainResponse explain = 13;
+    ProfileResponse profile = 14;
+    BatchResponse apply_batch = 15;
+    IndexListResponse index_list = 16;
+    SummaryResponse summary = 17;
+  }
+}

@@ -4,6 +4,9 @@
 //! daemon, transport policy, or generated client. It is client-facing and can be
 //! split from the monorepo later without depending on private daemon internals.
 
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -24,8 +27,439 @@ pub const PROTO_FILES: &[&str] = &[
     "grm/service/v1/query.proto",
     "grm/service/v1/batch.proto",
     "grm/service/v1/admin.proto",
+    "grm/service/v1/workspace.proto",
     "grm/service/v1/service.proto",
 ];
+
+#[derive(Debug)]
+pub enum WorkspaceServiceError {
+    Runtime(grm_rs::GrmError),
+    UnknownWorkspaceHandle { handle: WorkspaceHandle },
+    UnknownSnapshotHandle { snapshot: SnapshotHandle },
+    UnsupportedWorkspaceOperation(&'static str),
+}
+
+impl fmt::Display for WorkspaceServiceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Runtime(error) => write!(f, "{error}"),
+            Self::UnknownWorkspaceHandle { handle } => {
+                write!(f, "unknown workspace handle '{}'", handle.id)
+            }
+            Self::UnknownSnapshotHandle { snapshot } => {
+                write!(f, "unknown workspace snapshot handle '{}'", snapshot.id)
+            }
+            Self::UnsupportedWorkspaceOperation(operation) => {
+                write!(f, "workspace operation is not supported: {operation}")
+            }
+        }
+    }
+}
+
+impl Error for WorkspaceServiceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Runtime(error) => Some(error),
+            Self::UnknownWorkspaceHandle { .. }
+            | Self::UnknownSnapshotHandle { .. }
+            | Self::UnsupportedWorkspaceOperation(_) => None,
+        }
+    }
+}
+
+impl From<grm_rs::GrmError> for WorkspaceServiceError {
+    fn from(error: grm_rs::GrmError) -> Self {
+        Self::Runtime(error)
+    }
+}
+
+pub type WorkspaceServiceResult<T> = std::result::Result<T, WorkspaceServiceError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WorkspaceHandle {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCreateRequest {
+    pub mode: WorkspaceCreateMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceCreateMode {
+    InMemory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCreateResponse {
+    pub handle: WorkspaceHandle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOpenRequest {
+    pub snapshot: SnapshotHandle,
+    pub format: DurabilityFormat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOpenResponse {
+    pub handle: WorkspaceHandle,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspaceRuntimeRequest {
+    pub handle: WorkspaceHandle,
+    pub request: ServiceRequest,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceRuntimeResponse {
+    pub handle: WorkspaceHandle,
+    pub response: grm_rs::RuntimeResponse,
+    pub durable_operations: Vec<grm_rs::DurableOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCloseRequest {
+    pub handle: WorkspaceHandle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceCloseResponse {
+    pub handle: WorkspaceHandle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceUnsupportedRequest {
+    pub operation: WorkspaceUnsupportedOperation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceUnsupportedOperation {
+    OpenLoopExternalInference,
+    HostedDurability,
+    DaemonLifecycle,
+}
+
+impl WorkspaceUnsupportedOperation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::OpenLoopExternalInference => "open-loop external inference",
+            Self::HostedDurability => "hosted durability",
+            Self::DaemonLifecycle => "daemon lifecycle",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalWorkspaceSnapshotRequest {
+    pub format: DurabilityFormat,
+    pub path: PathBuf,
+}
+
+#[derive(Default)]
+pub struct InProcessWorkspaceService {
+    next_workspace_id: u64,
+    next_snapshot_id: u64,
+    workspaces: BTreeMap<String, grm_rs::Workspace>,
+    local_snapshots: BTreeMap<String, LocalWorkspaceSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalWorkspaceSnapshot {
+    format: DurabilityFormat,
+    path: PathBuf,
+}
+
+impl InProcessWorkspaceService {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn create_workspace(
+        &mut self,
+        request: WorkspaceCreateRequest,
+    ) -> WorkspaceServiceResult<WorkspaceCreateResponse> {
+        match request.mode {
+            WorkspaceCreateMode::InMemory => {
+                let handle = self.next_workspace_handle();
+                self.workspaces
+                    .insert(handle.id.clone(), grm_rs::Workspace::new());
+                Ok(WorkspaceCreateResponse { handle })
+            }
+        }
+    }
+
+    pub fn open_workspace(
+        &mut self,
+        request: WorkspaceOpenRequest,
+    ) -> WorkspaceServiceResult<WorkspaceOpenResponse> {
+        let snapshot = self
+            .local_snapshots
+            .get(&request.snapshot.id)
+            .ok_or_else(|| WorkspaceServiceError::UnknownSnapshotHandle {
+                snapshot: request.snapshot.clone(),
+            })?;
+        if snapshot.format != request.format {
+            return Err(WorkspaceServiceError::Runtime(
+                grm_rs::GrmError::Constraint(
+                    "workspace open format does not match registered snapshot".into(),
+                ),
+            ));
+        }
+
+        let workspace = grm_rs::Workspace::open(request.format.into(), &snapshot.path)?;
+        let handle = self.next_workspace_handle();
+        self.workspaces.insert(handle.id.clone(), workspace);
+        Ok(WorkspaceOpenResponse { handle })
+    }
+
+    pub async fn execute_runtime(
+        &mut self,
+        request: WorkspaceRuntimeRequest,
+    ) -> WorkspaceServiceResult<WorkspaceRuntimeResponse> {
+        let handle = request.handle;
+        let workspace = self.workspace_mut(&handle)?;
+        let outcome = request.request.execute(workspace.state_mut()).await?;
+        Ok(WorkspaceRuntimeResponse {
+            handle,
+            response: outcome.response,
+            durable_operations: outcome.durable_ops,
+        })
+    }
+
+    pub fn close_workspace(
+        &mut self,
+        request: WorkspaceCloseRequest,
+    ) -> WorkspaceServiceResult<WorkspaceCloseResponse> {
+        self.workspaces
+            .remove(&request.handle.id)
+            .map(|_| WorkspaceCloseResponse {
+                handle: request.handle.clone(),
+            })
+            .ok_or(WorkspaceServiceError::UnknownWorkspaceHandle {
+                handle: request.handle,
+            })
+    }
+
+    pub fn unsupported_workspace_operation(
+        &self,
+        request: WorkspaceUnsupportedRequest,
+    ) -> WorkspaceServiceResult<()> {
+        Err(WorkspaceServiceError::UnsupportedWorkspaceOperation(
+            request.operation.name(),
+        ))
+    }
+
+    /// Local adapter hook for tests and transitional single-process tools.
+    ///
+    /// The public workspace open request consumes only the returned snapshot
+    /// handle; server-local paths intentionally do not appear in the service
+    /// contract proto.
+    pub fn register_local_workspace_snapshot(
+        &mut self,
+        request: LocalWorkspaceSnapshotRequest,
+    ) -> SnapshotHandle {
+        let snapshot = self.next_snapshot_handle();
+        self.local_snapshots.insert(
+            snapshot.id.clone(),
+            LocalWorkspaceSnapshot {
+                format: request.format,
+                path: request.path,
+            },
+        );
+        snapshot
+    }
+
+    /// Local adapter hook for tests and transitional single-process tools.
+    pub fn save_workspace_to_local_snapshot(
+        &mut self,
+        handle: &WorkspaceHandle,
+        request: LocalWorkspaceSnapshotRequest,
+    ) -> WorkspaceServiceResult<SnapshotHandle> {
+        self.workspace(handle)?
+            .save(request.format.into(), &request.path)
+            .map_err(WorkspaceServiceError::Runtime)?;
+        Ok(self.register_local_workspace_snapshot(request))
+    }
+
+    pub fn workspace(
+        &self,
+        handle: &WorkspaceHandle,
+    ) -> WorkspaceServiceResult<&grm_rs::Workspace> {
+        self.workspaces.get(&handle.id).ok_or_else(|| {
+            WorkspaceServiceError::UnknownWorkspaceHandle {
+                handle: handle.clone(),
+            }
+        })
+    }
+
+    pub fn workspace_mut(
+        &mut self,
+        handle: &WorkspaceHandle,
+    ) -> WorkspaceServiceResult<&mut grm_rs::Workspace> {
+        self.workspaces.get_mut(&handle.id).ok_or_else(|| {
+            WorkspaceServiceError::UnknownWorkspaceHandle {
+                handle: handle.clone(),
+            }
+        })
+    }
+
+    fn next_workspace_handle(&mut self) -> WorkspaceHandle {
+        self.next_workspace_id += 1;
+        WorkspaceHandle {
+            id: format!("workspace-{}", self.next_workspace_id),
+        }
+    }
+
+    fn next_snapshot_handle(&mut self) -> SnapshotHandle {
+        self.next_snapshot_id += 1;
+        let id = format!("local-snapshot-{}", self.next_snapshot_id);
+        SnapshotHandle {
+            id,
+            etag: String::new(),
+        }
+    }
+}
+
+impl TryFrom<proto::WorkspaceCreateRequest> for WorkspaceCreateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::WorkspaceCreateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            mode: proto_workspace_create_mode(request.mode)?,
+        })
+    }
+}
+
+impl From<WorkspaceCreateResponse> for proto::WorkspaceCreateResponse {
+    fn from(response: WorkspaceCreateResponse) -> Self {
+        Self {
+            handle: Some(response.handle.into()),
+        }
+    }
+}
+
+impl TryFrom<proto::WorkspaceOpenRequest> for WorkspaceOpenRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::WorkspaceOpenRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            snapshot: request
+                .snapshot
+                .ok_or_else(|| missing_proto_field("WorkspaceOpenRequest.snapshot"))?
+                .into(),
+            format: proto_durability_format(request.format)?,
+        })
+    }
+}
+
+impl From<WorkspaceOpenResponse> for proto::WorkspaceOpenResponse {
+    fn from(response: WorkspaceOpenResponse) -> Self {
+        Self {
+            handle: Some(response.handle.into()),
+        }
+    }
+}
+
+impl TryFrom<proto::WorkspaceRuntimeRequest> for WorkspaceRuntimeRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::WorkspaceRuntimeRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            handle: request
+                .handle
+                .ok_or_else(|| missing_proto_field("WorkspaceRuntimeRequest.handle"))?
+                .into(),
+            request: request
+                .request
+                .ok_or_else(|| missing_proto_field("WorkspaceRuntimeRequest.request"))?
+                .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<WorkspaceRuntimeResponse> for proto::WorkspaceRuntimeResponse {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(response: WorkspaceRuntimeResponse) -> grm_rs::Result<Self> {
+        let runtime_response =
+            proto_runtime_response(response.response, response.durable_operations.as_slice())?;
+        Ok(Self {
+            handle: Some(response.handle.into()),
+            response: Some(runtime_response),
+            durable_operations: response
+                .durable_operations
+                .into_iter()
+                .map(proto_durable_operation)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+impl TryFrom<proto::WorkspaceCloseRequest> for WorkspaceCloseRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::WorkspaceCloseRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            handle: request
+                .handle
+                .ok_or_else(|| missing_proto_field("WorkspaceCloseRequest.handle"))?
+                .into(),
+        })
+    }
+}
+
+impl From<WorkspaceCloseResponse> for proto::WorkspaceCloseResponse {
+    fn from(response: WorkspaceCloseResponse) -> Self {
+        Self {
+            handle: Some(response.handle.into()),
+        }
+    }
+}
+
+impl From<proto::WorkspaceHandle> for WorkspaceHandle {
+    fn from(handle: proto::WorkspaceHandle) -> Self {
+        Self { id: handle.id }
+    }
+}
+
+impl From<WorkspaceHandle> for proto::WorkspaceHandle {
+    fn from(handle: WorkspaceHandle) -> Self {
+        Self { id: handle.id }
+    }
+}
+
+impl TryFrom<proto::RuntimeRequest> for ServiceRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::RuntimeRequest) -> grm_rs::Result<Self> {
+        use proto::runtime_request::Request as ProtoRequest;
+
+        match request
+            .request
+            .ok_or_else(|| missing_proto_field("RuntimeRequest.request"))?
+        {
+            ProtoRequest::DefineNode(request) => Ok(Self::DefineNode(request.try_into()?)),
+            ProtoRequest::DefineEdge(request) => Ok(Self::DefineEdge(request.try_into()?)),
+            ProtoRequest::SchemaList(request) => Ok(Self::SchemaList(request.into())),
+            ProtoRequest::CreateNode(request) => Ok(Self::CreateNode(request.try_into()?)),
+            ProtoRequest::UpdateNode(request) => Ok(Self::UpdateNode(request.try_into()?)),
+            ProtoRequest::DeleteNode(request) => Ok(Self::DeleteNode(request.into())),
+            ProtoRequest::FindNodes(request) => Ok(Self::FindNodes(request.try_into()?)),
+            ProtoRequest::CreateEdge(request) => Ok(Self::CreateEdge(request.try_into()?)),
+            ProtoRequest::UpdateEdge(request) => Ok(Self::UpdateEdge(request.try_into()?)),
+            ProtoRequest::DeleteEdge(request) => Ok(Self::DeleteEdge(request.into())),
+            ProtoRequest::FindEdges(request) => Ok(Self::FindEdges(request.try_into()?)),
+            ProtoRequest::Query(request) => Ok(Self::Query(request.try_into()?)),
+            ProtoRequest::Explain(request) => Ok(Self::Explain(request.try_into()?)),
+            ProtoRequest::Profile(request) => Ok(Self::Profile(request.try_into()?)),
+            ProtoRequest::ApplyBatch(request) => Ok(Self::ApplyBatch(request.try_into()?)),
+            ProtoRequest::IndexList(request) => Ok(Self::IndexList(request.into())),
+            ProtoRequest::Summary(request) => Ok(Self::Summary(request.into())),
+        }
+    }
+}
 
 pub fn proto_root() -> &'static Path {
     Path::new(PROTO_ROOT)
@@ -827,7 +1261,7 @@ pub struct IndexListRequest {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct SummaryRequest {}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotHandle {
     pub id: String,
     pub etag: String,
@@ -837,6 +1271,15 @@ pub struct SnapshotHandle {
 pub enum DurabilityFormat {
     Json,
     Binary,
+}
+
+impl From<DurabilityFormat> for grm_rs::DurabilityFormat {
+    fn from(format: DurabilityFormat) -> Self {
+        match format {
+            DurabilityFormat::Json => Self::Json,
+            DurabilityFormat::Binary => Self::Binary,
+        }
+    }
 }
 
 impl TryFrom<proto::DefineNodeRequest> for DefineNodeRequest {
@@ -1289,6 +1732,15 @@ impl From<proto::SnapshotHandle> for SnapshotHandle {
     }
 }
 
+impl From<SnapshotHandle> for proto::SnapshotHandle {
+    fn from(snapshot: SnapshotHandle) -> Self {
+        Self {
+            id: snapshot.id,
+            etag: snapshot.etag,
+        }
+    }
+}
+
 impl TryFrom<proto::ExportRequest> for ExportRequest {
     type Error = grm_rs::GrmError;
 
@@ -1334,6 +1786,330 @@ where
     U: TryFrom<T, Error = grm_rs::GrmError>,
 {
     values.into_iter().map(TryInto::try_into).collect()
+}
+
+fn proto_runtime_response(
+    response: grm_rs::RuntimeResponse,
+    durable_ops: &[grm_rs::DurableOperation],
+) -> grm_rs::Result<proto::RuntimeResponse> {
+    use proto::runtime_response::Response as ProtoResponse;
+
+    let response = match response {
+        grm_rs::RuntimeResponse::Schema(grm_rs::SchemaResponse::DefineNode(model)) => {
+            ProtoResponse::DefineNode(proto::DefineNodeResponse {
+                model: Some(proto_node_model(model)?),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Schema(grm_rs::SchemaResponse::DefineEdge(model)) => {
+            ProtoResponse::DefineEdge(proto::DefineEdgeResponse {
+                model: Some(proto_edge_model(model)?),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Create(node)) => {
+            ProtoResponse::CreateNode(proto::NodeCreateResponse {
+                node: Some(proto_stored_node(node)?),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Update(node)) => {
+            ProtoResponse::UpdateNode(proto::NodeUpdateResponse {
+                node: Some(proto_stored_node(node)?),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Delete(deleted)) => {
+            ProtoResponse::DeleteNode(proto::NodeDeleteResponse {
+                deleted: Some(proto_delete_result(deleted)),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Find(found)) => {
+            ProtoResponse::FindNodes(proto::NodeFindResponse {
+                model: found.model,
+                nodes: found
+                    .nodes
+                    .into_iter()
+                    .map(proto_stored_node)
+                    .collect::<grm_rs::Result<Vec<_>>>()?,
+            })
+        }
+        grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Create(edge)) => {
+            ProtoResponse::CreateEdge(proto::EdgeCreateResponse {
+                edge: Some(proto_stored_edge(edge)?),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Update(edge)) => {
+            ProtoResponse::UpdateEdge(proto::EdgeUpdateResponse {
+                edge: Some(proto_stored_edge(edge)?),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Delete(deleted)) => {
+            ProtoResponse::DeleteEdge(proto::EdgeDeleteResponse {
+                deleted: Some(proto_delete_result(deleted)),
+                durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Find(found)) => {
+            ProtoResponse::FindEdges(proto::EdgeFindResponse {
+                model: found.model,
+                edges: found
+                    .edges
+                    .into_iter()
+                    .map(proto_stored_edge)
+                    .collect::<grm_rs::Result<Vec<_>>>()?,
+            })
+        }
+        grm_rs::RuntimeResponse::Batch(batch) => {
+            ProtoResponse::ApplyBatch(proto_batch_response(batch, durable_ops)?)
+        }
+    };
+
+    Ok(proto::RuntimeResponse {
+        response: Some(response),
+    })
+}
+
+fn proto_node_model(model: grm_rs::RuntimeNodeModel) -> grm_rs::Result<proto::NodeModel> {
+    Ok(proto::NodeModel {
+        name: model.name,
+        label: model.label,
+        id_field_name: model.id_field_name,
+        id_type: proto_id_type(model.id_type)?,
+        fields: model
+            .fields
+            .into_iter()
+            .map(proto_field_spec)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn proto_edge_model(model: grm_rs::RuntimeRelModel) -> grm_rs::Result<proto::EdgeModel> {
+    Ok(proto::EdgeModel {
+        name: model.name,
+        rel_type: model.rel_type,
+        from_model: model.from_model,
+        to_model: model.to_model,
+        id_field_name: model.id_field_name,
+        id_type: proto_id_type(model.id_type)?,
+        fields: model
+            .fields
+            .into_iter()
+            .map(proto_field_spec)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn proto_field_spec(field: grm_rs::RuntimeField) -> proto::FieldSpec {
+    proto::FieldSpec {
+        name: field.name,
+        value_type: proto_field_value_type_from_runtime(field.value_type),
+        required: field.required,
+    }
+}
+
+fn proto_stored_node(node: grm_rs::StoredNode) -> grm_rs::Result<proto::StoredNode> {
+    Ok(proto::StoredNode {
+        id: node.id,
+        labels: node.labels,
+        props: Some(proto_property_map(node.props)?),
+    })
+}
+
+fn proto_stored_edge(edge: grm_rs::StoredRel) -> grm_rs::Result<proto::StoredEdge> {
+    Ok(proto::StoredEdge {
+        id: edge.id,
+        rel_type: edge.rel_type,
+        from: edge.from,
+        to: edge.to,
+        props: Some(proto_property_map(edge.props)?),
+    })
+}
+
+fn proto_property_map(
+    props: std::collections::BTreeMap<String, Value>,
+) -> grm_rs::Result<proto::PropertyMap> {
+    Ok(proto::PropertyMap {
+        properties: props
+            .into_iter()
+            .map(|(name, value)| {
+                Ok(proto::Property {
+                    name,
+                    value: Some(proto_property_value(value)?),
+                })
+            })
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+    })
+}
+
+fn proto_property_value(value: Value) -> grm_rs::Result<proto::PropertyValue> {
+    use proto::property_value::Kind;
+
+    let kind = match value {
+        Value::String(value) => Kind::StringValue(value),
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                Kind::IntValue(value)
+            } else if let Some(value) = value.as_f64() {
+                Kind::FloatValue(value)
+            } else {
+                return Err(grm_rs::GrmError::Constraint(
+                    "numeric property value cannot be represented in service proto".into(),
+                ));
+            }
+        }
+        Value::Bool(value) => Kind::BoolValue(value),
+        Value::Null | Value::Array(_) | Value::Object(_) => {
+            return Err(grm_rs::GrmError::Constraint(
+                "property value cannot be represented in service proto".into(),
+            ));
+        }
+    };
+
+    Ok(proto::PropertyValue { kind: Some(kind) })
+}
+
+fn proto_delete_result(deleted: grm_rs::RuntimeDelete) -> proto::DeleteResult {
+    proto::DeleteResult {
+        model: deleted.model,
+        id: deleted.id,
+    }
+}
+
+fn proto_durable_mutation_outcome(
+    durable_ops: &[grm_rs::DurableOperation],
+) -> grm_rs::Result<proto::DurableMutationOutcome> {
+    Ok(proto::DurableMutationOutcome {
+        durable_ops: durable_ops
+            .iter()
+            .cloned()
+            .map(proto_durable_operation)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        durable_op_count: durable_ops.len().try_into().map_err(|_| {
+            grm_rs::GrmError::Constraint("durable operation count is too large".into())
+        })?,
+        has_durable_mutation: !durable_ops.is_empty(),
+    })
+}
+
+fn proto_durable_operation(
+    op: grm_rs::DurableOperation,
+) -> grm_rs::Result<proto::DurableOperation> {
+    use proto::durable_operation::Operation;
+
+    let operation = match op {
+        grm_rs::DurableOperation::RegisterNodeModel { model } => {
+            Operation::RegisterNodeModel(proto_node_model(model)?)
+        }
+        grm_rs::DurableOperation::RegisterRelModel { model } => {
+            Operation::RegisterEdgeModel(proto_edge_model(model)?)
+        }
+        grm_rs::DurableOperation::UpsertNode { node } => {
+            Operation::UpsertNode(proto_stored_node(node)?)
+        }
+        grm_rs::DurableOperation::DeleteNode { id } => Operation::DeleteNodeId(id),
+        grm_rs::DurableOperation::UpsertRel { rel } => {
+            Operation::UpsertEdge(proto_stored_edge(rel)?)
+        }
+        grm_rs::DurableOperation::DeleteRel { id } => Operation::DeleteEdgeId(id),
+        grm_rs::DurableOperation::Batch { ops } => Operation::Batch(proto::DurableOperationBatch {
+            ops: ops
+                .into_iter()
+                .map(proto_durable_operation)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        }),
+    };
+
+    Ok(proto::DurableOperation {
+        operation: Some(operation),
+    })
+}
+
+fn proto_batch_response(
+    batch: grm_rs::RuntimeBatchResponse,
+    durable_ops: &[grm_rs::DurableOperation],
+) -> grm_rs::Result<proto::BatchResponse> {
+    Ok(proto::BatchResponse {
+        applied: json_bool(&batch.value, "applied"),
+        atomic: json_bool(&batch.value, "atomic"),
+        operation_count: json_u32(&batch.value, "operation_count")?,
+        counts: json_array(&batch.value, "counts")
+            .iter()
+            .map(proto_batch_count)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        errors: json_array(&batch.value, "errors")
+            .iter()
+            .map(proto_batch_error)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        ids: json_array(&batch.value, "ids")
+            .iter()
+            .map(proto_batch_applied_id)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+    })
+}
+
+fn proto_batch_count(value: &Value) -> grm_rs::Result<proto::BatchCount> {
+    Ok(proto::BatchCount {
+        op: json_string(value, "op"),
+        model: json_string(value, "model"),
+        count: json_u32(value, "count")?,
+    })
+}
+
+fn proto_batch_error(value: &Value) -> grm_rs::Result<proto::BatchError> {
+    Ok(proto::BatchError {
+        index: json_u32(value, "index")?,
+        message: json_string(value, "message"),
+        recovery_hint: json_string(value, "recovery_hint"),
+    })
+}
+
+fn proto_batch_applied_id(value: &Value) -> grm_rs::Result<proto::BatchAppliedId> {
+    Ok(proto::BatchAppliedId {
+        op: json_string(value, "op"),
+        model: json_string(value, "model"),
+        id: value.get("id").and_then(Value::as_i64).unwrap_or_default(),
+        local_ref: value
+            .get("ref")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn json_array<'a>(value: &'a Value, field: &str) -> &'a [Value] {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn json_bool(value: &Value, field: &str) -> bool {
+    value
+        .get(field)
+        .and_then(Value::as_bool)
+        .unwrap_or_default()
+}
+
+fn json_string(value: &Value, field: &str) -> String {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn json_u32(value: &Value, field: &str) -> grm_rs::Result<u32> {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .unwrap_or_default()
+        .try_into()
+        .map_err(|_| grm_rs::GrmError::Constraint(format!("{field} is too large")))
 }
 
 fn proto_property_map_or_empty(map: Option<proto::PropertyMap>) -> grm_rs::Result<PropertyMap> {
@@ -1496,11 +2272,37 @@ fn proto_batch_response_mode(value: i32) -> grm_rs::Result<BatchResponseMode> {
     }
 }
 
+fn proto_workspace_create_mode(value: i32) -> grm_rs::Result<WorkspaceCreateMode> {
+    match proto::WorkspaceCreateMode::try_from(value)
+        .map_err(|_| unknown_proto_enum("WorkspaceCreateMode", value))?
+    {
+        proto::WorkspaceCreateMode::InMemory => Ok(WorkspaceCreateMode::InMemory),
+    }
+}
+
 fn proto_durability_format(value: i32) -> grm_rs::Result<DurabilityFormat> {
     match proto::DurabilityFormat::try_from(value)
         .map_err(|_| unknown_proto_enum("DurabilityFormat", value))?
     {
         proto::DurabilityFormat::Json => Ok(DurabilityFormat::Json),
         proto::DurabilityFormat::Binary => Ok(DurabilityFormat::Binary),
+    }
+}
+
+fn proto_field_value_type_from_runtime(value_type: grm_rs::RuntimeValueType) -> i32 {
+    match value_type {
+        grm_rs::RuntimeValueType::String => proto::FieldValueType::String as i32,
+        grm_rs::RuntimeValueType::Int => proto::FieldValueType::Int as i32,
+        grm_rs::RuntimeValueType::Float => proto::FieldValueType::Float as i32,
+        grm_rs::RuntimeValueType::Bool => proto::FieldValueType::Bool as i32,
+    }
+}
+
+fn proto_id_type(id_type: grm_rs::BackendIdType) -> grm_rs::Result<i32> {
+    match id_type {
+        grm_rs::BackendIdType::Int64 => Ok(proto::IdType::Int64 as i32),
+        grm_rs::BackendIdType::Uuid => Err(grm_rs::GrmError::NotSupported(
+            "service proto id type mapping for UUID ids",
+        )),
     }
 }

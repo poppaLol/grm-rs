@@ -8,8 +8,14 @@ import "grm/service/v1/edge.proto";
 import "grm/service/v1/node.proto";
 import "grm/service/v1/query.proto";
 import "grm/service/v1/schema.proto";
+import "grm/service/v1/workspace.proto";
 
 service GrmService {
+  rpc CreateWorkspace(WorkspaceCreateRequest) returns (WorkspaceCreateResponse);
+  rpc OpenWorkspace(WorkspaceOpenRequest) returns (WorkspaceOpenResponse);
+  rpc ExecuteWorkspace(WorkspaceRuntimeRequest) returns (WorkspaceRuntimeResponse);
+  rpc CloseWorkspace(WorkspaceCloseRequest) returns (WorkspaceCloseResponse);
+
   rpc DefineNode(DefineNodeRequest) returns (DefineNodeResponse);
   rpc DefineEdge(DefineEdgeRequest) returns (DefineEdgeResponse);
   rpc SchemaList(SchemaListRequest) returns (SchemaListResponse);
