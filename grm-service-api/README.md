@@ -17,6 +17,8 @@ Generated protobuf DTOs are build-checked and can be converted into the
 service/runtime request shape. Tests prove generated schema and batch requests
 can execute through `SessionState::execute_runtime`; batch execution reuses the
 existing runtime batch path and preserves grouped durable operation metadata.
+A minimal local gRPC shell exposes the workspace RPCs over the same generated
+contract and delegates to `InProcessWorkspaceService`.
 
 The contract does not expose CLI command text as a query surface. Query,
 traversal, explain, and profile requests are typed request messages.
@@ -25,7 +27,7 @@ Durability/admin messages avoid client-supplied server filesystem paths. The
 public skeleton uses managed snapshot handles and bytes for import/export; local
 path-based CLI behavior remains an adapter concern.
 
-This crate does not implement a daemon, choose transport/TLS/auth policy, or add
-new graph mutation/query semantics. Traversal query, explain/profile, and admin
-runtime execution remain explicit unsupported surfaces until implemented and
+This crate does not implement a daemon, choose hosted transport/TLS/auth policy,
+or add new graph mutation/query semantics. Direct non-workspace RPCs remain
+explicit unsupported surfaces in the local gRPC shell until implemented and
 tested.
