@@ -4,6 +4,7 @@ mod durability;
 mod ops;
 mod parser;
 mod session;
+mod workspace;
 
 pub use batch::{
     SessionBatchDefineEdgeParams, SessionBatchDefineNodeParams, SessionBatchEdgeCreateParams,
@@ -13,8 +14,8 @@ pub use batch::{
     SessionBatchResponse, apply_session_batch,
 };
 pub use catalog::{
-    RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionModelCatalog,
-    parse_required_flag, validate_field_name, validate_model_name,
+    RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeSchemaOrigin, RuntimeValueType,
+    SessionModelCatalog, parse_required_flag, validate_field_name, validate_model_name,
 };
 pub use durability::DurableOperation;
 pub use ops::{
@@ -33,3 +34,4 @@ pub use parser::{
     KeyValueArg, QueryTerm, SessionCommand, parse_command_line, parse_query_terms_from_strs,
 };
 pub use session::{CliSession, SessionCompactSummary, SessionFindResult, SessionState};
+pub use workspace::Workspace;

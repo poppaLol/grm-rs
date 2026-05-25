@@ -64,11 +64,24 @@ pub struct RuntimeField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSchemaOrigin {
+    Declared,
+    Inferred,
+}
+
+fn default_schema_origin() -> RuntimeSchemaOrigin {
+    RuntimeSchemaOrigin::Declared
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeNodeModel {
     pub name: String,
     pub label: String,
     pub id_field_name: String,
     pub id_type: BackendIdType,
+    #[serde(default = "default_schema_origin")]
+    pub origin: RuntimeSchemaOrigin,
     pub fields: Vec<RuntimeField>,
 }
 
@@ -80,6 +93,8 @@ pub struct RuntimeRelModel {
     pub to_model: String,
     pub id_field_name: String,
     pub id_type: BackendIdType,
+    #[serde(default = "default_schema_origin")]
+    pub origin: RuntimeSchemaOrigin,
     pub fields: Vec<RuntimeField>,
 }
 
@@ -112,6 +127,7 @@ impl RuntimeNodeModel {
             name,
             id_field_name,
             id_type,
+            origin: RuntimeSchemaOrigin::Declared,
             fields,
         })
     }
@@ -193,6 +209,7 @@ impl RuntimeRelModel {
             to_model,
             id_field_name,
             id_type,
+            origin: RuntimeSchemaOrigin::Declared,
             fields,
         })
     }
