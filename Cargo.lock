@@ -632,6 +632,7 @@ name = "grm-service-api"
 version = "0.1.0"
 dependencies = [
  "grm-rs",
+ "prost",
  "prost-build",
  "protoc-bin-vendored",
  "serde_json",

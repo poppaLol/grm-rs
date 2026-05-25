@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+#[allow(warnings)]
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/grm.service.v1.rs"));
+}
+
 pub const PROTO_PACKAGE: &str = "grm.service.v1";
 pub const PROTO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/proto");
 
@@ -834,8 +839,509 @@ pub enum DurabilityFormat {
     Binary,
 }
 
+impl TryFrom<proto::DefineNodeRequest> for DefineNodeRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::DefineNodeRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: request.name,
+            id_field: request.id_field,
+            fields: request
+                .fields
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+impl TryFrom<proto::DefineEdgeRequest> for DefineEdgeRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::DefineEdgeRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: request.name,
+            from_model: request.from_model,
+            to_model: request.to_model,
+            id_field: request.id_field,
+            fields: request
+                .fields
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+impl From<proto::SchemaListRequest> for SchemaListRequest {
+    fn from(_: proto::SchemaListRequest) -> Self {
+        Self {}
+    }
+}
+
+impl TryFrom<proto::FieldSpec> for FieldSpec {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(field: proto::FieldSpec) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: field.name,
+            value_type: proto_field_value_type(field.value_type)?,
+            required: field.required,
+        })
+    }
+}
+
+impl TryFrom<proto::NodeCreateRequest> for NodeCreateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::NodeCreateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            props: proto_property_map_or_empty(request.props)?,
+        })
+    }
+}
+
+impl TryFrom<proto::NodeUpdateRequest> for NodeUpdateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::NodeUpdateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            id: request.id,
+            props: proto_property_map_or_empty(request.props)?,
+        })
+    }
+}
+
+impl From<proto::NodeDeleteRequest> for NodeDeleteRequest {
+    fn from(request: proto::NodeDeleteRequest) -> Self {
+        Self {
+            model: request.model,
+            id: request.id,
+        }
+    }
+}
+
+impl TryFrom<proto::NodeFindRequest> for NodeFindRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::NodeFindRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            predicates: convert_proto_vec(request.predicates)?,
+            end_predicates: convert_proto_vec(request.end_predicates)?,
+            edge_predicates: convert_proto_vec(request.edge_predicates)?,
+            traversals: convert_proto_vec(request.traversals)?,
+            order: convert_proto_vec(request.order)?,
+            limit: request.limit,
+            offset: request.offset,
+            id: request.id,
+            return_mode: request
+                .return_mode
+                .map(proto_traversal_return)
+                .transpose()?,
+        })
+    }
+}
+
+impl TryFrom<proto::EdgeCreateRequest> for EdgeCreateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::EdgeCreateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            from: request.from,
+            to: request.to,
+            props: proto_property_map_or_empty(request.props)?,
+        })
+    }
+}
+
+impl TryFrom<proto::EdgeUpdateRequest> for EdgeUpdateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::EdgeUpdateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            id: request.id,
+            props: proto_property_map_or_empty(request.props)?,
+        })
+    }
+}
+
+impl From<proto::EdgeDeleteRequest> for EdgeDeleteRequest {
+    fn from(request: proto::EdgeDeleteRequest) -> Self {
+        Self {
+            model: request.model,
+            id: request.id,
+        }
+    }
+}
+
+impl TryFrom<proto::EdgeFindRequest> for EdgeFindRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::EdgeFindRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            predicates: convert_proto_vec(request.predicates)?,
+            order: convert_proto_vec(request.order)?,
+            limit: request.limit,
+            offset: request.offset,
+            id: request.id,
+            from: request.from,
+            to: request.to,
+        })
+    }
+}
+
+impl TryFrom<proto::PropertyMap> for PropertyMap {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(map: proto::PropertyMap) -> grm_rs::Result<Self> {
+        Ok(Self {
+            properties: map
+                .properties
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+impl TryFrom<proto::Property> for Property {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(property: proto::Property) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: property.name,
+            value: property
+                .value
+                .ok_or_else(|| missing_proto_field("Property.value"))?
+                .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<proto::PropertyValue> for PropertyValue {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(value: proto::PropertyValue) -> grm_rs::Result<Self> {
+        use proto::property_value::Kind;
+
+        match value
+            .kind
+            .ok_or_else(|| missing_proto_field("PropertyValue.kind"))?
+        {
+            Kind::StringValue(value) => Ok(Self::String(value)),
+            Kind::IntValue(value) => Ok(Self::Int(value)),
+            Kind::FloatValue(value) => Ok(Self::Float(value)),
+            Kind::BoolValue(value) => Ok(Self::Bool(value)),
+        }
+    }
+}
+
+impl TryFrom<proto::PropertyPredicate> for PropertyPredicate {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(predicate: proto::PropertyPredicate) -> grm_rs::Result<Self> {
+        Ok(Self {
+            field: predicate.field,
+            op: proto_predicate_op(predicate.op)?,
+            value: predicate
+                .value
+                .ok_or_else(|| missing_proto_field("PropertyPredicate.value"))?
+                .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<proto::OrderSpec> for OrderSpec {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(order: proto::OrderSpec) -> grm_rs::Result<Self> {
+        Ok(Self {
+            field: order.field,
+            direction: proto_order_direction(order.direction)?,
+        })
+    }
+}
+
+impl TryFrom<proto::TraversalStep> for TraversalStep {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(step: proto::TraversalStep) -> grm_rs::Result<Self> {
+        Ok(Self {
+            direction: proto_traversal_direction(step.direction)?,
+            edge_model: step.edge_model,
+            end_model: step.end_model,
+        })
+    }
+}
+
+impl TryFrom<proto::QueryRequest> for QueryRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::QueryRequest) -> grm_rs::Result<Self> {
+        use proto::query_request::Query as ProtoQuery;
+
+        let query = match request
+            .query
+            .ok_or_else(|| missing_proto_field("QueryRequest.query"))?
+        {
+            ProtoQuery::NodeFind(shape) => Query::NodeFind(shape.try_into()?),
+            ProtoQuery::EdgeFind(shape) => Query::EdgeFind(shape.try_into()?),
+            ProtoQuery::Traversal(request) => Query::Traversal(request.try_into()?),
+        };
+        Ok(Self { query })
+    }
+}
+
+impl TryFrom<proto::NodeFindShape> for NodeFindShape {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(shape: proto::NodeFindShape) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: shape.model,
+            predicates: convert_proto_vec(shape.predicates)?,
+            end_predicates: convert_proto_vec(shape.end_predicates)?,
+            edge_predicates: convert_proto_vec(shape.edge_predicates)?,
+            traversals: convert_proto_vec(shape.traversals)?,
+            order: convert_proto_vec(shape.order)?,
+            limit: shape.limit,
+            offset: shape.offset,
+            id: shape.id,
+            return_mode: shape.return_mode.map(proto_traversal_return).transpose()?,
+        })
+    }
+}
+
+impl TryFrom<proto::EdgeFindShape> for EdgeFindShape {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(shape: proto::EdgeFindShape) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: shape.model,
+            predicates: convert_proto_vec(shape.predicates)?,
+            order: convert_proto_vec(shape.order)?,
+            limit: shape.limit,
+            offset: shape.offset,
+            id: shape.id,
+            from: shape.from,
+            to: shape.to,
+        })
+    }
+}
+
+impl TryFrom<proto::TraversalRequest> for TraversalRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::TraversalRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            root: request
+                .root
+                .ok_or_else(|| missing_proto_field("TraversalRequest.root"))?
+                .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<proto::ExplainRequest> for ExplainRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::ExplainRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            query: request
+                .query
+                .ok_or_else(|| missing_proto_field("ExplainRequest.query"))?
+                .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<proto::ProfileRequest> for ProfileRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::ProfileRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            query: request
+                .query
+                .ok_or_else(|| missing_proto_field("ProfileRequest.query"))?
+                .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<proto::BatchRequest> for BatchRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::BatchRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            atomic: request.atomic,
+            allow_deletes: request.allow_deletes,
+            response_mode: proto_batch_response_mode(request.response_mode)?,
+            ops: convert_proto_vec(request.ops)?,
+        })
+    }
+}
+
+impl TryFrom<proto::BatchOperation> for BatchOperation {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(op: proto::BatchOperation) -> grm_rs::Result<Self> {
+        use proto::batch_operation::Op as ProtoOp;
+
+        match op
+            .op
+            .ok_or_else(|| missing_proto_field("BatchOperation.op"))?
+        {
+            ProtoOp::SchemaDefineNode(request) => Ok(Self::SchemaDefineNode(request.try_into()?)),
+            ProtoOp::SchemaDefineEdge(request) => Ok(Self::SchemaDefineEdge(request.try_into()?)),
+            ProtoOp::NodeCreate(request) => Ok(Self::NodeCreate(request.try_into()?)),
+            ProtoOp::NodeUpdate(request) => Ok(Self::NodeUpdate(request.try_into()?)),
+            ProtoOp::NodeDelete(request) => Ok(Self::NodeDelete(request.into())),
+            ProtoOp::EdgeCreate(request) => Ok(Self::EdgeCreate(request.try_into()?)),
+            ProtoOp::EdgeUpdate(request) => Ok(Self::EdgeUpdate(request.try_into()?)),
+            ProtoOp::EdgeDelete(request) => Ok(Self::EdgeDelete(request.into())),
+        }
+    }
+}
+
+impl TryFrom<proto::BatchNodeCreate> for BatchNodeCreate {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::BatchNodeCreate) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            props: proto_property_map_or_empty(request.props)?,
+            local_ref: request.local_ref,
+        })
+    }
+}
+
+impl TryFrom<proto::BatchEdgeCreate> for BatchEdgeCreate {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::BatchEdgeCreate) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            from: request
+                .from
+                .ok_or_else(|| missing_proto_field("BatchEdgeCreate.from"))?
+                .try_into()?,
+            to: request
+                .to
+                .ok_or_else(|| missing_proto_field("BatchEdgeCreate.to"))?
+                .try_into()?,
+            props: proto_property_map_or_empty(request.props)?,
+        })
+    }
+}
+
+impl TryFrom<proto::BatchEndpoint> for BatchEndpoint {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(endpoint: proto::BatchEndpoint) -> grm_rs::Result<Self> {
+        use proto::batch_endpoint::Endpoint;
+
+        match endpoint
+            .endpoint
+            .ok_or_else(|| missing_proto_field("BatchEndpoint.endpoint"))?
+        {
+            Endpoint::Id(id) => Ok(Self::Id(id)),
+            Endpoint::LocalRef(local_ref) => Ok(Self::LocalRef(local_ref)),
+        }
+    }
+}
+
+impl TryFrom<proto::SaveRequest> for SaveRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::SaveRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            format: proto_durability_format(request.format)?,
+            requested_snapshot_id: request.requested_snapshot_id,
+        })
+    }
+}
+
+impl TryFrom<proto::LoadRequest> for LoadRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::LoadRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            format: proto_durability_format(request.format)?,
+            snapshot: request
+                .snapshot
+                .ok_or_else(|| missing_proto_field("LoadRequest.snapshot"))?
+                .into(),
+        })
+    }
+}
+
+impl From<proto::SnapshotHandle> for SnapshotHandle {
+    fn from(snapshot: proto::SnapshotHandle) -> Self {
+        Self {
+            id: snapshot.id,
+            etag: snapshot.etag,
+        }
+    }
+}
+
+impl TryFrom<proto::ExportRequest> for ExportRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::ExportRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            snapshot: request
+                .snapshot
+                .ok_or_else(|| missing_proto_field("ExportRequest.snapshot"))?
+                .into(),
+        })
+    }
+}
+
+impl TryFrom<proto::ImportRequest> for ImportRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: proto::ImportRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            document: request.document,
+            format: proto_durability_format(request.format)?,
+        })
+    }
+}
+
+impl From<proto::IndexListRequest> for IndexListRequest {
+    fn from(_: proto::IndexListRequest) -> Self {
+        Self {}
+    }
+}
+
+impl From<proto::SummaryRequest> for SummaryRequest {
+    fn from(_: proto::SummaryRequest) -> Self {
+        Self {}
+    }
+}
+
 fn convert_fields(fields: Vec<FieldSpec>) -> grm_rs::Result<Vec<grm_rs::FieldSpec>> {
     fields.into_iter().map(TryInto::try_into).collect()
+}
+
+fn convert_proto_vec<T, U>(values: Vec<T>) -> grm_rs::Result<Vec<U>>
+where
+    U: TryFrom<T, Error = grm_rs::GrmError>,
+{
+    values.into_iter().map(TryInto::try_into).collect()
+}
+
+fn proto_property_map_or_empty(map: Option<proto::PropertyMap>) -> grm_rs::Result<PropertyMap> {
+    map.map(TryInto::try_into).transpose().map(|map| {
+        map.unwrap_or(PropertyMap {
+            properties: Vec::new(),
+        })
+    })
 }
 
 fn service_fields_to_batch_fields(
@@ -915,5 +1421,86 @@ fn field_value_type_keyword(value_type: FieldValueType) -> grm_rs::Result<&'stat
         FieldValueType::Int => Ok("int"),
         FieldValueType::Float => Ok("float"),
         FieldValueType::Bool => Ok("bool"),
+    }
+}
+
+fn missing_proto_field(field: &'static str) -> grm_rs::GrmError {
+    grm_rs::GrmError::Constraint(format!("missing required protobuf field '{field}'"))
+}
+
+fn unknown_proto_enum(enum_name: &'static str, value: i32) -> grm_rs::GrmError {
+    grm_rs::GrmError::Constraint(format!("unknown {enum_name} enum value {value}"))
+}
+
+fn proto_field_value_type(value: i32) -> grm_rs::Result<FieldValueType> {
+    match proto::FieldValueType::try_from(value)
+        .map_err(|_| unknown_proto_enum("FieldValueType", value))?
+    {
+        proto::FieldValueType::Unspecified => Ok(FieldValueType::Unspecified),
+        proto::FieldValueType::String => Ok(FieldValueType::String),
+        proto::FieldValueType::Int => Ok(FieldValueType::Int),
+        proto::FieldValueType::Float => Ok(FieldValueType::Float),
+        proto::FieldValueType::Bool => Ok(FieldValueType::Bool),
+    }
+}
+
+fn proto_predicate_op(value: i32) -> grm_rs::Result<PredicateOp> {
+    match proto::PredicateOp::try_from(value)
+        .map_err(|_| unknown_proto_enum("PredicateOp", value))?
+    {
+        proto::PredicateOp::Eq => Ok(PredicateOp::Eq),
+        proto::PredicateOp::Ne => Ok(PredicateOp::Ne),
+        proto::PredicateOp::Gt => Ok(PredicateOp::Gt),
+        proto::PredicateOp::Ge => Ok(PredicateOp::Ge),
+        proto::PredicateOp::Lt => Ok(PredicateOp::Lt),
+        proto::PredicateOp::Le => Ok(PredicateOp::Le),
+        proto::PredicateOp::Contains => Ok(PredicateOp::Contains),
+    }
+}
+
+fn proto_order_direction(value: i32) -> grm_rs::Result<OrderDirection> {
+    match proto::OrderDirection::try_from(value)
+        .map_err(|_| unknown_proto_enum("OrderDirection", value))?
+    {
+        proto::OrderDirection::Asc => Ok(OrderDirection::Asc),
+        proto::OrderDirection::Desc => Ok(OrderDirection::Desc),
+    }
+}
+
+fn proto_traversal_direction(value: i32) -> grm_rs::Result<TraversalDirection> {
+    match proto::TraversalDirection::try_from(value)
+        .map_err(|_| unknown_proto_enum("TraversalDirection", value))?
+    {
+        proto::TraversalDirection::Out => Ok(TraversalDirection::Out),
+        proto::TraversalDirection::In => Ok(TraversalDirection::In),
+        proto::TraversalDirection::Both => Ok(TraversalDirection::Both),
+    }
+}
+
+fn proto_traversal_return(value: i32) -> grm_rs::Result<TraversalReturn> {
+    match proto::TraversalReturn::try_from(value)
+        .map_err(|_| unknown_proto_enum("TraversalReturn", value))?
+    {
+        proto::TraversalReturn::End => Ok(TraversalReturn::End),
+        proto::TraversalReturn::Root => Ok(TraversalReturn::Root),
+        proto::TraversalReturn::Edge => Ok(TraversalReturn::Edge),
+    }
+}
+
+fn proto_batch_response_mode(value: i32) -> grm_rs::Result<BatchResponseMode> {
+    match proto::BatchResponseMode::try_from(value)
+        .map_err(|_| unknown_proto_enum("BatchResponseMode", value))?
+    {
+        proto::BatchResponseMode::Summary => Ok(BatchResponseMode::Summary),
+        proto::BatchResponseMode::Detailed => Ok(BatchResponseMode::Detailed),
+    }
+}
+
+fn proto_durability_format(value: i32) -> grm_rs::Result<DurabilityFormat> {
+    match proto::DurabilityFormat::try_from(value)
+        .map_err(|_| unknown_proto_enum("DurabilityFormat", value))?
+    {
+        proto::DurabilityFormat::Json => Ok(DurabilityFormat::Json),
+        proto::DurabilityFormat::Binary => Ok(DurabilityFormat::Binary),
     }
 }

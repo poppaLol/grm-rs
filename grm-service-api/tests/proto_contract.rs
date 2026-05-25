@@ -203,21 +203,21 @@ fn runtime_family_mapping_notes_stay_true_for_public_types() {
 }
 
 #[tokio::test]
-async fn service_shaped_schema_request_executes_through_runtime_dispatcher() {
+async fn generated_proto_schema_request_executes_through_runtime_dispatcher() {
     let mut state = grm_rs::SessionState::new();
 
-    let outcome = svc::ServiceRequest::DefineNode(svc::DefineNodeRequest {
+    let generated = svc::proto::DefineNodeRequest {
         name: "User".into(),
         id_field: "userId".into(),
-        fields: vec![svc::FieldSpec {
+        fields: vec![svc::proto::FieldSpec {
             name: "name".into(),
-            value_type: svc::FieldValueType::String,
+            value_type: svc::proto::FieldValueType::String as i32,
             required: true,
         }],
-    })
-    .execute(&mut state)
-    .await
-    .unwrap();
+    };
+    let request = svc::ServiceRequest::DefineNode(generated.try_into().unwrap());
+
+    let outcome = request.execute(&mut state).await.unwrap();
 
     assert!(matches!(
         outcome.response,
@@ -227,6 +227,59 @@ async fn service_shaped_schema_request_executes_through_runtime_dispatcher() {
     assert!(matches!(
         outcome.durable_ops.as_slice(),
         [DurableOperation::RegisterNodeModel { model }] if model.name == "User"
+    ));
+}
+
+#[tokio::test]
+async fn generated_proto_batch_request_executes_existing_runtime_batch_path() {
+    let mut state = grm_rs::SessionState::new();
+
+    let generated = svc::proto::BatchRequest {
+        atomic: true,
+        allow_deletes: false,
+        response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+        ops: vec![
+            svc::proto::BatchOperation {
+                op: Some(svc::proto::batch_operation::Op::SchemaDefineNode(
+                    svc::proto::DefineNodeRequest {
+                        name: "User".into(),
+                        id_field: "userId".into(),
+                        fields: vec![svc::proto::FieldSpec {
+                            name: "name".into(),
+                            value_type: svc::proto::FieldValueType::String as i32,
+                            required: true,
+                        }],
+                    },
+                )),
+            },
+            svc::proto::BatchOperation {
+                op: Some(svc::proto::batch_operation::Op::NodeCreate(
+                    svc::proto::BatchNodeCreate {
+                        model: "User".into(),
+                        props: Some(proto_property_map([(
+                            "name",
+                            svc::proto::property_value::Kind::StringValue("Ada".into()),
+                        )])),
+                        local_ref: Some("ada".into()),
+                    },
+                )),
+            },
+        ],
+    };
+    let request = svc::ServiceRequest::ApplyBatch(generated.try_into().unwrap());
+
+    let outcome = request.execute(&mut state).await.unwrap();
+
+    assert!(matches!(
+        outcome.response,
+        RuntimeResponse::Batch(batch)
+            if batch.should_persist
+                && batch.value["applied"] == json!(true)
+                && batch.value["ids"][0]["ref"] == json!("ada")
+    ));
+    assert!(matches!(
+        outcome.durable_ops.as_slice(),
+        [DurableOperation::Batch { ops }] if ops.len() == 2
     ));
 }
 
@@ -394,6 +447,20 @@ fn property_map<const N: usize>(properties: [(&str, svc::PropertyValue); N]) -> 
             .map(|(name, value)| svc::Property {
                 name: name.to_string(),
                 value,
+            })
+            .collect(),
+    }
+}
+
+fn proto_property_map<const N: usize>(
+    properties: [(&str, svc::proto::property_value::Kind); N],
+) -> svc::proto::PropertyMap {
+    svc::proto::PropertyMap {
+        properties: properties
+            .into_iter()
+            .map(|(name, kind)| svc::proto::Property {
+                name: name.to_string(),
+                value: Some(svc::proto::PropertyValue { kind: Some(kind) }),
             })
             .collect(),
     }
