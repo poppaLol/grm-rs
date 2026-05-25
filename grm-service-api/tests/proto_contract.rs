@@ -7,6 +7,8 @@ use grm_rs::{
 use grm_service_api as svc;
 use grm_service_api::{PROTO_FILES, proto_files};
 use serde_json::json;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
 
 #[test]
 fn proto_files_are_packaged() {
@@ -603,6 +605,123 @@ async fn in_process_workspace_service_returns_structured_errors() {
         err,
         svc::WorkspaceServiceError::UnsupportedWorkspaceOperation("open-loop external inference")
     ));
+}
+
+#[tokio::test]
+async fn generated_grpc_client_executes_workspace_requests_over_local_transport() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = svc::GrpcWorkspaceService::new().into_server();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let mut client =
+        svc::proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+            .await
+            .unwrap();
+
+    let created = client
+        .create_workspace(svc::proto::WorkspaceCreateRequest {
+            mode: svc::proto::WorkspaceCreateMode::InMemory as i32,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let handle = created.handle.clone().unwrap();
+    assert!(!handle.id.is_empty());
+
+    let schema = client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(handle.clone()),
+            request: Some(svc::proto::RuntimeRequest {
+                request: Some(svc::proto::runtime_request::Request::DefineNode(
+                    svc::proto::DefineNodeRequest {
+                        name: "User".into(),
+                        id_field: "userId".into(),
+                        fields: vec![svc::proto::FieldSpec {
+                            name: "name".into(),
+                            value_type: svc::proto::FieldValueType::String as i32,
+                            required: true,
+                        }],
+                    },
+                )),
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(matches!(
+        schema.response.and_then(|response| response.response),
+        Some(svc::proto::runtime_response::Response::DefineNode(response))
+            if response.model.as_ref().unwrap().name == "User"
+    ));
+
+    let batch = client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(handle.clone()),
+            request: Some(svc::proto::RuntimeRequest {
+                request: Some(svc::proto::runtime_request::Request::ApplyBatch(
+                    svc::proto::BatchRequest {
+                        atomic: true,
+                        allow_deletes: false,
+                        response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+                        ops: vec![svc::proto::BatchOperation {
+                            op: Some(svc::proto::batch_operation::Op::NodeCreate(
+                                svc::proto::BatchNodeCreate {
+                                    model: "User".into(),
+                                    props: Some(proto_property_map([(
+                                        "name",
+                                        svc::proto::property_value::Kind::StringValue("Ada".into()),
+                                    )])),
+                                    local_ref: Some("ada".into()),
+                                },
+                            )),
+                        }],
+                    },
+                )),
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(matches!(
+        batch.response.and_then(|response| response.response),
+        Some(svc::proto::runtime_response::Response::ApplyBatch(response))
+            if response.applied && response.ids[0].local_ref.as_deref() == Some("ada")
+    ));
+
+    let missing = client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(svc::proto::WorkspaceHandle {
+                id: "missing-workspace".into(),
+            }),
+            request: Some(svc::proto::RuntimeRequest {
+                request: Some(svc::proto::runtime_request::Request::SchemaList(
+                    svc::proto::SchemaListRequest {},
+                )),
+            }),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code(), tonic::Code::NotFound);
+    assert!(missing.message().contains("unknown workspace handle"));
+
+    let unsupported = client
+        .schema_list(svc::proto::SchemaListRequest {})
+        .await
+        .unwrap_err();
+    assert_eq!(unsupported.code(), tonic::Code::Unimplemented);
+    assert!(unsupported.message().contains("ExecuteWorkspace"));
+
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
 }
 
 fn read_proto(relative: &str) -> String {
