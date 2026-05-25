@@ -608,6 +608,10 @@ impl SessionState {
         format: DurabilityFormat,
         path: impl AsRef<Path>,
     ) -> Result<()> {
+        self.save_workspace(format, path)
+    }
+
+    pub fn save_workspace(&self, format: DurabilityFormat, path: impl AsRef<Path>) -> Result<()> {
         match format {
             DurabilityFormat::Json => self.save_to_json(path),
             DurabilityFormat::Binary => self.save_to_binary(path),
@@ -619,9 +623,25 @@ impl SessionState {
         format: DurabilityFormat,
         path: impl AsRef<Path>,
     ) -> Result<()> {
+        self.load_workspace(format, path)
+    }
+
+    pub fn load_workspace(
+        &mut self,
+        format: DurabilityFormat,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
+        self.load_workspace_with_source(format, path).map(|_| ())
+    }
+
+    fn load_workspace_with_source(
+        &mut self,
+        format: DurabilityFormat,
+        path: impl AsRef<Path>,
+    ) -> Result<LoadSource> {
         match format {
-            DurabilityFormat::Json => self.load_from_json(path),
-            DurabilityFormat::Binary => self.load_from_binary(path),
+            DurabilityFormat::Json => self.load_from_json_with_source(path),
+            DurabilityFormat::Binary => self.load_from_binary_with_source(path),
         }
     }
 
@@ -3957,11 +3977,12 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
 
         match args[0] {
             "--json" => {
-                self.state.save_to_json(args[1])?;
+                self.state.save_workspace(DurabilityFormat::Json, args[1])?;
                 writeln!(self.writer, "Saved session to JSON file '{}'.", args[1])?;
             }
             "--bin" => {
-                self.state.save_to_binary(args[1])?;
+                self.state
+                    .save_workspace(DurabilityFormat::Binary, args[1])?;
                 writeln!(self.writer, "Saved session to binary file '{}'.", args[1])?;
             }
             _ => {
@@ -4913,10 +4934,9 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
     }
 
     fn load_session_file(&mut self, format: SessionFileFormat, path: &Path) -> Result<()> {
-        let source = match format {
-            SessionFileFormat::Json => self.state.load_from_json_with_source(path)?,
-            SessionFileFormat::Binary => self.state.load_from_binary_with_source(path)?,
-        };
+        let source = self
+            .state
+            .load_workspace_with_source(format.durability_format(), path)?;
         self.checkpoint_autocommit()?;
 
         match (format, source) {
