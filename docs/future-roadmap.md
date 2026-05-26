@@ -142,13 +142,19 @@ Current progress:
   runtime requests and executed in-process through `SessionState::execute_runtime`.
 - Runtime dispatcher batch execution reuses the existing batch implementation
   and preserves grouped durable operation metadata.
+- A minimal local gRPC workspace shell now exposes create/open/execute/close
+  workspace RPCs over managed handles and delegates to the in-process workspace
+  service. This is a demoable transport proof, not a production daemon.
 
 Long-term direction:
 
 - keep service DTOs mapped to shared runtime behavior rather than adapter or
   backend-specific shortcuts
+- use the workspace RPC path to prove service-hostable behavior before filling
+  in direct schema/node/edge/query RPCs
 - add service context, authorization, limits, audit, and transport only after
-  the typed runtime boundary is stable enough to review
+  the typed runtime boundary is stable enough to review; the current local gRPC
+  shell deliberately does not settle those production concerns
 - introduce SOML concepts such as session context, durable deltas, projections,
   and attestations only when the runtime can make and test those claims
 - keep unsupported surfaces explicit instead of filling gaps with textual query

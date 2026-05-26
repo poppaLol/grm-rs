@@ -3,10 +3,11 @@
 This document captures the intended service boundary for GRM after Shared WAL
 durability core changes. It began as a docs-only design spike; the current
 codebase now contains a split-ready `grm-service-api` contract crate with
-generated protobuf DTOs and in-process mappings into the existing runtime
-dispatcher. The goal remains to make the future hosted/service contract concrete
-enough that security work, daemon work, SDKs, and packaging can be designed
-against it without prematurely building the service.
+generated protobuf DTOs, in-process mappings into the existing runtime
+dispatcher, and a minimal local gRPC workspace shell. The goal remains to make
+the future hosted/service contract concrete enough that security work, daemon
+work, SDKs, and packaging can be designed against it without prematurely
+claiming a production service.
 
 See also [ADR 0001: Separate Graph Data From Schema Memory](adr/0001-graph-data-and-schema-memory.md)
 for the product architecture principle that future backends should store user
@@ -90,8 +91,10 @@ not become the default for production-like daemon or hosted configurations.
 
 The first `.proto` package layout now exists in `grm-service-api`. It organizes
 the service boundary around explicit operation families and codegen-checked
-protobuf files. The crate deliberately stops short of a daemon, transport, TLS,
-auth, or authorization implementation.
+protobuf files. The crate includes a local gRPC workspace shell for
+create/open/execute/close workspace RPCs, but deliberately stops short of a
+daemon, TLS, auth, authorization, hosted durability, or direct implementation of
+every RPC family.
 
 ### SchemaService
 
@@ -346,10 +349,15 @@ The near-term service API proof has moved from design into code:
   request shapes and executed through the existing runtime dispatcher in tests.
 - Runtime dispatcher batch support now reuses the existing batch implementation
   rather than introducing a new service-only mutation path.
+- A minimal local gRPC workspace shell exposes create/open/execute/close
+  workspace RPCs and delegates execution through `InProcessWorkspaceService`
+  using managed workspace and snapshot handles.
 - Unsupported runtime surfaces remain explicit: traversal query, explain,
-  profile, and admin operations are not silently claimed as implemented.
+  profile, admin operations, and direct non-workspace RPCs are not silently
+  claimed as implemented.
 
-This is a service-hostable runtime contract proof, not a hosted service. The
-next service-boundary work should avoid adding transport until request context,
-security posture, authorization, durability claims, and unsupported semantics
-are clear enough to review.
+This is a service-hostable runtime contract proof with a thin local gRPC
+transport shell, not a hosted service. The next service-boundary work should
+avoid widening into daemon lifecycle, TLS, auth, authorization, hosted
+durability claims, or direct RPC implementations until request context,
+durability behavior, and unsupported semantics are clear enough to review.
