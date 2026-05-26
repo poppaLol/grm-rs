@@ -535,12 +535,19 @@ async fn in_process_workspace_service_reopens_closed_loop_snapshot_by_handle() {
         })
         .await
         .unwrap();
+    service
+        .execute_runtime(svc::WorkspaceRuntimeRequest {
+            handle: created.handle.clone(),
+            request: create_user_request("Ada"),
+        })
+        .await
+        .unwrap();
     let snapshot = service
         .save_workspace_to_local_snapshot(
             &created.handle,
             svc::LocalWorkspaceSnapshotRequest {
                 format: svc::DurabilityFormat::Json,
-                path,
+                path: path.clone(),
             },
         )
         .unwrap();
@@ -574,6 +581,43 @@ async fn in_process_workspace_service_reopens_closed_loop_snapshot_by_handle() {
     let model = reopened.state().model("User").unwrap();
     assert_eq!(model.origin, grm_rs::RuntimeSchemaOrigin::Declared);
     assert!(model.field("email").is_some());
+    assert_workspace_users(reopened, ["Ada"]).await;
+
+    service
+        .execute_runtime(svc::WorkspaceRuntimeRequest {
+            handle: opened.handle.clone(),
+            request: create_user_request("Grace"),
+        })
+        .await
+        .unwrap();
+    let snapshot = service
+        .save_workspace_to_local_snapshot(
+            &opened.handle,
+            svc::LocalWorkspaceSnapshotRequest {
+                format: svc::DurabilityFormat::Json,
+                path,
+            },
+        )
+        .unwrap();
+    service
+        .close_workspace(svc::WorkspaceCloseRequest {
+            handle: opened.handle.clone(),
+        })
+        .unwrap();
+
+    let reopened_again = service
+        .open_workspace(svc::WorkspaceOpenRequest {
+            snapshot,
+            format: svc::DurabilityFormat::Json,
+        })
+        .unwrap();
+    assert_ne!(reopened_again.handle, opened.handle);
+
+    let reopened_again = service.workspace(&reopened_again.handle).unwrap();
+    let model = reopened_again.state().model("User").unwrap();
+    assert_eq!(model.origin, grm_rs::RuntimeSchemaOrigin::Declared);
+    assert!(model.field("email").is_some());
+    assert_workspace_users(reopened_again, ["Ada", "Grace"]).await;
 }
 
 #[tokio::test]
@@ -779,6 +823,43 @@ async fn define_user_post_schema(state: &mut grm_rs::SessionState) {
     ] {
         request.execute(state).await.unwrap();
     }
+}
+
+fn create_user_request(name: &str) -> svc::ServiceRequest {
+    svc::ServiceRequest::CreateNode(svc::NodeCreateRequest {
+        model: "User".into(),
+        props: property_map([(
+            "email",
+            svc::PropertyValue::String(format!("{name}@example.test")),
+        )]),
+    })
+}
+
+async fn assert_workspace_users<const N: usize>(
+    workspace: &grm_rs::Workspace,
+    expected: [&str; N],
+) {
+    let users = workspace
+        .state()
+        .node_find_response(grm_rs::NodeFindRequest {
+            model: "User".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut emails = users
+        .nodes
+        .iter()
+        .map(|node| node.props["email"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    emails.sort();
+
+    let mut expected = expected
+        .into_iter()
+        .map(|name| format!("{name}@example.test"))
+        .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(emails, expected);
 }
 
 fn property_map<const N: usize>(properties: [(&str, svc::PropertyValue); N]) -> svc::PropertyMap {
