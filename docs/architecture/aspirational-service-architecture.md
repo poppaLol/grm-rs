@@ -57,7 +57,7 @@ GRM is partially aligned with the SOML target:
 | --- | --- | --- |
 | Adapter | CLI, Python, and MCP exist. MCP already accepts structured tool JSON, and Python/MCP routes some read paths through structured runtime requests. Adapter filter maps still preserve legacy ergonomics before conversion. | Keep adapter-specific syntax at the edge. Do not let CLI/filter-map conveniences become the canonical operational memory contract. |
 | Runtime | `RuntimeRequest`, `RuntimeResponse`, and `SessionState::execute_runtime` exist for schema, node, edge, query, batch, explain/profile, and admin families. Schema, node, edge, simple find/query, and batch requests execute through shared runtime behavior and preserve durable operation metadata where writes occur. Explain/profile, traversal query, and admin remain explicitly unsupported in the runtime dispatcher where they are not implemented. | Runtime concepts are still graph CRUD/query shaped. Session, delta, projection, and attestation are not first-class runtime request families yet. |
-| Service | `grm-service-api` exists as a split-ready protobuf contract crate. It now compiles generated protobuf DTOs, converts generated schema/node/edge/query/batch shapes into service/runtime requests, and proves generated schema and batch requests can execute through `SessionState::execute_runtime` without a daemon. | The proto still mirrors current graph/runtime operation families. It does not yet model SOML concepts such as session context, projections, attestations, or provenance evidence. |
+| Service | `grm-service-api` exists as a split-ready protobuf contract crate. It now compiles generated protobuf DTOs, converts generated schema/node/edge/query/batch shapes into service/runtime requests, proves generated schema and batch requests can execute through `SessionState::execute_runtime`, and exposes a minimal local gRPC workspace shell over create/open/execute/close workspace RPCs. | The proto still mirrors current graph/runtime operation families. The gRPC shell is a demo transport proof, not a daemon, security boundary, hosted durability claim, or full direct-RPC implementation. It does not yet model SOML concepts such as session context, projections, attestations, or provenance evidence. |
 | Backend | In-memory and Neo4j backends sit behind common contracts with visible capability differences. Neo4j MCP mode supports schema-aware CRUD and simple find, but not full traversal/query/import/export/explain/profile parity. | Backend capability reporting should evolve toward operational memory capabilities, not just storage capability lists. |
 | Storage | User graph data, schema memory metadata, durable logs/checkpoints, and derived index/catalog state are conceptually separate. | Durable state should increasingly be described and tested as operational deltas. Projection and attestation storage models are still design work. |
 
@@ -78,9 +78,9 @@ flowchart TB
         SDK["Future generated SDKs"]
     end
 
-    subgraph Service["Future service layer"]
+    subgraph Service["Service layer"]
         Gateway["Optional HTTP/JSON gateway"]
-        GRPC["gRPC/protobuf API"]
+        GRPC["gRPC/protobuf API: local workspace shell now, production service future"]
         SAM["Secure access model: authz, limits, audit"]
         Telemetry["OpenTelemetry spans and metrics"]
         Sync["Sync/projection distribution"]
@@ -156,7 +156,11 @@ GRM is currently converging on a service-hostable runtime core:
   durable operation list.
 - `grm-service-api` now includes generated protobuf DTOs and conversion paths
   that drive existing runtime behavior in-process. This proves a
-  service-hostable runtime contract, but it is not a network service.
+  service-hostable runtime contract.
+- A minimal local gRPC workspace shell now delegates create/open/execute/close
+  workspace RPCs to `InProcessWorkspaceService` over managed handles. It proves
+  the contract can be hosted over gRPC for demo and integration work, while
+  direct schema/node/edge/query/admin RPCs remain explicit unsupported surfaces.
 - Explain/profile and index catalog work make query behavior visible enough to
   demo and eventually sell.
 - WAL/checkpoint work has established local durability foundations for a future
@@ -165,7 +169,7 @@ GRM is currently converging on a service-hostable runtime core:
 - Neo4j MCP mode is useful for dogfooding graph memory and visualization, but
   it is not full in-memory backend parity.
 - `grm-service-api` is a split-ready protobuf contract crate, not a daemon or
-  private service implementation.
+  private production service implementation.
 - SOML/SAM vocabulary is now accepted product architecture, but session,
   projection, attestation, and provenance semantics remain aspirational unless
   backed by code and tests.
@@ -307,8 +311,9 @@ Progress to avoid:
 - moving adapter-specific filter syntax into the canonical service contract
 - routing write adapters through value-only dispatcher responses while silently
   dropping durability metadata
-- adding a service transport before the typed runtime boundary is stable enough
-  to map cleanly
+- expanding the local gRPC transport proof into daemon lifecycle, auth,
+  hosted durability, or direct service-only semantics before the typed runtime
+  boundary is stable enough to map cleanly
 - overstating crash recovery, multi-writer, clustering, or hosted durability
   guarantees
 - renaming graph CRUD concepts to SOML terms without implementing the stronger
@@ -325,15 +330,16 @@ Progress to avoid:
    delta outcome, projection request, and attestation evidence.
 3. Tighten durability language and tests around operational deltas, replay, and
    recovery evidence before widening product claims.
-4. Add a minimal daemon only after transport, security posture, durability
-   claims, and authorization boundaries are clear enough to review.
+4. Use the thin local gRPC workspace shell as a demo and integration proof while
+   durability work catches up.
+5. Add a minimal daemon only after production transport, security posture,
+   durability claims, and authorization boundaries are clear enough to review.
 
-The daemon is not the next architectural proof. The next proof is that all
-surfaces can share the same typed runtime semantics without depending on a
-textual language or duplicating behavior; the generated protobuf to runtime
-mapping is the first concrete service-hostable proof. The next SOML proof is
-that those typed semantics can carry one operational memory concept end to end
-without renaming unsupported behavior into existence.
+The daemon is not the next architectural proof. The current proof is that the
+typed workspace contract can be hosted locally over gRPC without depending on a
+textual language or duplicating behavior. The next SOML proof is that those
+typed semantics can carry durable workspace recovery behavior end to end without
+renaming unsupported behavior into existence.
 
 ## Future Graph Representation
 
