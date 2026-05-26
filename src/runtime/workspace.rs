@@ -45,6 +45,10 @@ impl Workspace {
         self.state.save_workspace(format, path)
     }
 
+    pub fn checkpoint(&self, format: DurabilityFormat, path: impl AsRef<Path>) -> Result<()> {
+        self.state.checkpoint_durable(format, path)
+    }
+
     pub fn load(format: DurabilityFormat, path: impl AsRef<Path>) -> Result<Self> {
         let mut state = SessionState::new();
         state.load_workspace(format, path)?;
