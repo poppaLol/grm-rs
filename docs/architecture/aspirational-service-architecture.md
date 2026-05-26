@@ -75,12 +75,12 @@ flowchart TB
         MCP["MCP tools"]
         HTTPUI["Future UI runtime"]
         Agent["Agent runtime"]
-        SDK["Future generated SDKs"]
+        SDK["Future generated SDKs: C#, TypeScript, etc."]
     end
 
     subgraph Service["Service layer"]
         Gateway["Optional HTTP/JSON gateway"]
-        GRPC["gRPC/protobuf API: local workspace shell now, production service future"]
+        GRPC["gRPC/protobuf API: default persisted layer future"]
         SAM["Secure access model: authz, limits, audit"]
         Telemetry["OpenTelemetry spans and metrics"]
         Sync["Sync/projection distribution"]
@@ -114,6 +114,9 @@ flowchart TB
     CLI --> Requests
     PY --> Requests
     MCP --> Requests
+    CLI -. service-backed mode .-> GRPC
+    PY -. service-backed mode .-> GRPC
+    MCP -. service-backed mode .-> GRPC
     Agent --> MCP
     HTTPUI --> Gateway
     SDK --> GRPC
@@ -173,6 +176,31 @@ GRM is currently converging on a service-hostable runtime core:
 - SOML/SAM vocabulary is now accepted product architecture, but session,
   projection, attestation, and provenance semantics remain aspirational unless
   backed by code and tests.
+
+## Deployment Endgame
+
+GRM should support two primary ways to host the same typed operational memory
+semantics:
+
+- **Embedded/local mode**: Rust library, CLI, Python, MCP, tests, and local
+  tools can call the runtime in-process for utility workflows, development,
+  local analysis, and lightweight embedded use.
+- **Service-backed persisted mode**: CLI, Python, MCP, Rust clients, generated
+  SDKs, and future C#/TypeScript surfaces should be able to call the
+  gRPC/protobuf service as the default persisted operational memory layer.
+
+These are deployment modes, not different product semantics. Adapters may offer
+different ergonomics, but they should converge on the same typed
+workspace/runtime requests and the same SOML behavior. Service-backed mode
+becomes the default durable path as GRM matures because it is where workspace
+state, schema memory, durable deltas/checkpoints, policy, auth, audit,
+observability, and future provenance can be managed together.
+
+Neo4j remains a supported optional backend and interoperability/inspection path,
+possibly indefinitely. It should not be framed as the canonical persisted SOML
+layer. When Neo4j is used, GRM must keep capability limits explicit and may keep
+schema memory in a GRM-owned workspace metadata store rather than writing GRM
+metadata into the user's Neo4j graph by default.
 
 ## Aspirational Goals After ADR 0004
 

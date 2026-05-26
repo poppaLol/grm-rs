@@ -124,9 +124,17 @@ Long-term direction:
 - CLI workspace for interactive graph work
 - Python surface for analysis and automation
 - MCP surface for agents and tool-using assistants
-- possible future service mode for shared or remote access
+- C# and TypeScript SDK surfaces when concrete application workflows justify
+  them
+- service-backed mode as the default persisted operational memory layer for
+  shared, durable, and remotely accessed workspaces
 
-This should become a deliberate product strategy rather than an accidental collection of entrypoints.
+This should become a deliberate product strategy rather than an accidental
+collection of entrypoints. Language surfaces should remain adapters or clients
+over typed GRM workspace/runtime operations, not separate semantics. Neo4j can
+remain an optional backend and inspection/interoperability path, but the GRM
+service should become the default persisted SOML layer as durability and service
+semantics mature.
 
 ### 8. Service-Hostable Runtime Contract
 

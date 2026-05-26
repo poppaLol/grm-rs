@@ -38,6 +38,24 @@ resolution, projections, explain/profile, and durability/admin work.
 This keeps the trusted boundary aligned with GRM's core value: applications and
 agents send typed operational memory requests, not arbitrary script text.
 
+## Client Surface Endgame
+
+The gRPC/protobuf contract is expected to become the default persisted
+operational memory layer for GRM. CLI, Python, MCP, Rust clients, generated
+SDKs, and future C#/TypeScript surfaces should be able to run as clients of the
+service when users want a shared or durable workspace.
+
+Embedded runtime use remains valid for local utilities, tests, scripts, and
+lightweight applications. The distinction should be deployment and durability
+class, not behavior: embedded adapters and service clients should issue the same
+typed workspace/runtime operations wherever practical.
+
+Neo4j remains an optional graph-data backend and inspection/interoperability
+path. It may be useful indefinitely, but it should not be treated as GRM's
+default persisted SOML layer. The service-backed workspace is where GRM should
+eventually own schema memory, durable deltas/checkpoints, policy, auth, audit,
+observability, and future provenance as one operational memory envelope.
+
 ## Protocol Choice
 
 gRPC/protobuf should be the canonical service protocol.
