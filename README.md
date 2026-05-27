@@ -117,6 +117,7 @@ The Rust API is the typed core of the project. It provides:
 - explicit transactions through `GraphClient`
 - a backend-neutral `GraphQuery` kernel IR
 - typed query results keyed by kernel variables
+- local workspace autocommit through `Workspace::execute_runtime`
 
 The in-memory backend is useful for tests and local workflows. Neo4j support is
 available through a backend adapter and shared behavior tests.
@@ -134,10 +135,11 @@ The CLI is a runtime graph workspace. It can:
 - use autocommit and compaction for local persistence workflows
 
 Local autocommit uses the shared runtime durability path used by the CLI,
-Python package, and MCP server. The scoped guarantee is intentionally boring:
-after a successful autocommit write returns, the write is present in either the
-append log or a checkpoint on a single local filesystem, assuming one writer
-owns the session/store.
+Python package, MCP server, and Rust `Workspace::execute_runtime` path. The
+scoped guarantee is intentionally boring: after a successful autocommit write
+returns, the write is present in either the append log or a checkpoint on a
+single local filesystem, assuming one writer owns the session/store. Direct
+low-level workspace state mutations are not claimed to autocommit.
 
 For future direction, see [docs/cli-roadmap.md](docs/cli-roadmap.md). Detailed
 command walkthroughs are moving toward tutorial docs rather than living in the
