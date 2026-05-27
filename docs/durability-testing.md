@@ -15,7 +15,10 @@ The conservative product claim is:
 
 More precisely: after a successful autocommit write returns, the write is
 present in either the append log or a checkpoint on a single local filesystem,
-assuming one writer owns the session or workspace.
+assuming one writer owns the session or workspace. Rust workspace autocommit is
+provided through the public `Workspace::execute_runtime` execution path; direct
+`workspace.state_mut()` calls remain low-level and are not part of the
+autocommit claim.
 
 This is a local operational-memory durability claim, not a claim that GRM is a
 general-purpose file database. The durable artifact should evolve into a
