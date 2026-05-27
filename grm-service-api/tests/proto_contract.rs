@@ -397,6 +397,8 @@ async fn in_process_workspace_service_executes_generated_requests_against_handle
         .create_workspace(
             svc::proto::WorkspaceCreateRequest {
                 mode: svc::proto::WorkspaceCreateMode::InMemory as i32,
+                workspace: None,
+                format: svc::proto::DurabilityFormat::Json as i32,
             }
             .try_into()
             .unwrap(),
@@ -517,6 +519,8 @@ async fn in_process_workspace_service_reopens_closed_loop_snapshot_by_handle() {
     let created = service
         .create_workspace(svc::WorkspaceCreateRequest {
             mode: svc::WorkspaceCreateMode::InMemory,
+            workspace: None,
+            format: svc::DurabilityFormat::Json,
         })
         .unwrap();
 
@@ -567,6 +571,7 @@ async fn in_process_workspace_service_reopens_closed_loop_snapshot_by_handle() {
         .open_workspace(
             svc::proto::WorkspaceOpenRequest {
                 snapshot: Some(snapshot.into()),
+                workspace: None,
                 format: svc::proto::DurabilityFormat::Json as i32,
             }
             .try_into()
@@ -607,7 +612,8 @@ async fn in_process_workspace_service_reopens_closed_loop_snapshot_by_handle() {
 
     let reopened_again = service
         .open_workspace(svc::WorkspaceOpenRequest {
-            snapshot,
+            snapshot: Some(snapshot),
+            workspace: None,
             format: svc::DurabilityFormat::Json,
         })
         .unwrap();
@@ -674,6 +680,8 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
     let created = client
         .create_workspace(svc::proto::WorkspaceCreateRequest {
             mode: svc::proto::WorkspaceCreateMode::InMemory as i32,
+            workspace: None,
+            format: svc::proto::DurabilityFormat::Json as i32,
         })
         .await
         .unwrap()
@@ -768,6 +776,148 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
     server.await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_save() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = svc::proto::WorkspaceRef {
+        id: "grpc_autocommit_workspace".into(),
+    };
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let mut client =
+        svc::proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+            .await
+            .unwrap();
+
+    let created = client
+        .create_workspace(svc::proto::WorkspaceCreateRequest {
+            mode: svc::proto::WorkspaceCreateMode::LocalAutocommit as i32,
+            workspace: Some(workspace.clone()),
+            format: svc::proto::DurabilityFormat::Json as i32,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(created.workspace.as_ref(), Some(&workspace));
+    let opened_handle = created.handle.unwrap();
+    assert!(!opened_handle.id.is_empty());
+
+    client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(opened_handle.clone()),
+            request: Some(svc::proto::RuntimeRequest {
+                request: Some(svc::proto::runtime_request::Request::DefineNode(
+                    svc::proto::DefineNodeRequest {
+                        name: "User".into(),
+                        id_field: "userId".into(),
+                        fields: vec![svc::proto::FieldSpec {
+                            name: "name".into(),
+                            value_type: svc::proto::FieldValueType::String as i32,
+                            required: true,
+                        }],
+                    },
+                )),
+            }),
+        })
+        .await
+        .unwrap();
+    client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(opened_handle.clone()),
+            request: Some(create_user_proto_request("Ada")),
+        })
+        .await
+        .unwrap();
+    client
+        .close_workspace(svc::proto::WorkspaceCloseRequest {
+            handle: Some(opened_handle),
+        })
+        .await
+        .unwrap();
+
+    let reopened = client
+        .open_workspace(svc::proto::WorkspaceOpenRequest {
+            snapshot: None,
+            workspace: Some(workspace.clone()),
+            format: svc::proto::DurabilityFormat::Json as i32,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(reopened.workspace.as_ref(), Some(&workspace));
+    let reopened_handle = reopened.handle.unwrap();
+
+    client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(reopened_handle.clone()),
+            request: Some(create_user_proto_request("Grace")),
+        })
+        .await
+        .unwrap();
+    let found = client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(reopened_handle),
+            request: Some(svc::proto::RuntimeRequest {
+                request: Some(svc::proto::runtime_request::Request::FindNodes(
+                    svc::proto::NodeFindRequest {
+                        model: "User".into(),
+                        predicates: Vec::new(),
+                        end_predicates: Vec::new(),
+                        edge_predicates: Vec::new(),
+                        traversals: Vec::new(),
+                        order: Vec::new(),
+                        limit: None,
+                        offset: None,
+                        id: None,
+                        return_mode: None,
+                    },
+                )),
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let names = match found.response.and_then(|response| response.response) {
+        Some(svc::proto::runtime_response::Response::FindNodes(response)) => response
+            .nodes
+            .into_iter()
+            .map(|node| {
+                node.props
+                    .unwrap()
+                    .properties
+                    .into_iter()
+                    .find(|property| property.name == "name")
+                    .and_then(|property| property.value)
+                    .and_then(|value| value.kind)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>(),
+        other => panic!("expected generated NodeFind response, got {other:?}"),
+    };
+    assert!(names.contains(&svc::proto::property_value::Kind::StringValue("Ada".into())));
+    assert!(
+        names.contains(&svc::proto::property_value::Kind::StringValue(
+            "Grace".into()
+        ))
+    );
+
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
 fn read_proto(relative: &str) -> String {
     fs::read_to_string(grm_service_api::proto_root().join(relative))
         .unwrap_or_else(|err| panic!("failed to read {relative}: {err}"))
@@ -833,6 +983,20 @@ fn create_user_request(name: &str) -> svc::ServiceRequest {
             svc::PropertyValue::String(format!("{name}@example.test")),
         )]),
     })
+}
+
+fn create_user_proto_request(name: &str) -> svc::proto::RuntimeRequest {
+    svc::proto::RuntimeRequest {
+        request: Some(svc::proto::runtime_request::Request::CreateNode(
+            svc::proto::NodeCreateRequest {
+                model: "User".into(),
+                props: Some(proto_property_map([(
+                    "name",
+                    svc::proto::property_value::Kind::StringValue(name.into()),
+                )])),
+            },
+        )),
+    }
 }
 
 async fn assert_workspace_users<const N: usize>(
