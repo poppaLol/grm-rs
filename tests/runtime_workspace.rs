@@ -171,6 +171,50 @@ async fn workspace_recovery_replays_log_after_reopened_workspace() {
 }
 
 #[tokio::test]
+async fn workspace_execute_runtime_autocommits_to_reopenable_workspace() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("autocommit-workspace.json");
+    let mut workspace = Workspace::new();
+
+    workspace
+        .enable_autocommit(DurabilityFormat::Json, &path)
+        .unwrap();
+    assert!(
+        path.exists(),
+        "enabling autocommit should checkpoint the current workspace"
+    );
+    assert!(
+        !log_path(&path).exists(),
+        "enabling autocommit should not create append records"
+    );
+
+    define_workspace_schema(&mut workspace).await;
+    create_workspace_data(&mut workspace).await;
+    assert!(
+        fs::metadata(log_path(&path)).unwrap().len() > 0,
+        "workspace runtime mutations should append durable records"
+    );
+
+    let find = workspace
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Find(NodeFindRequest {
+            model: "User".to_string(),
+            ..Default::default()
+        })))
+        .await
+        .unwrap();
+    assert!(find.durable_ops.is_empty());
+    let log_len_after_find = fs::metadata(log_path(&path)).unwrap().len();
+
+    let reopened = Workspace::open(DurabilityFormat::Json, &path).unwrap();
+    assert_declared_schema_and_data_survived(&reopened).await;
+    assert_eq!(
+        fs::metadata(log_path(&path)).unwrap().len(),
+        log_len_after_find,
+        "read-only runtime requests should not append durable records"
+    );
+}
+
+#[tokio::test]
 async fn cli_save_load_uses_workspace_schema_snapshot() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("cli-workspace.json");
@@ -213,7 +257,6 @@ async fn define_workspace_schema(workspace: &mut Workspace) -> Vec<DurableOperat
     let mut durable_ops = Vec::new();
     durable_ops.extend(
         workspace
-            .state_mut()
             .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
                 DefineNodeRequest {
                     name: "User".to_string(),
@@ -230,7 +273,6 @@ async fn define_workspace_schema(workspace: &mut Workspace) -> Vec<DurableOperat
     );
     durable_ops.extend(
         workspace
-            .state_mut()
             .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
                 DefineNodeRequest {
                     name: "Post".to_string(),
@@ -244,7 +286,6 @@ async fn define_workspace_schema(workspace: &mut Workspace) -> Vec<DurableOperat
     );
     durable_ops.extend(
         workspace
-            .state_mut()
             .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineEdge(
                 DefineEdgeRequest {
                     name: "Authored".to_string(),
@@ -276,7 +317,6 @@ async fn create_workspace_data_named(
 ) -> Vec<DurableOperation> {
     let mut durable_ops = Vec::new();
     let user = workspace
-        .state_mut()
         .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
             NodeCreateRequest {
                 model: "User".to_string(),
@@ -287,7 +327,6 @@ async fn create_workspace_data_named(
         .unwrap();
     durable_ops.extend(user.durable_ops.clone());
     let post = workspace
-        .state_mut()
         .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
             NodeCreateRequest {
                 model: "Post".to_string(),
@@ -306,7 +345,6 @@ async fn create_workspace_data_named(
     };
 
     let edge = workspace
-        .state_mut()
         .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
             EdgeCreateRequest {
                 model: "Authored".to_string(),
