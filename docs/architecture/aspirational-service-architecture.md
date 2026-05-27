@@ -164,6 +164,10 @@ GRM is currently converging on a service-hostable runtime core:
   workspace RPCs to `InProcessWorkspaceService` over managed handles. It proves
   the contract can be hosted over gRPC for demo and integration work, while
   direct schema/node/edge/query/admin RPCs remain explicit unsupported surfaces.
+- The shell now has a local autocommit workspace mode using opaque workspace
+  refs mapped to server-local files under a configured root. This proves the
+  service-backed workspace path can reopen schema/data after typed mutations
+  without exposing server filesystem paths or claiming hosted durability.
 - Explain/profile and index catalog work make query behavior visible enough to
   demo and eventually sell.
 - WAL/checkpoint work has established local durability foundations for a future

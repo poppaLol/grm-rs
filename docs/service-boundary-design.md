@@ -369,7 +369,10 @@ The near-term service API proof has moved from design into code:
   rather than introducing a new service-only mutation path.
 - A minimal local gRPC workspace shell exposes create/open/execute/close
   workspace RPCs and delegates execution through `InProcessWorkspaceService`
-  using managed workspace and snapshot handles.
+  using managed workspace handles, snapshot handles, and opaque workspace refs.
+- The local shell can map opaque workspace refs to autocommit workspace files
+  beneath a server-configured root, so generated clients can prove
+  create/open/execute/reopen behavior without passing server filesystem paths.
 - Unsupported runtime surfaces remain explicit: traversal query, explain,
   profile, admin operations, and direct non-workspace RPCs are not silently
   claimed as implemented.
