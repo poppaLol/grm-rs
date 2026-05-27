@@ -11,6 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let created = client
         .create_workspace(proto::WorkspaceCreateRequest {
             mode: proto::WorkspaceCreateMode::InMemory as i32,
+            workspace: None,
+            format: proto::DurabilityFormat::Json as i32,
         })
         .await?
         .into_inner();

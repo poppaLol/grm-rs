@@ -86,30 +86,41 @@ pub struct WorkspaceHandle {
     pub id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WorkspaceRef {
+    pub id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceCreateRequest {
     pub mode: WorkspaceCreateMode,
+    pub workspace: Option<WorkspaceRef>,
+    pub format: DurabilityFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceCreateMode {
     InMemory,
+    LocalAutocommit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceCreateResponse {
     pub handle: WorkspaceHandle,
+    pub workspace: Option<WorkspaceRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceOpenRequest {
-    pub snapshot: SnapshotHandle,
+    pub snapshot: Option<SnapshotHandle>,
+    pub workspace: Option<WorkspaceRef>,
     pub format: DurabilityFormat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceOpenResponse {
     pub handle: WorkspaceHandle,
+    pub workspace: Option<WorkspaceRef>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -166,9 +177,11 @@ pub struct LocalWorkspaceSnapshotRequest {
 #[derive(Default)]
 pub struct InProcessWorkspaceService {
     next_workspace_id: u64,
+    next_workspace_ref_id: u64,
     next_snapshot_id: u64,
     workspaces: BTreeMap<String, grm_rs::Workspace>,
     local_snapshots: BTreeMap<String, LocalWorkspaceSnapshot>,
+    local_workspace_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +195,17 @@ impl InProcessWorkspaceService {
         Self::default()
     }
 
+    pub fn with_local_workspace_root(root: impl Into<PathBuf>) -> Self {
+        Self {
+            local_workspace_root: Some(root.into()),
+            ..Self::default()
+        }
+    }
+
+    pub fn set_local_workspace_root(&mut self, root: impl Into<PathBuf>) {
+        self.local_workspace_root = Some(root.into());
+    }
+
     pub fn create_workspace(
         &mut self,
         request: WorkspaceCreateRequest,
@@ -191,7 +215,22 @@ impl InProcessWorkspaceService {
                 let handle = self.next_workspace_handle();
                 self.workspaces
                     .insert(handle.id.clone(), grm_rs::Workspace::new());
-                Ok(WorkspaceCreateResponse { handle })
+                Ok(WorkspaceCreateResponse {
+                    handle,
+                    workspace: None,
+                })
+            }
+            WorkspaceCreateMode::LocalAutocommit => {
+                let workspace_ref = self.normalize_workspace_ref(request.workspace)?;
+                let path = self.local_workspace_path(&workspace_ref, request.format)?;
+                let mut workspace = grm_rs::Workspace::new();
+                workspace.enable_autocommit(request.format.into(), path)?;
+                let handle = self.next_workspace_handle();
+                self.workspaces.insert(handle.id.clone(), workspace);
+                Ok(WorkspaceCreateResponse {
+                    handle,
+                    workspace: Some(workspace_ref),
+                })
             }
         }
     }
@@ -200,24 +239,56 @@ impl InProcessWorkspaceService {
         &mut self,
         request: WorkspaceOpenRequest,
     ) -> WorkspaceServiceResult<WorkspaceOpenResponse> {
-        let snapshot = self
-            .local_snapshots
-            .get(&request.snapshot.id)
-            .ok_or_else(|| WorkspaceServiceError::UnknownSnapshotHandle {
-                snapshot: request.snapshot.clone(),
-            })?;
-        if snapshot.format != request.format {
-            return Err(WorkspaceServiceError::Runtime(
-                grm_rs::GrmError::Constraint(
-                    "workspace open format does not match registered snapshot".into(),
-                ),
-            ));
-        }
+        let (workspace, workspace_ref) = match (request.workspace, request.snapshot) {
+            (Some(_), Some(_)) => {
+                return Err(WorkspaceServiceError::Runtime(
+                    grm_rs::GrmError::Constraint(
+                        "workspace open accepts either a workspace ref or snapshot handle, not both"
+                            .into(),
+                    ),
+                ));
+            }
+            (Some(workspace_ref), None) => {
+                let path = self.local_workspace_path(&workspace_ref, request.format)?;
+                (
+                    grm_rs::Workspace::open_autocommit(request.format.into(), path)?,
+                    Some(workspace_ref),
+                )
+            }
+            (None, Some(snapshot_handle)) => {
+                let snapshot = self
+                    .local_snapshots
+                    .get(&snapshot_handle.id)
+                    .ok_or_else(|| WorkspaceServiceError::UnknownSnapshotHandle {
+                        snapshot: snapshot_handle.clone(),
+                    })?;
+                if snapshot.format != request.format {
+                    return Err(WorkspaceServiceError::Runtime(
+                        grm_rs::GrmError::Constraint(
+                            "workspace open format does not match registered snapshot".into(),
+                        ),
+                    ));
+                }
 
-        let workspace = grm_rs::Workspace::open(request.format.into(), &snapshot.path)?;
+                (
+                    grm_rs::Workspace::open(request.format.into(), &snapshot.path)?,
+                    None,
+                )
+            }
+            (None, None) => {
+                return Err(WorkspaceServiceError::Runtime(
+                    grm_rs::GrmError::Constraint(
+                        "workspace open requires a workspace ref or snapshot handle".into(),
+                    ),
+                ));
+            }
+        };
         let handle = self.next_workspace_handle();
         self.workspaces.insert(handle.id.clone(), workspace);
-        Ok(WorkspaceOpenResponse { handle })
+        Ok(WorkspaceOpenResponse {
+            handle,
+            workspace: workspace_ref,
+        })
     }
 
     pub async fn execute_runtime(
@@ -226,7 +297,9 @@ impl InProcessWorkspaceService {
     ) -> WorkspaceServiceResult<WorkspaceRuntimeResponse> {
         let handle = request.handle;
         let workspace = self.workspace_mut(&handle)?;
-        let outcome = request.request.execute(workspace.state_mut()).await?;
+        let outcome = workspace
+            .execute_runtime(request.request.into_runtime_request()?)
+            .await?;
         Ok(WorkspaceRuntimeResponse {
             handle,
             response: outcome.response,
@@ -318,6 +391,13 @@ impl InProcessWorkspaceService {
         }
     }
 
+    fn next_workspace_ref(&mut self) -> WorkspaceRef {
+        self.next_workspace_ref_id += 1;
+        WorkspaceRef {
+            id: format!("workspace-{}", self.next_workspace_ref_id),
+        }
+    }
+
     fn next_snapshot_handle(&mut self) -> SnapshotHandle {
         self.next_snapshot_id += 1;
         let id = format!("local-snapshot-{}", self.next_snapshot_id);
@@ -326,6 +406,57 @@ impl InProcessWorkspaceService {
             etag: String::new(),
         }
     }
+
+    fn normalize_workspace_ref(
+        &mut self,
+        workspace: Option<WorkspaceRef>,
+    ) -> WorkspaceServiceResult<WorkspaceRef> {
+        match workspace {
+            Some(workspace) => {
+                validate_workspace_ref(&workspace)?;
+                Ok(workspace)
+            }
+            None => Ok(self.next_workspace_ref()),
+        }
+    }
+
+    fn local_workspace_path(
+        &self,
+        workspace: &WorkspaceRef,
+        format: DurabilityFormat,
+    ) -> WorkspaceServiceResult<PathBuf> {
+        validate_workspace_ref(workspace)?;
+        let root = self.local_workspace_root.as_ref().ok_or_else(|| {
+            WorkspaceServiceError::Runtime(grm_rs::GrmError::Constraint(
+                "local autocommit workspaces require a configured local workspace root".into(),
+            ))
+        })?;
+        let extension = match format {
+            DurabilityFormat::Json => "json",
+            DurabilityFormat::Binary => "bin",
+        };
+        Ok(root.join(format!("{}.{}", workspace.id, extension)))
+    }
+}
+
+fn validate_workspace_ref(workspace: &WorkspaceRef) -> WorkspaceServiceResult<()> {
+    if workspace.id.is_empty() {
+        return Err(WorkspaceServiceError::Runtime(
+            grm_rs::GrmError::Constraint("workspace ref id must not be empty".into()),
+        ));
+    }
+    if !workspace
+        .id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(WorkspaceServiceError::Runtime(
+            grm_rs::GrmError::Constraint(
+                "workspace ref id may contain only ASCII letters, digits, '-' and '_'".into(),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -336,6 +467,10 @@ pub struct GrpcWorkspaceService {
 impl GrpcWorkspaceService {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_local_workspace_root(root: impl Into<PathBuf>) -> Self {
+        Self::from_in_process(InProcessWorkspaceService::with_local_workspace_root(root))
     }
 
     pub fn from_in_process(service: InProcessWorkspaceService) -> Self {
@@ -590,6 +725,8 @@ impl TryFrom<proto::WorkspaceCreateRequest> for WorkspaceCreateRequest {
     fn try_from(request: proto::WorkspaceCreateRequest) -> grm_rs::Result<Self> {
         Ok(Self {
             mode: proto_workspace_create_mode(request.mode)?,
+            workspace: request.workspace.map(Into::into),
+            format: proto_durability_format(request.format)?,
         })
     }
 }
@@ -598,6 +735,7 @@ impl From<WorkspaceCreateResponse> for proto::WorkspaceCreateResponse {
     fn from(response: WorkspaceCreateResponse) -> Self {
         Self {
             handle: Some(response.handle.into()),
+            workspace: response.workspace.map(Into::into),
         }
     }
 }
@@ -607,10 +745,8 @@ impl TryFrom<proto::WorkspaceOpenRequest> for WorkspaceOpenRequest {
 
     fn try_from(request: proto::WorkspaceOpenRequest) -> grm_rs::Result<Self> {
         Ok(Self {
-            snapshot: request
-                .snapshot
-                .ok_or_else(|| missing_proto_field("WorkspaceOpenRequest.snapshot"))?
-                .into(),
+            snapshot: request.snapshot.map(Into::into),
+            workspace: request.workspace.map(Into::into),
             format: proto_durability_format(request.format)?,
         })
     }
@@ -620,6 +756,7 @@ impl From<WorkspaceOpenResponse> for proto::WorkspaceOpenResponse {
     fn from(response: WorkspaceOpenResponse) -> Self {
         Self {
             handle: Some(response.handle.into()),
+            workspace: response.workspace.map(Into::into),
         }
     }
 }
@@ -689,6 +826,18 @@ impl From<proto::WorkspaceHandle> for WorkspaceHandle {
 impl From<WorkspaceHandle> for proto::WorkspaceHandle {
     fn from(handle: WorkspaceHandle) -> Self {
         Self { id: handle.id }
+    }
+}
+
+impl From<proto::WorkspaceRef> for WorkspaceRef {
+    fn from(workspace: proto::WorkspaceRef) -> Self {
+        Self { id: workspace.id }
+    }
+}
+
+impl From<WorkspaceRef> for proto::WorkspaceRef {
+    fn from(workspace: WorkspaceRef) -> Self {
+        Self { id: workspace.id }
     }
 }
 
@@ -2539,6 +2688,7 @@ fn proto_workspace_create_mode(value: i32) -> grm_rs::Result<WorkspaceCreateMode
         .map_err(|_| unknown_proto_enum("WorkspaceCreateMode", value))?
     {
         proto::WorkspaceCreateMode::InMemory => Ok(WorkspaceCreateMode::InMemory),
+        proto::WorkspaceCreateMode::LocalAutocommit => Ok(WorkspaceCreateMode::LocalAutocommit),
     }
 }
 

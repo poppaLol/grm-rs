@@ -18,7 +18,10 @@ service/runtime request shape. Tests prove generated schema and batch requests
 can execute through `SessionState::execute_runtime`; batch execution reuses the
 existing runtime batch path and preserves grouped durable operation metadata.
 A minimal local gRPC shell exposes the workspace RPCs over the same generated
-contract and delegates to `InProcessWorkspaceService`.
+contract and delegates to `InProcessWorkspaceService`. The shell can also bind
+opaque `WorkspaceRef` values to local autocommit workspace files under a
+server-configured root, letting generated clients create, execute, close, and
+reopen a durable local workspace without sending server filesystem paths.
 
 The contract does not expose CLI command text as a query surface. Query,
 traversal, explain, and profile requests are typed request messages.

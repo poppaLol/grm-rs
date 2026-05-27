@@ -14,25 +14,35 @@ message WorkspaceHandle {
   string id = 1;
 }
 
+message WorkspaceRef {
+  string id = 1;
+}
+
 message WorkspaceCreateRequest {
   WorkspaceCreateMode mode = 1;
+  WorkspaceRef workspace = 2;
+  DurabilityFormat format = 3;
 }
 
 enum WorkspaceCreateMode {
   WORKSPACE_CREATE_MODE_IN_MEMORY = 0;
+  WORKSPACE_CREATE_MODE_LOCAL_AUTOCOMMIT = 1;
 }
 
 message WorkspaceCreateResponse {
   WorkspaceHandle handle = 1;
+  WorkspaceRef workspace = 2;
 }
 
 message WorkspaceOpenRequest {
   SnapshotHandle snapshot = 1;
   DurabilityFormat format = 2;
+  WorkspaceRef workspace = 3;
 }
 
 message WorkspaceOpenResponse {
   WorkspaceHandle handle = 1;
+  WorkspaceRef workspace = 2;
 }
 
 message WorkspaceRuntimeRequest {
