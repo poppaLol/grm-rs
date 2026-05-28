@@ -28,8 +28,8 @@ use crate::runtime::{
     ProfileRequest, PropertyPredicate, QueryRequest, RuntimeBatchResponse, RuntimeDelete,
     RuntimeDispatchOutcome, RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
     RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
-    RuntimeRequest, RuntimeResponse, SchemaRequest, SchemaResponse, TraversalDirection,
-    TraversalReturn,
+    RuntimeRequest, RuntimeResponse, RuntimeSchemaListResponse, SchemaRequest, SchemaResponse,
+    TraversalDirection, TraversalReturn,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -391,6 +391,28 @@ impl SessionState {
                     SchemaResponse::DefineEdge(outcome.value),
                     outcome.durable_op,
                 )
+            }
+            SchemaRequest::List => {
+                return Ok(RuntimeDispatchOutcome {
+                    response: RuntimeResponse::Schema(SchemaResponse::List(
+                        RuntimeSchemaListResponse {
+                            node_models: self
+                                .catalog
+                                .list_node_models()
+                                .into_iter()
+                                .cloned()
+                                .collect(),
+                            edge_models: self
+                                .catalog
+                                .list_rel_models()
+                                .into_iter()
+                                .cloned()
+                                .collect(),
+                            backend_id_type: self.node_id_type(),
+                        },
+                    )),
+                    durable_ops: Vec::new(),
+                });
             }
         };
         Ok(RuntimeDispatchOutcome {

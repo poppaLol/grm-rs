@@ -27,8 +27,8 @@ pub use ops::{
     QueryRequest, RuntimeBatchResponse, RuntimeDelete, RuntimeDispatchOutcome,
     RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
     RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
-    RuntimeRequest, RuntimeResponse, SaveRequest, SchemaRequest, SchemaResponse,
-    TraversalDirection, TraversalRequest, TraversalReturn, TraversalStepRequest,
+    RuntimeRequest, RuntimeResponse, RuntimeSchemaListResponse, SaveRequest, SchemaRequest,
+    SchemaResponse, TraversalDirection, TraversalRequest, TraversalReturn, TraversalStepRequest,
 };
 pub use parser::{
     KeyValueArg, QueryTerm, SessionCommand, parse_command_line, parse_query_terms_from_strs,

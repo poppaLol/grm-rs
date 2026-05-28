@@ -780,7 +780,7 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
 async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_save() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = svc::proto::WorkspaceRef {
-        id: "grpc_autocommit_workspace".into(),
+        id: "grpc_parity_workspace".into(),
     };
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -801,6 +801,39 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
             .await
             .unwrap();
 
+    let direct = client
+        .define_node(svc::proto::DefineNodeRequest {
+            name: "DirectOnly".into(),
+            id_field: "directOnlyId".into(),
+            fields: Vec::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(direct.code(), tonic::Code::Unimplemented);
+    assert!(direct.message().contains("ExecuteWorkspace"));
+
+    let direct = client
+        .create_node(svc::proto::NodeCreateRequest {
+            model: "DirectOnly".into(),
+            props: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(direct.code(), tonic::Code::Unimplemented);
+    assert!(direct.message().contains("ExecuteWorkspace"));
+
+    let direct = client
+        .apply_batch(svc::proto::BatchRequest {
+            atomic: true,
+            allow_deletes: false,
+            response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+            ops: Vec::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(direct.code(), tonic::Code::Unimplemented);
+    assert!(direct.message().contains("ExecuteWorkspace"));
+
     let created = client
         .create_workspace(svc::proto::WorkspaceCreateRequest {
             mode: svc::proto::WorkspaceCreateMode::LocalAutocommit as i32,
@@ -814,32 +847,262 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let opened_handle = created.handle.unwrap();
     assert!(!opened_handle.id.is_empty());
 
-    client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
-            handle: Some(opened_handle.clone()),
-            request: Some(svc::proto::RuntimeRequest {
-                request: Some(svc::proto::runtime_request::Request::DefineNode(
-                    svc::proto::DefineNodeRequest {
-                        name: "User".into(),
-                        id_field: "userId".into(),
-                        fields: vec![svc::proto::FieldSpec {
-                            name: "name".into(),
-                            value_type: svc::proto::FieldValueType::String as i32,
-                            required: true,
-                        }],
-                    },
-                )),
-            }),
-        })
-        .await
-        .unwrap();
-    client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
-            handle: Some(opened_handle.clone()),
-            request: Some(create_user_proto_request("Ada")),
-        })
-        .await
-        .unwrap();
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::DefineNode(define_node_proto(
+            "User",
+            "userId",
+            [("name", svc::proto::FieldValueType::String, true)],
+        )),
+    )
+    .await;
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::DefineNode(define_node_proto(
+            "Post",
+            "postId",
+            [("title", svc::proto::FieldValueType::String, true)],
+        )),
+    )
+    .await;
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::DefineEdge(define_edge_proto(
+            "Authored",
+            "User",
+            "Post",
+            "authoredId",
+            [("year", svc::proto::FieldValueType::Int, false)],
+        )),
+    )
+    .await;
+
+    let ada = created_node_id(
+        execute_workspace_proto(
+            &mut client,
+            &opened_handle,
+            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+                "User",
+                [(
+                    "name",
+                    svc::proto::property_value::Kind::StringValue("Ada".into()),
+                )],
+            )),
+        )
+        .await,
+    );
+    let post = created_node_id(
+        execute_workspace_proto(
+            &mut client,
+            &opened_handle,
+            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+                "Post",
+                [(
+                    "title",
+                    svc::proto::property_value::Kind::StringValue("Parity notes".into()),
+                )],
+            )),
+        )
+        .await,
+    );
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::UpdateNode(node_update_proto(
+            "User",
+            ada,
+            [(
+                "name",
+                svc::proto::property_value::Kind::StringValue("Ada Lovelace".into()),
+            )],
+        )),
+    )
+    .await;
+    let found = execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::FindNodes(find_nodes_by_id_proto("User", ada)),
+    )
+    .await;
+    assert_eq!(node_string_props(found, "name"), vec!["Ada Lovelace"]);
+
+    let authored = created_edge_id(
+        execute_workspace_proto(
+            &mut client,
+            &opened_handle,
+            svc::proto::runtime_request::Request::CreateEdge(edge_create_proto(
+                "Authored",
+                ada,
+                post,
+                [("year", svc::proto::property_value::Kind::IntValue(2026))],
+            )),
+        )
+        .await,
+    );
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::UpdateEdge(edge_update_proto(
+            "Authored",
+            authored,
+            [("year", svc::proto::property_value::Kind::IntValue(2027))],
+        )),
+    )
+    .await;
+    let found = execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
+            "Authored", authored,
+        )),
+    )
+    .await;
+    assert_eq!(edge_int_props(found, "year"), vec![2027]);
+
+    let temporary_user = created_node_id(
+        execute_workspace_proto(
+            &mut client,
+            &opened_handle,
+            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+                "User",
+                [(
+                    "name",
+                    svc::proto::property_value::Kind::StringValue("Temporary User".into()),
+                )],
+            )),
+        )
+        .await,
+    );
+    let temporary_post = created_node_id(
+        execute_workspace_proto(
+            &mut client,
+            &opened_handle,
+            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+                "Post",
+                [(
+                    "title",
+                    svc::proto::property_value::Kind::StringValue("Temporary Post".into()),
+                )],
+            )),
+        )
+        .await,
+    );
+    let temporary_edge = created_edge_id(
+        execute_workspace_proto(
+            &mut client,
+            &opened_handle,
+            svc::proto::runtime_request::Request::CreateEdge(edge_create_proto(
+                "Authored",
+                temporary_user,
+                temporary_post,
+                [("year", svc::proto::property_value::Kind::IntValue(2026))],
+            )),
+        )
+        .await,
+    );
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::DeleteEdge(svc::proto::EdgeDeleteRequest {
+            model: "Authored".into(),
+            id: temporary_edge,
+        }),
+    )
+    .await;
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::DeleteNode(svc::proto::NodeDeleteRequest {
+            model: "User".into(),
+            id: temporary_user,
+        }),
+    )
+    .await;
+    execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::DeleteNode(svc::proto::NodeDeleteRequest {
+            model: "Post".into(),
+            id: temporary_post,
+        }),
+    )
+    .await;
+    let found = execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
+            "Authored",
+            temporary_edge,
+        )),
+    )
+    .await;
+    assert!(edge_int_props(found, "year").is_empty());
+
+    let batch = execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        svc::proto::runtime_request::Request::ApplyBatch(svc::proto::BatchRequest {
+            atomic: true,
+            allow_deletes: false,
+            response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+            ops: vec![
+                svc::proto::BatchOperation {
+                    op: Some(svc::proto::batch_operation::Op::SchemaDefineNode(
+                        define_node_proto(
+                            "Tag",
+                            "tagId",
+                            [("label", svc::proto::FieldValueType::String, true)],
+                        ),
+                    )),
+                },
+                svc::proto::BatchOperation {
+                    op: Some(svc::proto::batch_operation::Op::SchemaDefineEdge(
+                        define_edge_proto("Tagged", "User", "Tag", "taggedId", []),
+                    )),
+                },
+                svc::proto::BatchOperation {
+                    op: Some(svc::proto::batch_operation::Op::NodeCreate(
+                        svc::proto::BatchNodeCreate {
+                            model: "Tag".into(),
+                            props: Some(proto_property_map([(
+                                "label",
+                                svc::proto::property_value::Kind::StringValue("service".into()),
+                            )])),
+                            local_ref: Some("service-tag".into()),
+                        },
+                    )),
+                },
+                svc::proto::BatchOperation {
+                    op: Some(svc::proto::batch_operation::Op::EdgeCreate(
+                        svc::proto::BatchEdgeCreate {
+                            model: "Tagged".into(),
+                            from: Some(svc::proto::BatchEndpoint {
+                                endpoint: Some(svc::proto::batch_endpoint::Endpoint::Id(ada)),
+                            }),
+                            to: Some(svc::proto::BatchEndpoint {
+                                endpoint: Some(svc::proto::batch_endpoint::Endpoint::LocalRef(
+                                    "service-tag".into(),
+                                )),
+                            }),
+                            props: None,
+                        },
+                    )),
+                },
+            ],
+        }),
+    )
+    .await;
+    assert!(matches!(
+        batch.response.and_then(|response| response.response),
+        Some(svc::proto::runtime_response::Response::ApplyBatch(response))
+            if response.applied
+                && response.ids.iter().any(|id| id.local_ref.as_deref() == Some("service-tag"))
+                && response.durability.as_ref().unwrap().has_durable_mutation
+    ));
+
     client
         .close_workspace(svc::proto::WorkspaceCloseRequest {
             handle: Some(opened_handle),
@@ -859,60 +1122,82 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     assert_eq!(reopened.workspace.as_ref(), Some(&workspace));
     let reopened_handle = reopened.handle.unwrap();
 
-    client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
-            handle: Some(reopened_handle.clone()),
-            request: Some(create_user_proto_request("Grace")),
-        })
-        .await
-        .unwrap();
-    let found = client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
-            handle: Some(reopened_handle),
-            request: Some(svc::proto::RuntimeRequest {
-                request: Some(svc::proto::runtime_request::Request::FindNodes(
-                    svc::proto::NodeFindRequest {
-                        model: "User".into(),
-                        predicates: Vec::new(),
-                        end_predicates: Vec::new(),
-                        edge_predicates: Vec::new(),
-                        traversals: Vec::new(),
-                        order: Vec::new(),
-                        limit: None,
-                        offset: None,
-                        id: None,
-                        return_mode: None,
-                    },
-                )),
-            }),
-        })
-        .await
-        .unwrap()
-        .into_inner();
-
-    let names = match found.response.and_then(|response| response.response) {
-        Some(svc::proto::runtime_response::Response::FindNodes(response)) => response
-            .nodes
-            .into_iter()
-            .map(|node| {
-                node.props
-                    .unwrap()
-                    .properties
-                    .into_iter()
-                    .find(|property| property.name == "name")
-                    .and_then(|property| property.value)
-                    .and_then(|value| value.kind)
-                    .unwrap()
-            })
-            .collect::<Vec<_>>(),
-        other => panic!("expected generated NodeFind response, got {other:?}"),
-    };
-    assert!(names.contains(&svc::proto::property_value::Kind::StringValue("Ada".into())));
-    assert!(
-        names.contains(&svc::proto::property_value::Kind::StringValue(
-            "Grace".into()
-        ))
+    let grace = created_node_id(
+        execute_workspace_proto(
+            &mut client,
+            &reopened_handle,
+            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+                "User",
+                [(
+                    "name",
+                    svc::proto::property_value::Kind::StringValue("Grace Hopper".into()),
+                )],
+            )),
+        )
+        .await,
     );
+    assert_ne!(grace, ada);
+
+    let users = execute_workspace_proto(
+        &mut client,
+        &reopened_handle,
+        svc::proto::runtime_request::Request::FindNodes(find_all_nodes_proto("User")),
+    )
+    .await;
+    assert_eq!(
+        sorted(node_string_props(users, "name")),
+        vec!["Ada Lovelace", "Grace Hopper"]
+    );
+    let posts = execute_workspace_proto(
+        &mut client,
+        &reopened_handle,
+        svc::proto::runtime_request::Request::FindNodes(find_all_nodes_proto("Post")),
+    )
+    .await;
+    assert_eq!(node_string_props(posts, "title"), vec!["Parity notes"]);
+    let edges = execute_workspace_proto(
+        &mut client,
+        &reopened_handle,
+        svc::proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
+            "Authored", authored,
+        )),
+    )
+    .await;
+    assert_eq!(edge_int_props(edges, "year"), vec![2027]);
+    let tags = execute_workspace_proto(
+        &mut client,
+        &reopened_handle,
+        svc::proto::runtime_request::Request::FindNodes(find_all_nodes_proto("Tag")),
+    )
+    .await;
+    assert_eq!(node_string_props(tags, "label"), vec!["service"]);
+
+    let schema = execute_workspace_proto(
+        &mut client,
+        &reopened_handle,
+        svc::proto::runtime_request::Request::SchemaList(svc::proto::SchemaListRequest {}),
+    )
+    .await;
+    let Some(svc::proto::runtime_response::Response::SchemaList(schema)) =
+        schema.response.and_then(|response| response.response)
+    else {
+        panic!("expected generated SchemaList response");
+    };
+    let node_models = schema
+        .node_models
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(node_models.contains(&"User"));
+    assert!(node_models.contains(&"Post"));
+    assert!(node_models.contains(&"Tag"));
+    let edge_models = schema
+        .edge_models
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(edge_models.contains(&"Authored"));
+    assert!(edge_models.contains(&"Tagged"));
 
     shutdown_tx.send(()).unwrap();
     server.await.unwrap().unwrap();
@@ -928,6 +1213,223 @@ fn all_proto_text() -> String {
         .map(|file| fs::read_to_string(file).expect("proto file should be readable"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+async fn execute_workspace_proto(
+    client: &mut svc::proto::grm_service_client::GrmServiceClient<tonic::transport::Channel>,
+    handle: &svc::proto::WorkspaceHandle,
+    request: svc::proto::runtime_request::Request,
+) -> svc::proto::WorkspaceRuntimeResponse {
+    client
+        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+            handle: Some(handle.clone()),
+            request: Some(svc::proto::RuntimeRequest {
+                request: Some(request),
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+fn define_node_proto<const N: usize>(
+    name: &str,
+    id_field: &str,
+    fields: [(&str, svc::proto::FieldValueType, bool); N],
+) -> svc::proto::DefineNodeRequest {
+    svc::proto::DefineNodeRequest {
+        name: name.into(),
+        id_field: id_field.into(),
+        fields: fields
+            .into_iter()
+            .map(|(name, value_type, required)| svc::proto::FieldSpec {
+                name: name.into(),
+                value_type: value_type as i32,
+                required,
+            })
+            .collect(),
+    }
+}
+
+fn define_edge_proto<const N: usize>(
+    name: &str,
+    from_model: &str,
+    to_model: &str,
+    id_field: &str,
+    fields: [(&str, svc::proto::FieldValueType, bool); N],
+) -> svc::proto::DefineEdgeRequest {
+    svc::proto::DefineEdgeRequest {
+        name: name.into(),
+        from_model: from_model.into(),
+        to_model: to_model.into(),
+        id_field: id_field.into(),
+        fields: fields
+            .into_iter()
+            .map(|(name, value_type, required)| svc::proto::FieldSpec {
+                name: name.into(),
+                value_type: value_type as i32,
+                required,
+            })
+            .collect(),
+    }
+}
+
+fn node_create_proto<const N: usize>(
+    model: &str,
+    props: [(&str, svc::proto::property_value::Kind); N],
+) -> svc::proto::NodeCreateRequest {
+    svc::proto::NodeCreateRequest {
+        model: model.into(),
+        props: Some(proto_property_map(props)),
+    }
+}
+
+fn node_update_proto<const N: usize>(
+    model: &str,
+    id: i64,
+    props: [(&str, svc::proto::property_value::Kind); N],
+) -> svc::proto::NodeUpdateRequest {
+    svc::proto::NodeUpdateRequest {
+        model: model.into(),
+        id,
+        props: Some(proto_property_map(props)),
+    }
+}
+
+fn edge_create_proto<const N: usize>(
+    model: &str,
+    from: i64,
+    to: i64,
+    props: [(&str, svc::proto::property_value::Kind); N],
+) -> svc::proto::EdgeCreateRequest {
+    svc::proto::EdgeCreateRequest {
+        model: model.into(),
+        from,
+        to,
+        props: Some(proto_property_map(props)),
+    }
+}
+
+fn edge_update_proto<const N: usize>(
+    model: &str,
+    id: i64,
+    props: [(&str, svc::proto::property_value::Kind); N],
+) -> svc::proto::EdgeUpdateRequest {
+    svc::proto::EdgeUpdateRequest {
+        model: model.into(),
+        id,
+        props: Some(proto_property_map(props)),
+    }
+}
+
+fn find_all_nodes_proto(model: &str) -> svc::proto::NodeFindRequest {
+    svc::proto::NodeFindRequest {
+        model: model.into(),
+        predicates: Vec::new(),
+        end_predicates: Vec::new(),
+        edge_predicates: Vec::new(),
+        traversals: Vec::new(),
+        order: Vec::new(),
+        limit: None,
+        offset: None,
+        id: None,
+        return_mode: None,
+    }
+}
+
+fn find_nodes_by_id_proto(model: &str, id: i64) -> svc::proto::NodeFindRequest {
+    svc::proto::NodeFindRequest {
+        id: Some(id),
+        ..find_all_nodes_proto(model)
+    }
+}
+
+fn find_edges_by_id_proto(model: &str, id: i64) -> svc::proto::EdgeFindRequest {
+    svc::proto::EdgeFindRequest {
+        model: model.into(),
+        predicates: Vec::new(),
+        order: Vec::new(),
+        limit: None,
+        offset: None,
+        id: Some(id),
+        from: None,
+        to: None,
+    }
+}
+
+fn created_node_id(response: svc::proto::WorkspaceRuntimeResponse) -> i64 {
+    match response.response.and_then(|response| response.response) {
+        Some(svc::proto::runtime_response::Response::CreateNode(response)) => {
+            response.node.unwrap().id
+        }
+        other => panic!("expected generated NodeCreate response, got {other:?}"),
+    }
+}
+
+fn created_edge_id(response: svc::proto::WorkspaceRuntimeResponse) -> i64 {
+    match response.response.and_then(|response| response.response) {
+        Some(svc::proto::runtime_response::Response::CreateEdge(response)) => {
+            response.edge.unwrap().id
+        }
+        other => panic!("expected generated EdgeCreate response, got {other:?}"),
+    }
+}
+
+fn node_string_props(response: svc::proto::WorkspaceRuntimeResponse, field: &str) -> Vec<String> {
+    let Some(svc::proto::runtime_response::Response::FindNodes(response)) =
+        response.response.and_then(|response| response.response)
+    else {
+        panic!("expected generated NodeFind response");
+    };
+
+    response
+        .nodes
+        .into_iter()
+        .filter_map(|node| proto_string_prop(node.props, field))
+        .collect()
+}
+
+fn edge_int_props(response: svc::proto::WorkspaceRuntimeResponse, field: &str) -> Vec<i64> {
+    let Some(svc::proto::runtime_response::Response::FindEdges(response)) =
+        response.response.and_then(|response| response.response)
+    else {
+        panic!("expected generated EdgeFind response");
+    };
+
+    response
+        .edges
+        .into_iter()
+        .filter_map(|edge| proto_int_prop(edge.props, field))
+        .collect()
+}
+
+fn proto_string_prop(props: Option<svc::proto::PropertyMap>, field: &str) -> Option<String> {
+    props?
+        .properties
+        .into_iter()
+        .find(|property| property.name == field)
+        .and_then(|property| property.value)
+        .and_then(|value| match value.kind {
+            Some(svc::proto::property_value::Kind::StringValue(value)) => Some(value),
+            _ => None,
+        })
+}
+
+fn proto_int_prop(props: Option<svc::proto::PropertyMap>, field: &str) -> Option<i64> {
+    props?
+        .properties
+        .into_iter()
+        .find(|property| property.name == field)
+        .and_then(|property| property.value)
+        .and_then(|value| match value.kind {
+            Some(svc::proto::property_value::Kind::IntValue(value)) => Some(value),
+            _ => None,
+        })
+}
+
+fn sorted(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values
 }
 
 fn message_body<'a>(proto: &'a str, message: &str) -> &'a str {
@@ -983,20 +1485,6 @@ fn create_user_request(name: &str) -> svc::ServiceRequest {
             svc::PropertyValue::String(format!("{name}@example.test")),
         )]),
     })
-}
-
-fn create_user_proto_request(name: &str) -> svc::proto::RuntimeRequest {
-    svc::proto::RuntimeRequest {
-        request: Some(svc::proto::runtime_request::Request::CreateNode(
-            svc::proto::NodeCreateRequest {
-                model: "User".into(),
-                props: Some(proto_property_map([(
-                    "name",
-                    svc::proto::property_value::Kind::StringValue(name.into()),
-                )])),
-            },
-        )),
-    }
 }
 
 async fn assert_workspace_users<const N: usize>(

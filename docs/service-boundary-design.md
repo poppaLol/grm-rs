@@ -373,6 +373,9 @@ The near-term service API proof has moved from design into code:
 - The local shell can map opaque workspace refs to autocommit workspace files
   beneath a server-configured root, so generated clients can prove
   create/open/execute/reopen behavior without passing server filesystem paths.
+- Generated-client parity coverage now targets the practical MCP-Neo4j subset
+  through the workspace path: schema define/list, schema-aware node and edge
+  CRUD, simple find, batch, and reopen verification.
 - Unsupported runtime surfaces remain explicit: traversal query, explain,
   profile, admin operations, and direct non-workspace RPCs are not silently
   claimed as implemented.
