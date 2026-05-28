@@ -929,7 +929,7 @@ impl TryFrom<ServiceRequest> for grm_rs::RuntimeRequest {
             ServiceRequest::DefineEdge(request) => {
                 Self::Schema(grm_rs::SchemaRequest::DefineEdge(request.try_into()?))
             }
-            ServiceRequest::SchemaList(_) => Self::Admin(grm_rs::AdminRequest::SchemaList),
+            ServiceRequest::SchemaList(_) => Self::Schema(grm_rs::SchemaRequest::List),
             ServiceRequest::CreateNode(request) => {
                 Self::Node(grm_rs::NodeRequest::Create(request.try_into()?))
             }
@@ -2216,6 +2216,21 @@ fn proto_runtime_response(
             ProtoResponse::DefineEdge(proto::DefineEdgeResponse {
                 model: Some(proto_edge_model(model)?),
                 durability: Some(proto_durable_mutation_outcome(durable_ops)?),
+            })
+        }
+        grm_rs::RuntimeResponse::Schema(grm_rs::SchemaResponse::List(schema)) => {
+            ProtoResponse::SchemaList(proto::SchemaListResponse {
+                node_models: schema
+                    .node_models
+                    .into_iter()
+                    .map(proto_node_model)
+                    .collect::<grm_rs::Result<Vec<_>>>()?,
+                edge_models: schema
+                    .edge_models
+                    .into_iter()
+                    .map(proto_edge_model)
+                    .collect::<grm_rs::Result<Vec<_>>>()?,
+                backend_id_type: proto_id_type(schema.backend_id_type)?,
             })
         }
         grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Create(node)) => {

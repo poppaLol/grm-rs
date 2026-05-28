@@ -168,6 +168,10 @@ GRM is currently converging on a service-hostable runtime core:
   refs mapped to server-local files under a configured root. This proves the
   service-backed workspace path can reopen schema/data after typed mutations
   without exposing server filesystem paths or claiming hosted durability.
+- The next service proof is the practical MCP-Neo4j CRUD parity subset through
+  `ExecuteWorkspace`: schema define/list, schema-aware node and edge CRUD,
+  simple find, batch, and reopen verification, while direct unscoped RPC
+  families remain unsupported.
 - Explain/profile and index catalog work make query behavior visible enough to
   demo and eventually sell.
 - WAL/checkpoint work has established local durability foundations for a future
