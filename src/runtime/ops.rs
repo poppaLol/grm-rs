@@ -49,6 +49,7 @@ pub struct RuntimeBatchResponse {
 pub enum SchemaRequest {
     DefineNode(DefineNodeRequest),
     DefineEdge(DefineEdgeRequest),
+    List,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +57,14 @@ pub enum SchemaRequest {
 pub enum SchemaResponse {
     DefineNode(RuntimeNodeModel),
     DefineEdge(RuntimeRelModel),
+    List(RuntimeSchemaListResponse),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeSchemaListResponse {
+    pub node_models: Vec<RuntimeNodeModel>,
+    pub edge_models: Vec<RuntimeRelModel>,
+    pub backend_id_type: crate::BackendIdType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
