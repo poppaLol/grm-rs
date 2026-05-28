@@ -22,6 +22,9 @@ contract and delegates to `InProcessWorkspaceService`. The shell can also bind
 opaque `WorkspaceRef` values to local autocommit workspace files under a
 server-configured root, letting generated clients create, execute, close, and
 reopen a durable local workspace without sending server filesystem paths.
+Generated-client tests also exercise the practical MCP-Neo4j CRUD parity subset
+through `ExecuteWorkspace`: schema define/list, schema-aware node and edge
+CRUD, simple find, batch, and reopen verification.
 
 The contract does not expose CLI command text as a query surface. Query,
 traversal, explain, and profile requests are typed request messages.
@@ -34,3 +37,10 @@ This crate does not implement a daemon, choose hosted transport/TLS/auth policy,
 or add new graph mutation/query semantics. Direct non-workspace RPCs remain
 explicit unsupported surfaces in the local gRPC shell until implemented and
 tested.
+
+Run the local workspace shell and generated-client walkthrough with:
+
+```bash
+cargo run -p grm-service-api --example local_workspace_server -- 127.0.0.1:50051 /tmp/grm-service-workspaces
+cargo run -p grm-service-api --example local_workspace_client -- http://127.0.0.1:50051 demo-workspace
+```
