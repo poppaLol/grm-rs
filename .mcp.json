@@ -1,0 +1,17 @@
+{
+    "mcpServers": {
+        "grm": {
+            "transport": "stdio",
+            "command": "/home/laurie/source/grm-rs/target/debug/grm-mcp",
+            "args": [],
+            "env": {
+                "RUST_LOG": "debug",
+                "GRM_BACKEND": "neo4j",
+                "NEO4J_USER": "neo4j",
+                "GRM_SCHEMA_TEMPLATE": "/home/laurie/source/grm-rs/tmp/project-memory-schema.json",
+                "NEO4J_PASSWORD": "ds8JUzc0VUHZ8XLbdJ9c",
+                "NEO4J_URI": "bolt://127.0.0.1:7687"
+            }
+        }
+    }
+}
