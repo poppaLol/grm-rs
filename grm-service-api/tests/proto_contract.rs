@@ -2,10 +2,11 @@ use std::fs;
 
 use grm_rs::{
     BatchRequest, DurableOperation, EdgeRequest, NodeRequest, QueryRequest, RuntimeDispatchOutcome,
-    RuntimeRequest, RuntimeResponse, SchemaRequest,
+    RuntimeRequest, RuntimeResponse, SchemaRequest, SchemaResponse, SessionState, NodeResponse, RuntimeDelete,
 };
 use grm_service_api as svc;
-use grm_service_api::{PROTO_FILES, proto_files};
+use grm_service_api::{PROTO_FILES, proto_files, ServiceRequest, proto, proto_root};
+use grm_service_api::proto::{DefineNodeRequest, FieldSpec, FieldValueType};
 use serde_json::json;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -62,8 +63,8 @@ fn service_surface_covers_runtime_request_families() {
 fn proto_contract_compiles_with_codegen() {
     let out_dir = tempfile::tempdir().expect("temporary output directory");
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc path");
-    let files = grm_service_api::proto_files().collect::<Vec<_>>();
-    let includes = [grm_service_api::proto_root()];
+    let files = proto_files().collect::<Vec<_>>();
+    let includes = [proto_root()];
 
     let mut config = prost_build::Config::new();
     config.out_dir(out_dir.path());
@@ -150,7 +151,7 @@ fn durable_operation_shape_matches_current_runtime_outcome() {
     }
 
     let outcome = RuntimeDispatchOutcome {
-        response: RuntimeResponse::Node(grm_rs::NodeResponse::Delete(grm_rs::RuntimeDelete {
+        response: RuntimeResponse::Node(NodeResponse::Delete(RuntimeDelete {
             model: "User".into(),
             id: 7,
         })),
@@ -211,24 +212,24 @@ fn runtime_family_mapping_notes_stay_true_for_public_types() {
 
 #[tokio::test]
 async fn generated_proto_schema_request_executes_through_runtime_dispatcher() {
-    let mut state = grm_rs::SessionState::new();
+    let mut state = SessionState::new();
 
-    let generated = svc::proto::DefineNodeRequest {
+    let generated = DefineNodeRequest {
         name: "User".into(),
         id_field: "userId".into(),
-        fields: vec![svc::proto::FieldSpec {
+        fields: vec![FieldSpec {
             name: "name".into(),
-            value_type: svc::proto::FieldValueType::String as i32,
+            value_type: FieldValueType::String as i32,
             required: true,
         }],
     };
-    let request = svc::ServiceRequest::DefineNode(generated.try_into().unwrap());
+    let request = ServiceRequest::DefineNode(generated.try_into().unwrap());
 
     let outcome = request.execute(&mut state).await.unwrap();
 
     assert!(matches!(
         outcome.response,
-        RuntimeResponse::Schema(grm_rs::SchemaResponse::DefineNode(model))
+        RuntimeResponse::Schema(SchemaResponse::DefineNode(model))
             if model.name == "User" && model.fields[0].name == "name"
     ));
     assert!(matches!(
@@ -239,33 +240,33 @@ async fn generated_proto_schema_request_executes_through_runtime_dispatcher() {
 
 #[tokio::test]
 async fn generated_proto_batch_request_executes_existing_runtime_batch_path() {
-    let mut state = grm_rs::SessionState::new();
+    let mut state = SessionState::new();
 
-    let generated = svc::proto::BatchRequest {
+    let generated = proto::BatchRequest {
         atomic: true,
         allow_deletes: false,
-        response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+        response_mode: proto::BatchResponseMode::Detailed as i32,
         ops: vec![
-            svc::proto::BatchOperation {
-                op: Some(svc::proto::batch_operation::Op::SchemaDefineNode(
-                    svc::proto::DefineNodeRequest {
+            proto::BatchOperation {
+                op: Some(proto::batch_operation::Op::SchemaDefineNode(
+                    proto::DefineNodeRequest {
                         name: "User".into(),
                         id_field: "userId".into(),
-                        fields: vec![svc::proto::FieldSpec {
+                        fields: vec![proto::FieldSpec {
                             name: "name".into(),
-                            value_type: svc::proto::FieldValueType::String as i32,
+                            value_type: proto::FieldValueType::String as i32,
                             required: true,
                         }],
                     },
                 )),
             },
-            svc::proto::BatchOperation {
-                op: Some(svc::proto::batch_operation::Op::NodeCreate(
-                    svc::proto::BatchNodeCreate {
+            proto::BatchOperation {
+                op: Some(proto::batch_operation::Op::NodeCreate(
+                    proto::BatchNodeCreate {
                         model: "User".into(),
                         props: Some(proto_property_map([(
                             "name",
-                            svc::proto::property_value::Kind::StringValue("Ada".into()),
+                            proto::property_value::Kind::StringValue("Ada".into()),
                         )])),
                         local_ref: Some("ada".into()),
                     },
@@ -292,7 +293,7 @@ async fn generated_proto_batch_request_executes_existing_runtime_batch_path() {
 
 #[tokio::test]
 async fn service_shaped_node_and_edge_requests_execute_through_runtime_dispatcher() {
-    let mut state = grm_rs::SessionState::new();
+    let mut state = SessionState::new();
     define_user_post_schema(&mut state).await;
 
     let user_outcome = svc::ServiceRequest::CreateNode(svc::NodeCreateRequest {
@@ -364,7 +365,7 @@ async fn service_shaped_node_and_edge_requests_execute_through_runtime_dispatche
 
 #[tokio::test]
 async fn service_shaped_unsupported_request_returns_explicit_runtime_error() {
-    let mut state = grm_rs::SessionState::new();
+    let mut state = SessionState::new();
 
     let err = svc::ServiceRequest::Explain(svc::ExplainRequest {
         query: svc::QueryRequest {
@@ -395,34 +396,34 @@ async fn in_process_workspace_service_executes_generated_requests_against_handle
     let mut service = svc::InProcessWorkspaceService::new();
     let created = service
         .create_workspace(
-            svc::proto::WorkspaceCreateRequest {
-                mode: svc::proto::WorkspaceCreateMode::InMemory as i32,
+            proto::WorkspaceCreateRequest {
+                mode: proto::WorkspaceCreateMode::InMemory as i32,
                 workspace: None,
-                format: svc::proto::DurabilityFormat::Json as i32,
+                format: proto::DurabilityFormat::Json as i32,
             }
             .try_into()
             .unwrap(),
         )
         .unwrap();
-    let generated_created: svc::proto::WorkspaceCreateResponse = created.clone().into();
+    let generated_created: proto::WorkspaceCreateResponse = created.clone().into();
     assert_eq!(generated_created.handle.unwrap().id, created.handle.id);
     assert!(!created.handle.id.is_empty());
 
-    let generated_schema = svc::proto::DefineNodeRequest {
+    let generated_schema = proto::DefineNodeRequest {
         name: "User".into(),
         id_field: "userId".into(),
-        fields: vec![svc::proto::FieldSpec {
+        fields: vec![proto::FieldSpec {
             name: "name".into(),
-            value_type: svc::proto::FieldValueType::String as i32,
+            value_type: proto::FieldValueType::String as i32,
             required: true,
         }],
     };
     let schema_response = service
         .execute_runtime(
-            svc::proto::WorkspaceRuntimeRequest {
+            proto::WorkspaceRuntimeRequest {
                 handle: Some(created.handle.clone().into()),
-                request: Some(svc::proto::RuntimeRequest {
-                    request: Some(svc::proto::runtime_request::Request::DefineNode(
+                request: Some(proto::RuntimeRequest {
+                    request: Some(proto::runtime_request::Request::DefineNode(
                         generated_schema,
                     )),
                 }),
@@ -443,28 +444,28 @@ async fn in_process_workspace_service_executes_generated_requests_against_handle
         schema_response.durable_operations.as_slice(),
         [DurableOperation::RegisterNodeModel { model }] if model.name == "User"
     ));
-    let generated_schema_response: svc::proto::WorkspaceRuntimeResponse =
+    let generated_schema_response: proto::WorkspaceRuntimeResponse =
         schema_response.try_into().unwrap();
     assert!(matches!(
         generated_schema_response
             .response
             .and_then(|response| response.response),
-        Some(svc::proto::runtime_response::Response::DefineNode(response))
+        Some(proto::runtime_response::Response::DefineNode(response))
             if response.model.as_ref().unwrap().name == "User"
                 && response.durability.as_ref().unwrap().has_durable_mutation
     ));
 
-    let generated_batch = svc::proto::BatchRequest {
+    let generated_batch = proto::BatchRequest {
         atomic: true,
         allow_deletes: false,
-        response_mode: svc::proto::BatchResponseMode::Detailed as i32,
-        ops: vec![svc::proto::BatchOperation {
-            op: Some(svc::proto::batch_operation::Op::NodeCreate(
-                svc::proto::BatchNodeCreate {
+        response_mode: proto::BatchResponseMode::Detailed as i32,
+        ops: vec![proto::BatchOperation {
+            op: Some(proto::batch_operation::Op::NodeCreate(
+                proto::BatchNodeCreate {
                     model: "User".into(),
                     props: Some(proto_property_map([(
                         "name",
-                        svc::proto::property_value::Kind::StringValue("Ada".into()),
+                        proto::property_value::Kind::StringValue("Ada".into()),
                     )])),
                     local_ref: Some("ada".into()),
                 },
@@ -473,10 +474,10 @@ async fn in_process_workspace_service_executes_generated_requests_against_handle
     };
     let batch_response = service
         .execute_runtime(
-            svc::proto::WorkspaceRuntimeRequest {
+            proto::WorkspaceRuntimeRequest {
                 handle: Some(created.handle.clone().into()),
-                request: Some(svc::proto::RuntimeRequest {
-                    request: Some(svc::proto::runtime_request::Request::ApplyBatch(
+                request: Some(proto::RuntimeRequest {
+                    request: Some(proto::runtime_request::Request::ApplyBatch(
                         generated_batch,
                     )),
                 }),
@@ -498,13 +499,13 @@ async fn in_process_workspace_service_executes_generated_requests_against_handle
         batch_response.durable_operations.as_slice(),
         [DurableOperation::UpsertNode { node }] if node.labels.iter().any(|label| label == "User")
     ));
-    let generated_batch_response: svc::proto::WorkspaceRuntimeResponse =
+    let generated_batch_response: proto::WorkspaceRuntimeResponse =
         batch_response.try_into().unwrap();
     assert!(matches!(
         generated_batch_response
             .response
             .and_then(|response| response.response),
-        Some(svc::proto::runtime_response::Response::ApplyBatch(response))
+        Some(proto::runtime_response::Response::ApplyBatch(response))
             if response.applied
                 && response.ids[0].local_ref.as_deref() == Some("ada")
                 && response.durability.as_ref().unwrap().durable_op_count == 1
@@ -557,28 +558,28 @@ async fn in_process_workspace_service_reopens_closed_loop_snapshot_by_handle() {
         .unwrap();
     let closed = service
         .close_workspace(
-            svc::proto::WorkspaceCloseRequest {
+            proto::WorkspaceCloseRequest {
                 handle: Some(created.handle.clone().into()),
             }
             .try_into()
             .unwrap(),
         )
         .unwrap();
-    let generated_closed: svc::proto::WorkspaceCloseResponse = closed.into();
+    let generated_closed: proto::WorkspaceCloseResponse = closed.into();
     assert_eq!(generated_closed.handle.unwrap().id, created.handle.id);
 
     let opened = service
         .open_workspace(
-            svc::proto::WorkspaceOpenRequest {
+            proto::WorkspaceOpenRequest {
                 snapshot: Some(snapshot.into()),
                 workspace: None,
-                format: svc::proto::DurabilityFormat::Json as i32,
+                format: proto::DurabilityFormat::Json as i32,
             }
             .try_into()
             .unwrap(),
         )
         .unwrap();
-    let generated_opened: svc::proto::WorkspaceOpenResponse = opened.clone().into();
+    let generated_opened: proto::WorkspaceOpenResponse = opened.clone().into();
     assert_eq!(generated_opened.handle.unwrap().id, opened.handle.id);
     assert_ne!(opened.handle, created.handle);
 
@@ -673,15 +674,15 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
     });
 
     let mut client =
-        svc::proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+        proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
             .await
             .unwrap();
 
     let created = client
-        .create_workspace(svc::proto::WorkspaceCreateRequest {
-            mode: svc::proto::WorkspaceCreateMode::InMemory as i32,
+        .create_workspace(proto::WorkspaceCreateRequest {
+            mode: proto::WorkspaceCreateMode::InMemory as i32,
             workspace: None,
-            format: svc::proto::DurabilityFormat::Json as i32,
+            format: proto::DurabilityFormat::Json as i32,
         })
         .await
         .unwrap()
@@ -690,16 +691,16 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
     assert!(!handle.id.is_empty());
 
     let schema = client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+        .execute_workspace(proto::WorkspaceRuntimeRequest {
             handle: Some(handle.clone()),
-            request: Some(svc::proto::RuntimeRequest {
-                request: Some(svc::proto::runtime_request::Request::DefineNode(
-                    svc::proto::DefineNodeRequest {
+            request: Some(proto::RuntimeRequest {
+                request: Some(proto::runtime_request::Request::DefineNode(
+                    proto::DefineNodeRequest {
                         name: "User".into(),
                         id_field: "userId".into(),
-                        fields: vec![svc::proto::FieldSpec {
+                        fields: vec![proto::FieldSpec {
                             name: "name".into(),
-                            value_type: svc::proto::FieldValueType::String as i32,
+                            value_type: proto::FieldValueType::String as i32,
                             required: true,
                         }],
                     },
@@ -711,26 +712,26 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
         .into_inner();
     assert!(matches!(
         schema.response.and_then(|response| response.response),
-        Some(svc::proto::runtime_response::Response::DefineNode(response))
+        Some(proto::runtime_response::Response::DefineNode(response))
             if response.model.as_ref().unwrap().name == "User"
     ));
 
     let batch = client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+        .execute_workspace(proto::WorkspaceRuntimeRequest {
             handle: Some(handle.clone()),
-            request: Some(svc::proto::RuntimeRequest {
-                request: Some(svc::proto::runtime_request::Request::ApplyBatch(
-                    svc::proto::BatchRequest {
+            request: Some(proto::RuntimeRequest {
+                request: Some(proto::runtime_request::Request::ApplyBatch(
+                    proto::BatchRequest {
                         atomic: true,
                         allow_deletes: false,
-                        response_mode: svc::proto::BatchResponseMode::Detailed as i32,
-                        ops: vec![svc::proto::BatchOperation {
-                            op: Some(svc::proto::batch_operation::Op::NodeCreate(
-                                svc::proto::BatchNodeCreate {
+                        response_mode: proto::BatchResponseMode::Detailed as i32,
+                        ops: vec![proto::BatchOperation {
+                            op: Some(proto::batch_operation::Op::NodeCreate(
+                                proto::BatchNodeCreate {
                                     model: "User".into(),
                                     props: Some(proto_property_map([(
                                         "name",
-                                        svc::proto::property_value::Kind::StringValue("Ada".into()),
+                                        proto::property_value::Kind::StringValue("Ada".into()),
                                     )])),
                                     local_ref: Some("ada".into()),
                                 },
@@ -745,18 +746,18 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
         .into_inner();
     assert!(matches!(
         batch.response.and_then(|response| response.response),
-        Some(svc::proto::runtime_response::Response::ApplyBatch(response))
+        Some(proto::runtime_response::Response::ApplyBatch(response))
             if response.applied && response.ids[0].local_ref.as_deref() == Some("ada")
     ));
 
     let missing = client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
-            handle: Some(svc::proto::WorkspaceHandle {
+        .execute_workspace(proto::WorkspaceRuntimeRequest {
+            handle: Some(proto::WorkspaceHandle {
                 id: "missing-workspace".into(),
             }),
-            request: Some(svc::proto::RuntimeRequest {
-                request: Some(svc::proto::runtime_request::Request::SchemaList(
-                    svc::proto::SchemaListRequest {},
+            request: Some(proto::RuntimeRequest {
+                request: Some(proto::runtime_request::Request::SchemaList(
+                    proto::SchemaListRequest {},
                 )),
             }),
         })
@@ -766,7 +767,7 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
     assert!(missing.message().contains("unknown workspace handle"));
 
     let unsupported = client
-        .schema_list(svc::proto::SchemaListRequest {})
+        .schema_list(proto::SchemaListRequest {})
         .await
         .unwrap_err();
     assert_eq!(unsupported.code(), tonic::Code::Unimplemented);
@@ -779,7 +780,7 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
 #[tokio::test]
 async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_save() {
     let temp = tempfile::tempdir().unwrap();
-    let workspace = svc::proto::WorkspaceRef {
+    let workspace = proto::WorkspaceRef {
         id: "grpc_parity_workspace".into(),
     };
 
@@ -797,12 +798,12 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     });
 
     let mut client =
-        svc::proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+        proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
             .await
             .unwrap();
 
     let direct = client
-        .define_node(svc::proto::DefineNodeRequest {
+        .define_node(proto::DefineNodeRequest {
             name: "DirectOnly".into(),
             id_field: "directOnlyId".into(),
             fields: Vec::new(),
@@ -813,7 +814,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     assert!(direct.message().contains("ExecuteWorkspace"));
 
     let direct = client
-        .create_node(svc::proto::NodeCreateRequest {
+        .create_node(proto::NodeCreateRequest {
             model: "DirectOnly".into(),
             props: None,
         })
@@ -823,10 +824,10 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     assert!(direct.message().contains("ExecuteWorkspace"));
 
     let direct = client
-        .apply_batch(svc::proto::BatchRequest {
+        .apply_batch(proto::BatchRequest {
             atomic: true,
             allow_deletes: false,
-            response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+            response_mode: proto::BatchResponseMode::Detailed as i32,
             ops: Vec::new(),
         })
         .await
@@ -835,10 +836,10 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     assert!(direct.message().contains("ExecuteWorkspace"));
 
     let created = client
-        .create_workspace(svc::proto::WorkspaceCreateRequest {
-            mode: svc::proto::WorkspaceCreateMode::LocalAutocommit as i32,
+        .create_workspace(proto::WorkspaceCreateRequest {
+            mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
             workspace: Some(workspace.clone()),
-            format: svc::proto::DurabilityFormat::Json as i32,
+            format: proto::DurabilityFormat::Json as i32,
         })
         .await
         .unwrap()
@@ -850,32 +851,32 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::DefineNode(define_node_proto(
+        proto::runtime_request::Request::DefineNode(define_node_proto(
             "User",
             "userId",
-            [("name", svc::proto::FieldValueType::String, true)],
+            [("name", proto::FieldValueType::String, true)],
         )),
     )
     .await;
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::DefineNode(define_node_proto(
+        proto::runtime_request::Request::DefineNode(define_node_proto(
             "Post",
             "postId",
-            [("title", svc::proto::FieldValueType::String, true)],
+            [("title", proto::FieldValueType::String, true)],
         )),
     )
     .await;
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::DefineEdge(define_edge_proto(
+        proto::runtime_request::Request::DefineEdge(define_edge_proto(
             "Authored",
             "User",
             "Post",
             "authoredId",
-            [("year", svc::proto::FieldValueType::Int, false)],
+            [("year", proto::FieldValueType::Int, false)],
         )),
     )
     .await;
@@ -884,11 +885,11 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         execute_workspace_proto(
             &mut client,
             &opened_handle,
-            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+            proto::runtime_request::Request::CreateNode(node_create_proto(
                 "User",
                 [(
                     "name",
-                    svc::proto::property_value::Kind::StringValue("Ada".into()),
+                    proto::property_value::Kind::StringValue("Ada".into()),
                 )],
             )),
         )
@@ -898,11 +899,11 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         execute_workspace_proto(
             &mut client,
             &opened_handle,
-            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+            proto::runtime_request::Request::CreateNode(node_create_proto(
                 "Post",
                 [(
                     "title",
-                    svc::proto::property_value::Kind::StringValue("Parity notes".into()),
+                    proto::property_value::Kind::StringValue("Parity notes".into()),
                 )],
             )),
         )
@@ -911,12 +912,12 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::UpdateNode(node_update_proto(
+        proto::runtime_request::Request::UpdateNode(node_update_proto(
             "User",
             ada,
             [(
                 "name",
-                svc::proto::property_value::Kind::StringValue("Ada Lovelace".into()),
+                proto::property_value::Kind::StringValue("Ada Lovelace".into()),
             )],
         )),
     )
@@ -924,7 +925,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let found = execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::FindNodes(find_nodes_by_id_proto("User", ada)),
+        proto::runtime_request::Request::FindNodes(find_nodes_by_id_proto("User", ada)),
     )
     .await;
     assert_eq!(node_string_props(found, "name"), vec!["Ada Lovelace"]);
@@ -933,11 +934,11 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         execute_workspace_proto(
             &mut client,
             &opened_handle,
-            svc::proto::runtime_request::Request::CreateEdge(edge_create_proto(
+            proto::runtime_request::Request::CreateEdge(edge_create_proto(
                 "Authored",
                 ada,
                 post,
-                [("year", svc::proto::property_value::Kind::IntValue(2026))],
+                [("year", proto::property_value::Kind::IntValue(2026))],
             )),
         )
         .await,
@@ -945,17 +946,17 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::UpdateEdge(edge_update_proto(
+        proto::runtime_request::Request::UpdateEdge(edge_update_proto(
             "Authored",
             authored,
-            [("year", svc::proto::property_value::Kind::IntValue(2027))],
+            [("year", proto::property_value::Kind::IntValue(2027))],
         )),
     )
     .await;
     let found = execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
+        proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
             "Authored", authored,
         )),
     )
@@ -966,11 +967,11 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         execute_workspace_proto(
             &mut client,
             &opened_handle,
-            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+            proto::runtime_request::Request::CreateNode(node_create_proto(
                 "User",
                 [(
                     "name",
-                    svc::proto::property_value::Kind::StringValue("Temporary User".into()),
+                    proto::property_value::Kind::StringValue("Temporary User".into()),
                 )],
             )),
         )
@@ -980,11 +981,11 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         execute_workspace_proto(
             &mut client,
             &opened_handle,
-            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+            proto::runtime_request::Request::CreateNode(node_create_proto(
                 "Post",
                 [(
                     "title",
-                    svc::proto::property_value::Kind::StringValue("Temporary Post".into()),
+                    proto::property_value::Kind::StringValue("Temporary Post".into()),
                 )],
             )),
         )
@@ -994,11 +995,11 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         execute_workspace_proto(
             &mut client,
             &opened_handle,
-            svc::proto::runtime_request::Request::CreateEdge(edge_create_proto(
+            proto::runtime_request::Request::CreateEdge(edge_create_proto(
                 "Authored",
                 temporary_user,
                 temporary_post,
-                [("year", svc::proto::property_value::Kind::IntValue(2026))],
+                [("year", proto::property_value::Kind::IntValue(2026))],
             )),
         )
         .await,
@@ -1006,7 +1007,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::DeleteEdge(svc::proto::EdgeDeleteRequest {
+        proto::runtime_request::Request::DeleteEdge(proto::EdgeDeleteRequest {
             model: "Authored".into(),
             id: temporary_edge,
         }),
@@ -1015,7 +1016,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::DeleteNode(svc::proto::NodeDeleteRequest {
+        proto::runtime_request::Request::DeleteNode(proto::NodeDeleteRequest {
             model: "User".into(),
             id: temporary_user,
         }),
@@ -1024,7 +1025,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::DeleteNode(svc::proto::NodeDeleteRequest {
+        proto::runtime_request::Request::DeleteNode(proto::NodeDeleteRequest {
             model: "Post".into(),
             id: temporary_post,
         }),
@@ -1033,7 +1034,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let found = execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
+        proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
             "Authored",
             temporary_edge,
         )),
@@ -1044,46 +1045,46 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let batch = execute_workspace_proto(
         &mut client,
         &opened_handle,
-        svc::proto::runtime_request::Request::ApplyBatch(svc::proto::BatchRequest {
+        proto::runtime_request::Request::ApplyBatch(proto::BatchRequest {
             atomic: true,
             allow_deletes: false,
-            response_mode: svc::proto::BatchResponseMode::Detailed as i32,
+            response_mode: proto::BatchResponseMode::Detailed as i32,
             ops: vec![
-                svc::proto::BatchOperation {
-                    op: Some(svc::proto::batch_operation::Op::SchemaDefineNode(
+                proto::BatchOperation {
+                    op: Some(proto::batch_operation::Op::SchemaDefineNode(
                         define_node_proto(
                             "Tag",
                             "tagId",
-                            [("label", svc::proto::FieldValueType::String, true)],
+                            [("label", proto::FieldValueType::String, true)],
                         ),
                     )),
                 },
-                svc::proto::BatchOperation {
-                    op: Some(svc::proto::batch_operation::Op::SchemaDefineEdge(
+                proto::BatchOperation {
+                    op: Some(proto::batch_operation::Op::SchemaDefineEdge(
                         define_edge_proto("Tagged", "User", "Tag", "taggedId", []),
                     )),
                 },
-                svc::proto::BatchOperation {
-                    op: Some(svc::proto::batch_operation::Op::NodeCreate(
-                        svc::proto::BatchNodeCreate {
+                proto::BatchOperation {
+                    op: Some(proto::batch_operation::Op::NodeCreate(
+                        proto::BatchNodeCreate {
                             model: "Tag".into(),
                             props: Some(proto_property_map([(
                                 "label",
-                                svc::proto::property_value::Kind::StringValue("service".into()),
+                                proto::property_value::Kind::StringValue("service".into()),
                             )])),
                             local_ref: Some("service-tag".into()),
                         },
                     )),
                 },
-                svc::proto::BatchOperation {
-                    op: Some(svc::proto::batch_operation::Op::EdgeCreate(
-                        svc::proto::BatchEdgeCreate {
+                proto::BatchOperation {
+                    op: Some(proto::batch_operation::Op::EdgeCreate(
+                        proto::BatchEdgeCreate {
                             model: "Tagged".into(),
-                            from: Some(svc::proto::BatchEndpoint {
-                                endpoint: Some(svc::proto::batch_endpoint::Endpoint::Id(ada)),
+                            from: Some(proto::BatchEndpoint {
+                                endpoint: Some(proto::batch_endpoint::Endpoint::Id(ada)),
                             }),
-                            to: Some(svc::proto::BatchEndpoint {
-                                endpoint: Some(svc::proto::batch_endpoint::Endpoint::LocalRef(
+                            to: Some(proto::BatchEndpoint {
+                                endpoint: Some(proto::batch_endpoint::Endpoint::LocalRef(
                                     "service-tag".into(),
                                 )),
                             }),
@@ -1097,24 +1098,24 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     .await;
     assert!(matches!(
         batch.response.and_then(|response| response.response),
-        Some(svc::proto::runtime_response::Response::ApplyBatch(response))
+        Some(proto::runtime_response::Response::ApplyBatch(response))
             if response.applied
                 && response.ids.iter().any(|id| id.local_ref.as_deref() == Some("service-tag"))
                 && response.durability.as_ref().unwrap().has_durable_mutation
     ));
 
     client
-        .close_workspace(svc::proto::WorkspaceCloseRequest {
+        .close_workspace(proto::WorkspaceCloseRequest {
             handle: Some(opened_handle),
         })
         .await
         .unwrap();
 
     let reopened = client
-        .open_workspace(svc::proto::WorkspaceOpenRequest {
+        .open_workspace(proto::WorkspaceOpenRequest {
             snapshot: None,
             workspace: Some(workspace.clone()),
-            format: svc::proto::DurabilityFormat::Json as i32,
+            format: proto::DurabilityFormat::Json as i32,
         })
         .await
         .unwrap()
@@ -1126,11 +1127,11 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         execute_workspace_proto(
             &mut client,
             &reopened_handle,
-            svc::proto::runtime_request::Request::CreateNode(node_create_proto(
+            proto::runtime_request::Request::CreateNode(node_create_proto(
                 "User",
                 [(
                     "name",
-                    svc::proto::property_value::Kind::StringValue("Grace Hopper".into()),
+                    proto::property_value::Kind::StringValue("Grace Hopper".into()),
                 )],
             )),
         )
@@ -1141,7 +1142,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let users = execute_workspace_proto(
         &mut client,
         &reopened_handle,
-        svc::proto::runtime_request::Request::FindNodes(find_all_nodes_proto("User")),
+        proto::runtime_request::Request::FindNodes(find_all_nodes_proto("User")),
     )
     .await;
     assert_eq!(
@@ -1151,14 +1152,14 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let posts = execute_workspace_proto(
         &mut client,
         &reopened_handle,
-        svc::proto::runtime_request::Request::FindNodes(find_all_nodes_proto("Post")),
+        proto::runtime_request::Request::FindNodes(find_all_nodes_proto("Post")),
     )
     .await;
     assert_eq!(node_string_props(posts, "title"), vec!["Parity notes"]);
     let edges = execute_workspace_proto(
         &mut client,
         &reopened_handle,
-        svc::proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
+        proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
             "Authored", authored,
         )),
     )
@@ -1167,7 +1168,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let tags = execute_workspace_proto(
         &mut client,
         &reopened_handle,
-        svc::proto::runtime_request::Request::FindNodes(find_all_nodes_proto("Tag")),
+        proto::runtime_request::Request::FindNodes(find_all_nodes_proto("Tag")),
     )
     .await;
     assert_eq!(node_string_props(tags, "label"), vec!["service"]);
@@ -1175,10 +1176,10 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let schema = execute_workspace_proto(
         &mut client,
         &reopened_handle,
-        svc::proto::runtime_request::Request::SchemaList(svc::proto::SchemaListRequest {}),
+        proto::runtime_request::Request::SchemaList(proto::SchemaListRequest {}),
     )
     .await;
-    let Some(svc::proto::runtime_response::Response::SchemaList(schema)) =
+    let Some(proto::runtime_response::Response::SchemaList(schema)) =
         schema.response.and_then(|response| response.response)
     else {
         panic!("expected generated SchemaList response");
@@ -1204,7 +1205,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
 }
 
 fn read_proto(relative: &str) -> String {
-    fs::read_to_string(grm_service_api::proto_root().join(relative))
+    fs::read_to_string(proto_root().join(relative))
         .unwrap_or_else(|err| panic!("failed to read {relative}: {err}"))
 }
 
@@ -1216,14 +1217,14 @@ fn all_proto_text() -> String {
 }
 
 async fn execute_workspace_proto(
-    client: &mut svc::proto::grm_service_client::GrmServiceClient<tonic::transport::Channel>,
-    handle: &svc::proto::WorkspaceHandle,
-    request: svc::proto::runtime_request::Request,
-) -> svc::proto::WorkspaceRuntimeResponse {
+    client: &mut proto::grm_service_client::GrmServiceClient<tonic::transport::Channel>,
+    handle: &proto::WorkspaceHandle,
+    request: proto::runtime_request::Request,
+) -> proto::WorkspaceRuntimeResponse {
     client
-        .execute_workspace(svc::proto::WorkspaceRuntimeRequest {
+        .execute_workspace(proto::WorkspaceRuntimeRequest {
             handle: Some(handle.clone()),
-            request: Some(svc::proto::RuntimeRequest {
+            request: Some(proto::RuntimeRequest {
                 request: Some(request),
             }),
         })
@@ -1235,14 +1236,14 @@ async fn execute_workspace_proto(
 fn define_node_proto<const N: usize>(
     name: &str,
     id_field: &str,
-    fields: [(&str, svc::proto::FieldValueType, bool); N],
-) -> svc::proto::DefineNodeRequest {
-    svc::proto::DefineNodeRequest {
+    fields: [(&str, proto::FieldValueType, bool); N],
+) -> proto::DefineNodeRequest {
+    proto::DefineNodeRequest {
         name: name.into(),
         id_field: id_field.into(),
         fields: fields
             .into_iter()
-            .map(|(name, value_type, required)| svc::proto::FieldSpec {
+            .map(|(name, value_type, required)| proto::FieldSpec {
                 name: name.into(),
                 value_type: value_type as i32,
                 required,
@@ -1256,16 +1257,16 @@ fn define_edge_proto<const N: usize>(
     from_model: &str,
     to_model: &str,
     id_field: &str,
-    fields: [(&str, svc::proto::FieldValueType, bool); N],
-) -> svc::proto::DefineEdgeRequest {
-    svc::proto::DefineEdgeRequest {
+    fields: [(&str, proto::FieldValueType, bool); N],
+) -> proto::DefineEdgeRequest {
+    proto::DefineEdgeRequest {
         name: name.into(),
         from_model: from_model.into(),
         to_model: to_model.into(),
         id_field: id_field.into(),
         fields: fields
             .into_iter()
-            .map(|(name, value_type, required)| svc::proto::FieldSpec {
+            .map(|(name, value_type, required)| proto::FieldSpec {
                 name: name.into(),
                 value_type: value_type as i32,
                 required,
@@ -1276,9 +1277,9 @@ fn define_edge_proto<const N: usize>(
 
 fn node_create_proto<const N: usize>(
     model: &str,
-    props: [(&str, svc::proto::property_value::Kind); N],
-) -> svc::proto::NodeCreateRequest {
-    svc::proto::NodeCreateRequest {
+    props: [(&str, proto::property_value::Kind); N],
+) -> proto::NodeCreateRequest {
+    proto::NodeCreateRequest {
         model: model.into(),
         props: Some(proto_property_map(props)),
     }
@@ -1287,9 +1288,9 @@ fn node_create_proto<const N: usize>(
 fn node_update_proto<const N: usize>(
     model: &str,
     id: i64,
-    props: [(&str, svc::proto::property_value::Kind); N],
-) -> svc::proto::NodeUpdateRequest {
-    svc::proto::NodeUpdateRequest {
+    props: [(&str, proto::property_value::Kind); N],
+) -> proto::NodeUpdateRequest {
+    proto::NodeUpdateRequest {
         model: model.into(),
         id,
         props: Some(proto_property_map(props)),
@@ -1300,9 +1301,9 @@ fn edge_create_proto<const N: usize>(
     model: &str,
     from: i64,
     to: i64,
-    props: [(&str, svc::proto::property_value::Kind); N],
-) -> svc::proto::EdgeCreateRequest {
-    svc::proto::EdgeCreateRequest {
+    props: [(&str, proto::property_value::Kind); N],
+) -> proto::EdgeCreateRequest {
+    proto::EdgeCreateRequest {
         model: model.into(),
         from,
         to,
@@ -1313,17 +1314,17 @@ fn edge_create_proto<const N: usize>(
 fn edge_update_proto<const N: usize>(
     model: &str,
     id: i64,
-    props: [(&str, svc::proto::property_value::Kind); N],
-) -> svc::proto::EdgeUpdateRequest {
-    svc::proto::EdgeUpdateRequest {
+    props: [(&str, proto::property_value::Kind); N],
+) -> proto::EdgeUpdateRequest {
+    proto::EdgeUpdateRequest {
         model: model.into(),
         id,
         props: Some(proto_property_map(props)),
     }
 }
 
-fn find_all_nodes_proto(model: &str) -> svc::proto::NodeFindRequest {
-    svc::proto::NodeFindRequest {
+fn find_all_nodes_proto(model: &str) -> proto::NodeFindRequest {
+    proto::NodeFindRequest {
         model: model.into(),
         predicates: Vec::new(),
         end_predicates: Vec::new(),
@@ -1337,15 +1338,15 @@ fn find_all_nodes_proto(model: &str) -> svc::proto::NodeFindRequest {
     }
 }
 
-fn find_nodes_by_id_proto(model: &str, id: i64) -> svc::proto::NodeFindRequest {
-    svc::proto::NodeFindRequest {
+fn find_nodes_by_id_proto(model: &str, id: i64) -> proto::NodeFindRequest {
+    proto::NodeFindRequest {
         id: Some(id),
         ..find_all_nodes_proto(model)
     }
 }
 
-fn find_edges_by_id_proto(model: &str, id: i64) -> svc::proto::EdgeFindRequest {
-    svc::proto::EdgeFindRequest {
+fn find_edges_by_id_proto(model: &str, id: i64) -> proto::EdgeFindRequest {
+    proto::EdgeFindRequest {
         model: model.into(),
         predicates: Vec::new(),
         order: Vec::new(),
@@ -1357,26 +1358,26 @@ fn find_edges_by_id_proto(model: &str, id: i64) -> svc::proto::EdgeFindRequest {
     }
 }
 
-fn created_node_id(response: svc::proto::WorkspaceRuntimeResponse) -> i64 {
+fn created_node_id(response: proto::WorkspaceRuntimeResponse) -> i64 {
     match response.response.and_then(|response| response.response) {
-        Some(svc::proto::runtime_response::Response::CreateNode(response)) => {
+        Some(proto::runtime_response::Response::CreateNode(response)) => {
             response.node.unwrap().id
         }
         other => panic!("expected generated NodeCreate response, got {other:?}"),
     }
 }
 
-fn created_edge_id(response: svc::proto::WorkspaceRuntimeResponse) -> i64 {
+fn created_edge_id(response: proto::WorkspaceRuntimeResponse) -> i64 {
     match response.response.and_then(|response| response.response) {
-        Some(svc::proto::runtime_response::Response::CreateEdge(response)) => {
+        Some(proto::runtime_response::Response::CreateEdge(response)) => {
             response.edge.unwrap().id
         }
         other => panic!("expected generated EdgeCreate response, got {other:?}"),
     }
 }
 
-fn node_string_props(response: svc::proto::WorkspaceRuntimeResponse, field: &str) -> Vec<String> {
-    let Some(svc::proto::runtime_response::Response::FindNodes(response)) =
+fn node_string_props(response: proto::WorkspaceRuntimeResponse, field: &str) -> Vec<String> {
+    let Some(proto::runtime_response::Response::FindNodes(response)) =
         response.response.and_then(|response| response.response)
     else {
         panic!("expected generated NodeFind response");
@@ -1389,8 +1390,8 @@ fn node_string_props(response: svc::proto::WorkspaceRuntimeResponse, field: &str
         .collect()
 }
 
-fn edge_int_props(response: svc::proto::WorkspaceRuntimeResponse, field: &str) -> Vec<i64> {
-    let Some(svc::proto::runtime_response::Response::FindEdges(response)) =
+fn edge_int_props(response: proto::WorkspaceRuntimeResponse, field: &str) -> Vec<i64> {
+    let Some(proto::runtime_response::Response::FindEdges(response)) =
         response.response.and_then(|response| response.response)
     else {
         panic!("expected generated EdgeFind response");
@@ -1403,26 +1404,26 @@ fn edge_int_props(response: svc::proto::WorkspaceRuntimeResponse, field: &str) -
         .collect()
 }
 
-fn proto_string_prop(props: Option<svc::proto::PropertyMap>, field: &str) -> Option<String> {
+fn proto_string_prop(props: Option<proto::PropertyMap>, field: &str) -> Option<String> {
     props?
         .properties
         .into_iter()
         .find(|property| property.name == field)
         .and_then(|property| property.value)
         .and_then(|value| match value.kind {
-            Some(svc::proto::property_value::Kind::StringValue(value)) => Some(value),
+            Some(proto::property_value::Kind::StringValue(value)) => Some(value),
             _ => None,
         })
 }
 
-fn proto_int_prop(props: Option<svc::proto::PropertyMap>, field: &str) -> Option<i64> {
+fn proto_int_prop(props: Option<proto::PropertyMap>, field: &str) -> Option<i64> {
     props?
         .properties
         .into_iter()
         .find(|property| property.name == field)
         .and_then(|property| property.value)
         .and_then(|value| match value.kind {
-            Some(svc::proto::property_value::Kind::IntValue(value)) => Some(value),
+            Some(proto::property_value::Kind::IntValue(value)) => Some(value),
             _ => None,
         })
 }
@@ -1445,7 +1446,7 @@ fn message_body<'a>(proto: &'a str, message: &str) -> &'a str {
     &rest[..end]
 }
 
-async fn define_user_post_schema(state: &mut grm_rs::SessionState) {
+async fn define_user_post_schema(state: &mut SessionState) {
     for request in [
         svc::ServiceRequest::DefineNode(svc::DefineNodeRequest {
             name: "User".into(),
@@ -1527,14 +1528,14 @@ fn property_map<const N: usize>(properties: [(&str, svc::PropertyValue); N]) -> 
 }
 
 fn proto_property_map<const N: usize>(
-    properties: [(&str, svc::proto::property_value::Kind); N],
-) -> svc::proto::PropertyMap {
-    svc::proto::PropertyMap {
+    properties: [(&str, proto::property_value::Kind); N],
+) -> proto::PropertyMap {
+    proto::PropertyMap {
         properties: properties
             .into_iter()
-            .map(|(name, kind)| svc::proto::Property {
+            .map(|(name, kind)| proto::Property {
                 name: name.to_string(),
-                value: Some(svc::proto::PropertyValue { kind: Some(kind) }),
+                value: Some(proto::PropertyValue { kind: Some(kind) }),
             })
             .collect(),
     }
