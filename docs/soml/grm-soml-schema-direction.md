@@ -1,5 +1,7 @@
 # GRM SOML Schema & Catalog Architecture Direction
 
+Status: exploratory architecture note
+
 ## Overview
 
 GRM distinguishes between:
@@ -33,7 +35,9 @@ GRM distinguishes between:
 The important architectural distinction is:
 
 > The runtime schema cache is disposable.
-> The catalog is authoritative.
+> The graph-native catalog is authoritative.
+> The catalog authority belongs to the graph workspace / durable workspace
+> envelope, not to an adapter-local cache.
 
 ---
 
@@ -137,16 +141,26 @@ GRM currently supports multiple backend targets:
 
 ## 1. InMemory Backend
 
-Entirely ephemeral.
+In-memory can be used in two modes:
 
-Both:
+* ephemeral scratch/test mode
+* closed-loop local workspace mode with autocommit and reload
+
+In scratch mode, both:
 
 * user graph
 * catalog/schema graph
 
-may exist purely in memory.
+may exist purely in memory, and persistence is not expected.
 
-This is acceptable because persistence is not expected. File backing, and auto-commit do not provide guaranteed recovery, but the affordance here is for easy and quick demonstration of the concepts.
+In closed-loop local workspace mode, the in-memory execution state can still
+present the same SOML view as a service-hosted workspace when it is backed by a
+durable workspace envelope: graph data, declared catalog/schema memory, durable
+deltas/checkpoints, and rebuildable derived state are reopened together. The
+difference is durability and coordination class. Local file loss or corruption
+can still reset memory unless tested recovery behavior proves otherwise, and
+local autocommit does not imply hosted durability, multi-writer safety, service
+authorization, audit, observability, or managed lifecycle.
 
 ---
 
@@ -203,9 +217,10 @@ Disadvantages:
 
 ---
 
-### Option B — Sidecar Catalog Store (Current Direction)
+### Option B — Workspace-Owned Catalog Store (Current Direction)
 
-Schema/catalog exists outside Neo4j.
+Schema/catalog exists outside Neo4j, owned by GRM's graph workspace / durable
+workspace envelope.
 
 Neo4j stores only user/domain graph data.
 
@@ -228,13 +243,21 @@ Disadvantages:
 * catalog/data sync considerations
 * recovery/version compatibility requirements
 
-The current MCP implementation is conceptually closest to this model, although currently the schema projection is primarily sidecar in-memory.
+The current MCP implementation is conceptually closest to this model, although
+currently the schema projection is primarily sidecar in-memory.
+
+That means the sidecar pattern is aligned as a projection/cache shape, but the
+current non-persistent sidecar schema is transitional. The durable authority
+should move toward workspace-owned catalog metadata rather than remain only in
+process-local memory.
 
 ---
 
-## 3. gRPC Backend
+## 3. gRPC Service-Backed Workspace
 
-The gRPC backend introduces long-lived remote persistence concerns.
+The gRPC service-backed workspace introduces long-lived remote persistence
+concerns. gRPC is the service protocol and access boundary, not a storage
+backend in the same sense as in-memory or Neo4j.
 
 This makes persistent catalog authority significantly more important.
 
@@ -248,7 +271,7 @@ Using only transient in-memory schema creates risks:
 Therefore the intended architecture is:
 
 ```text
-persistent catalog
+persistent workspace catalog
     ↓
 compiled runtime schema
     ↓
@@ -264,7 +287,7 @@ The intended long-term direction is:
 ```text
 GRM Runtime
 ├── User Graph Store
-├── Catalog Store
+├── Workspace Catalog Store
 ├── Schema Compiler
 ├── Runtime Schema Cache
 └── RPC/MCP Projection Layer
@@ -273,7 +296,7 @@ GRM Runtime
 ## Core Principle
 
 ```text
-Persistent catalog = authority
+Persistent workspace catalog = authority
 Compiled in-memory schema = optimisation layer
 ```
 
@@ -328,13 +351,25 @@ Clients should not need to know:
 - how runtime schema is cached
 - how backend recovery is handled
 
-The service owns this lifecycle. The client may (or may not) create a catalog cache. The direction for my own implementations will probably chose to do so.
+The service owns this lifecycle. The client may, or may not, create a catalog
+cache. The direction for my own implementations will probably choose to do so.
+If a client keeps a local catalog cache, that cache is a convenience projection.
+It is not the authority for the workspace unless it is explicitly promoted
+through a workspace/catalog operation.
 
 ### InMemory
 
-The in-memory backend largely does not change.
+The in-memory backend largely does not change as an execution engine.
 
-Because it is already memory-resident, fast schema lookup is naturally available. There is no strong need for an explicit “recompile” step unless this is useful for API consistency or testing.
+Because it is already memory-resident, fast schema lookup is naturally
+available. There is no strong need for an explicit “recompile” step unless this
+is useful for API consistency or testing.
+
+For user-facing local workflows, however, in-memory should converge on the same
+workspace open/load/autocommit semantics as CLI, Python, MCP, Rust library, and
+future service clients. The catalog may be compiled in memory, but its durable
+authority comes from the workspace envelope when the workflow is closed-loop and
+reloadable.
 
 ### Client Layers
 
@@ -374,12 +409,17 @@ The current direction is to treat schema as:
 * authoritative
 * persistable
 * backend-independent
+* workspace-owned
 
 while maintaining:
 
-* high-performance in-memory compiled schema projections
+* high-performance in-memory compiled schema projections and caches
 * flexible backend support
 * RPC/MCP friendliness
 * future runtime extensibility
 
-The existing sidecar in-memory schema approach is therefore not merely a temporary trick, but increasingly appears to be aligned with the long-term architecture.
+The existing sidecar in-memory schema approach is therefore not merely a
+temporary trick. It is aligned with the long-term architecture when understood
+as a projection/cache pattern. It is still transitional when it is the only
+place schema authority lives; durable authority should belong to the graph
+workspace catalog.
