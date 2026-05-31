@@ -658,6 +658,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "grm-cli"
+version = "0.1.0"
+dependencies = [
+ "grm-rs",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "grm-mcp"
 version = "0.1.0"
 dependencies = [
