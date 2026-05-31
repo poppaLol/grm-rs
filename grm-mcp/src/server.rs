@@ -11,12 +11,14 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::{AutocommitTarget, StartupOptions};
+use crate::service::{ServiceMcpBackend, ServiceWorkspaceMode};
 use crate::tools::to_mcp_error;
 
 #[derive(Clone)]
 pub struct GrmMcpServer {
     pub(crate) state: Arc<Mutex<SessionState>>,
     pub(crate) neo4j: Option<GraphClient<Neo4jBackend>>,
+    pub(crate) service: Option<ServiceMcpBackend>,
     pub(crate) schema_template_source: Option<PathBuf>,
     pub(crate) schema_template_loaded_from_file: bool,
     pub(crate) autocommit: Option<AutocommitTarget>,
@@ -52,6 +54,7 @@ impl GrmMcpServer {
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
             neo4j: None,
+            service: None,
             schema_template_source: None,
             schema_template_loaded_from_file: false,
             autocommit: options.autocommit,
@@ -63,9 +66,10 @@ impl GrmMcpServer {
     pub async fn from_startup_options(options: StartupOptions) -> GrmResult<Self> {
         match std::env::var("GRM_BACKEND").ok().as_deref() {
             Some("neo4j") => Self::new_neo4j(options).await,
+            Some("grpc") | Some("service") => Self::new_service(options).await,
             Some("memory") | Some("inmemory") | Some("in-memory") | None => Self::new(options),
             Some(other) => Err(GrmError::Constraint(format!(
-                "unsupported GRM_BACKEND '{other}'; expected 'neo4j' or omit it for in-memory"
+                "unsupported GRM_BACKEND '{other}'; expected 'neo4j', 'grpc', 'service', or omit it for in-memory"
             ))),
         }
     }
@@ -94,6 +98,7 @@ impl GrmMcpServer {
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
             neo4j: Some(GraphClient::new(backend)),
+            service: None,
             schema_template_source,
             schema_template_loaded_from_file,
             autocommit: None,
@@ -102,8 +107,54 @@ impl GrmMcpServer {
         })
     }
 
+    async fn new_service(options: StartupOptions) -> GrmResult<Self> {
+        if options.load_json.is_some()
+            || options.load_bin.is_some()
+            || options.import_json.is_some()
+            || options.autocommit.is_some()
+            || options.export_json.is_some()
+        {
+            return Err(GrmError::NotSupported(
+                "startup load/import/export/autocommit options are not supported in gRPC MCP mode; workspace persistence is owned by the service",
+            ));
+        }
+
+        let endpoint = required_env("GRM_SERVICE_ENDPOINT")?;
+        let workspace_ref = required_env("GRM_WORKSPACE_REF")?;
+        let mode = match std::env::var("GRM_SERVICE_WORKSPACE_MODE") {
+            Ok(value) => ServiceWorkspaceMode::parse(value.trim())?,
+            Err(std::env::VarError::NotPresent) => ServiceWorkspaceMode::Open,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(GrmError::Constraint(
+                    "GRM_SERVICE_WORKSPACE_MODE must be valid Unicode".into(),
+                ));
+            }
+        };
+        let service = ServiceMcpBackend::connect(endpoint, workspace_ref, mode).await?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(SessionState::new())),
+            neo4j: None,
+            service: Some(service),
+            schema_template_source: None,
+            schema_template_loaded_from_file: false,
+            autocommit: None,
+            export_json: None,
+            tool_router: Self::tool_router(),
+        })
+    }
+
     pub(crate) fn is_neo4j(&self) -> bool {
         self.neo4j.is_some()
+    }
+
+    pub(crate) fn is_service(&self) -> bool {
+        self.service.is_some()
+    }
+
+    pub(crate) fn service_backend(&self) -> GrmResult<&ServiceMcpBackend> {
+        self.service
+            .as_ref()
+            .ok_or_else(|| GrmError::Backend("server is not running in gRPC service mode".into()))
     }
 
     pub(crate) fn neo4j_client(&self) -> GrmResult<&GraphClient<Neo4jBackend>> {
@@ -123,7 +174,21 @@ impl GrmMcpServer {
         })
     }
 
-    pub async fn schema_json(&self) -> Value {
+    pub(crate) fn unsupported_in_service(&self, tool: &str) -> Option<McpError> {
+        self.is_service().then(|| {
+            McpError::internal_error(
+                format!(
+                    "{tool} is not supported in gRPC MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, simple grm_node_find, and simple grm_edge_find"
+                ),
+                None,
+            )
+        })
+    }
+
+    pub async fn schema_json(&self) -> GrmResult<Value> {
+        if let Some(service) = &self.service {
+            return service.schema_json().await;
+        }
         let state = self.state.lock().await;
         let mut value = state.schema_value();
         if self.is_neo4j() {
@@ -154,10 +219,13 @@ impl GrmMcpServer {
                 });
             }
         }
-        value
+        Ok(value)
     }
 
     pub async fn backend_status_json(&self) -> Value {
+        if let Some(service) = &self.service {
+            return service.status_value();
+        }
         let state = self.state.lock().await;
         let node_count = state.catalog().list_node_models().len();
         let edge_count = state.catalog().list_rel_models().len();
@@ -335,7 +403,7 @@ fn initialize_schema_memory(path: Option<&std::path::Path>) -> GrmResult<(Sessio
 
 fn required_env(name: &str) -> GrmResult<String> {
     std::env::var(name)
-        .map_err(|_| GrmError::Constraint(format!("{name} must be set when GRM_BACKEND=neo4j")))
+        .map_err(|_| GrmError::Constraint(format!("{name} must be set for this MCP backend mode")))
 }
 
 fn optional_path_env(name: &str) -> GrmResult<Option<PathBuf>> {
@@ -361,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn schema_resource_starts_empty() {
         let server = GrmMcpServer::new(StartupOptions::default()).unwrap();
-        let schema = server.schema_json().await;
+        let schema = server.schema_json().await.unwrap();
         assert_eq!(schema["nodes"], json!([]));
         assert_eq!(schema["edges"], json!([]));
     }
