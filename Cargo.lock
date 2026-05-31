@@ -662,11 +662,14 @@ name = "grm-mcp"
 version = "0.1.0"
 dependencies = [
  "grm-rs",
+ "grm-service-api",
  "rmcp",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]
