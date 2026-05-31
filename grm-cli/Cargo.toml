@@ -1,0 +1,17 @@
+[package]
+name = "grm-cli"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Command-line interface for GRM runtime and service workflows."
+
+[[bin]]
+name = "grm"
+path = "src/main.rs"
+
+[dependencies]
+grm-rs = { path = ".." }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = "3"
