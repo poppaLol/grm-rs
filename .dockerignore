@@ -1,0 +1,6 @@
+target/
+.git/
+.codex/
+tmp/
+workspaces/
+*.log
