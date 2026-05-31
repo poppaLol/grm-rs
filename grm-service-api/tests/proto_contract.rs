@@ -776,6 +776,87 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
 }
 
 #[tokio::test]
+async fn workspace_client_executes_through_workspace_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let workspace_ref = "workspace-client-smoke";
+    let mut client = svc::GrpcWorkspaceClient::connect(
+        format!("http://{addr}"),
+        workspace_ref,
+        svc::GrpcWorkspaceMode::Create,
+    )
+    .await
+    .unwrap();
+    assert_eq!(client.workspace_ref().id, workspace_ref);
+
+    let defined = client
+        .execute_proto(proto::runtime_request::Request::DefineNode(
+            proto::DefineNodeRequest {
+                name: "ClientUser".into(),
+                id_field: "userId".into(),
+                fields: vec![proto::FieldSpec {
+                    name: "name".into(),
+                    value_type: proto::FieldValueType::String as i32,
+                    required: true,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        defined.response.and_then(|response| response.response),
+        Some(proto::runtime_response::Response::DefineNode(response))
+            if response.model.as_ref().unwrap().name == "ClientUser"
+    ));
+
+    let created = client
+        .execute_proto(proto::runtime_request::Request::CreateNode(
+            proto::NodeCreateRequest {
+                model: "ClientUser".into(),
+                props: Some(proto_property_map([(
+                    "name",
+                    proto::property_value::Kind::StringValue("Ada".into()),
+                )])),
+            },
+        ))
+        .await
+        .unwrap();
+    let node_id = created_node_id(created);
+    client.close().await.unwrap();
+
+    let mut reopened = svc::GrpcWorkspaceClient::connect(
+        format!("http://{addr}"),
+        workspace_ref,
+        svc::GrpcWorkspaceMode::Open,
+    )
+    .await
+    .unwrap();
+    let found = reopened
+        .execute_proto(proto::runtime_request::Request::FindNodes(
+            find_nodes_by_id_proto("ClientUser", node_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(node_string_props(found, "name"), vec!["Ada"]);
+
+    reopened.close().await.unwrap();
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_save() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = proto::WorkspaceRef {
