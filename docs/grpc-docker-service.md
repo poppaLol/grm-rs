@@ -72,56 +72,21 @@ The example creates or opens the `docker-demo` workspace through the gRPC
 service, defines schema, creates nodes and edges, performs finds and batch
 operations, closes the workspace, reopens it, and verifies data is still present.
 
-## Inspect With grpcurl
+## Optional grpcurl Smoke Scripts
 
-The server does not currently enable gRPC reflection, so `grpcurl` calls must
-include the local proto files. To avoid host-specific native `grpcurl`
-packaging issues, run the published `grpcurl` container on the Compose network:
-
-```bash
-docker run --rm \
-  --network grm-rs_default \
-  -v "$(pwd)/grm-service-api/proto:/protos:ro" \
-  fullstorydev/grpcurl:latest \
-  -plaintext \
-  -import-path /protos \
-  -proto grm/service/v1/service.proto \
-  grm-grpc:50051 \
-  grm.service.v1.GrmService/CreateWorkspace
-```
-
-See [grpc-quickstart.md](grpc-quickstart.md) for a small `grpcurl` walkthrough.
-
-## Dogfood Neo4j MCP Memory Migration
-
-To copy a Neo4j-backed MCP graph into a gRPC workspace for dogfooding, use the
-checked Rust migration example. It reads the session-local schema memory file
-used by Neo4j MCP mode, reads matching typed nodes and edges from Neo4j, then
-replays them into the workspace service through `ExecuteWorkspace`.
+The branch includes two checked smoke scripts that run `grpcurl` through the
+published `fullstorydev/grpcurl` container on the Compose network:
 
 ```bash
-NEO4J_URI=bolt://localhost:7687 \
-NEO4J_USER=neo4j \
-NEO4J_PASSWORD=... \
-cargo run -p grm-service-api --example migrate_neo4j_to_grpc -- \
-  --schema /path/to/project-memory-schema.json \
-  --endpoint http://127.0.0.1:50051 \
-  --workspace project-memory-grpc \
-  --mode create
+docker pull fullstorydev/grpcurl:latest
+
+GRPCURL_MODE=docker examples/grpc_demo.sh
+GRPCURL_MODE=docker examples/grpc_python_client.py
 ```
 
-Then restart MCP against the migrated workspace:
-
-```bash
-GRM_BACKEND=grpc
-GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051
-GRM_WORKSPACE_REF=project-memory-grpc
-GRM_SERVICE_WORKSPACE_MODE=open
-```
-
-This is an experiment, not a lossless backup tool. It remaps Neo4j node IDs to
-new workspace-local IDs and currently requires schema labels and relationship
-types to match their GRM model names.
+These scripts are intentionally small. They create a workspace, define one
+model, create and find one node, and close the workspace. They are not meant to
+document the full protobuf JSON surface.
 
 ## Security And Durability Notes
 
