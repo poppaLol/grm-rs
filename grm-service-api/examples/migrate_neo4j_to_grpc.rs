@@ -207,7 +207,7 @@ impl Options {
         let mut workspace =
             env::var("GRM_WORKSPACE_REF").unwrap_or_else(|_| "neo4j-migration".to_string());
         let mut mode = WorkspaceMode::Create;
-        let mut format = proto::DurabilityFormat::Json;
+        let mut format = proto::DurabilityFormat::Binary;
 
         let mut args = env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -247,7 +247,7 @@ impl Options {
 fn usage() -> &'static str {
     "usage: cargo run -p grm-service-api --example migrate_neo4j_to_grpc -- \
      --schema <schema-session.json> --endpoint http://127.0.0.1:50051 \
-     --workspace <workspace-ref> [--mode create|open] [--format json|bin]"
+     --workspace <workspace-ref> [--mode create|open] [--format json|bin; default bin]"
 }
 
 fn next_arg(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, String> {

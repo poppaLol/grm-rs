@@ -101,7 +101,7 @@ def main() -> int:
         {
             "mode": "WORKSPACE_CREATE_MODE_LOCAL_AUTOCOMMIT",
             "workspace": {"id": WORKSPACE_ID},
-            "format": "DURABILITY_FORMAT_JSON",
+            "format": "DURABILITY_FORMAT_BINARY",
         },
     )
     handle = created["handle"]["id"]
