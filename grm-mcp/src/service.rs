@@ -22,6 +22,7 @@ pub(crate) struct ServiceMcpBackend {
     endpoint: String,
     workspace: proto::WorkspaceRef,
     handle: proto::WorkspaceHandle,
+    format: ServiceWorkspaceFormat,
     client: Arc<Mutex<proto::grm_service_client::GrmServiceClient<Channel>>>,
 }
 
@@ -66,6 +67,13 @@ impl ServiceWorkspaceFormat {
             Self::Binary => proto::DurabilityFormat::Binary as i32,
         }
     }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Binary => "binary",
+        }
+    }
 }
 
 impl ServiceMcpBackend {
@@ -79,13 +87,13 @@ impl ServiceMcpBackend {
         let mut client = proto::grm_service_client::GrmServiceClient::connect(endpoint.clone())
             .await
             .map_err(service_transport_error)?;
-        let format = format.as_proto_code();
+        let format_code = format.as_proto_code();
         let handle = match mode {
             ServiceWorkspaceMode::Create => client
                 .create_workspace(proto::WorkspaceCreateRequest {
                     mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
                     workspace: Some(workspace.clone()),
-                    format,
+                    format: format_code,
                 })
                 .await
                 .map_err(service_status_error)?
@@ -95,7 +103,7 @@ impl ServiceMcpBackend {
             ServiceWorkspaceMode::Open => client
                 .open_workspace(proto::WorkspaceOpenRequest {
                     snapshot: None,
-                    format,
+                    format: format_code,
                     workspace: Some(workspace.clone()),
                 })
                 .await
@@ -108,6 +116,7 @@ impl ServiceMcpBackend {
             endpoint,
             workspace,
             handle,
+            format,
             client: Arc::new(Mutex::new(client)),
         })
     }
@@ -120,6 +129,7 @@ impl ServiceMcpBackend {
                 "endpoint": self.endpoint,
                 "workspace_ref": self.workspace.id,
                 "workspace_handle": self.handle.id,
+                "workspace_format": self.format.as_str(),
                 "workspace_scope": "ExecuteWorkspace",
                 "note": "MCP is using the GRM gRPC workspace service as the persisted operational-memory layer for the proven schema/CRUD/find/batch subset.",
                 "supported_tools": [
