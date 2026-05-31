@@ -1,7 +1,8 @@
 # GRM gRPC Docker Quick Start
 
-This quick start runs the local GRM gRPC workspace shell in Docker and talks to
-it through workspace-scoped RPCs.
+This quick start covers the local Docker-hosted gRPC workspace shell that has
+been smoke-tested in this branch. It is an insecure local demo, not a production
+daemon.
 
 ## Start The Service
 
@@ -12,161 +13,53 @@ docker compose up --build
 The service listens on `localhost:50051` and stores local autocommit workspace
 files in the `grm-workspaces` Docker volume.
 
-## Rust Client Demo
+## Run The Checked Rust Smoke Test
 
-The most reliable smoke test is the checked-in Rust client example:
+In another shell:
 
 ```bash
 cargo run -p grm-service-api --example local_workspace_client -- \
   http://127.0.0.1:50051 quickstart-demo
 ```
 
-## grpcurl Setup
+This is the primary checked client path. It creates or opens a workspace,
+defines schema, creates nodes and edges, runs simple finds and a batch request,
+closes and reopens the workspace, and verifies data is still present.
 
-The server does not expose reflection yet, so every call must include the
-protobuf schema. The most reproducible option is the published `grpcurl`
-container, run on the Compose network with the local proto directory mounted
-read-only:
+## Optional grpcurl Smoke Scripts
+
+The repo also includes two small smoke scripts that use the published
+`fullstorydev/grpcurl` container on the Compose network. These were checked
+against the Docker service during this branch:
 
 ```bash
 docker pull fullstorydev/grpcurl:latest
 
-grpcurl_docker() {
-  docker run --rm \
-    --network grm-rs_default \
-    -v "$(pwd)/grm-service-api/proto:/protos:ro" \
-    fullstorydev/grpcurl:latest \
-    -plaintext \
-    -import-path /protos \
-    -proto grm/service/v1/service.proto \
-    "$@"
-}
-
-GRPCURL=grpcurl_docker
-GRPCURL_ENDPOINT=grm-grpc:50051
+GRPCURL_MODE=docker examples/grpc_demo.sh
+GRPCURL_MODE=docker examples/grpc_python_client.py
 ```
 
-If you have a native `grpcurl` binary that can read files from the checkout, you
-can use the host-published port instead:
+These examples exercise a minimal workspace flow: create workspace, define a
+`User` model, create one node, find it, and close the workspace. They are useful
+for checking protobuf JSON request shape, but the Rust client remains the more
+complete demo.
 
-```bash
-grpcurl_native() {
-  grpcurl -plaintext \
-    -import-path "$(pwd)/grm-service-api/proto" \
-    -proto grm/service/v1/service.proto \
-    "$@"
-}
-
-GRPCURL=grpcurl_native
-GRPCURL_ENDPOINT=localhost:50051
-```
-
-## Create A Workspace
-
-```bash
-$GRPCURL -d '{
-  "mode": "WORKSPACE_CREATE_MODE_LOCAL_AUTOCOMMIT",
-  "workspace": {"id": "quickstart-demo"},
-  "format": "DURABILITY_FORMAT_JSON"
-}' "$GRPCURL_ENDPOINT" grm.service.v1.GrmService/CreateWorkspace
-```
-
-Capture a handle:
-
-```bash
-HANDLE=$($GRPCURL -d '{
-  "snapshot": null,
-  "workspace": {"id": "quickstart-demo"},
-  "format": "DURABILITY_FORMAT_JSON"
-}' "$GRPCURL_ENDPOINT" grm.service.v1.GrmService/OpenWorkspace | jq -r '.handle.id')
-```
-
-## Define Schema Through ExecuteWorkspace
-
-```bash
-$GRPCURL -d "{
-  \"handle\": {\"id\": \"$HANDLE\"},
-  \"request\": {
-    \"defineNode\": {
-      \"name\": \"User\",
-      \"idField\": \"userId\",
-      \"fields\": [
-        {
-          \"name\": \"name\",
-          \"valueType\": \"FIELD_VALUE_TYPE_STRING\",
-          \"required\": true
-        }
-      ]
-    }
-  }
-}" "$GRPCURL_ENDPOINT" grm.service.v1.GrmService/ExecuteWorkspace
-```
-
-## Create And Find A Node
-
-```bash
-NODE_ID=$($GRPCURL -d "{
-  \"handle\": {\"id\": \"$HANDLE\"},
-  \"request\": {
-    \"createNode\": {
-      \"model\": \"User\",
-      \"props\": {
-        \"properties\": [
-          {\"name\": \"name\", \"value\": {\"stringValue\": \"Ada\"}}
-        ]
-      }
-    }
-  }
-}" "$GRPCURL_ENDPOINT" grm.service.v1.GrmService/ExecuteWorkspace | jq -r '.response.createNode.node.id')
-
-$GRPCURL -d "{
-  \"handle\": {\"id\": \"$HANDLE\"},
-  \"request\": {
-    \"findNodes\": {
-      \"model\": \"User\",
-      \"id\": $NODE_ID
-    }
-  }
-}" "$GRPCURL_ENDPOINT" grm.service.v1.GrmService/ExecuteWorkspace
-```
-
-## Close The Workspace
-
-```bash
-$GRPCURL -d "{
-  \"handle\": {\"id\": \"$HANDLE\"}
-}" "$GRPCURL_ENDPOINT" grm.service.v1.GrmService/CloseWorkspace
-```
-
-## Stop And Clean Up
+## Stop The Service
 
 ```bash
 docker compose down
+```
+
+Remove the demo workspace volume when you want a clean slate:
+
+```bash
 docker compose down -v
 ```
 
-## Troubleshooting
+## Notes
 
-Check logs:
-
-```bash
-docker compose logs grm-grpc
-```
-
-Rebuild from scratch:
-
-```bash
-docker compose build --no-cache
-docker compose up
-```
-
-If `grpcurl` reports unknown services or fields, make sure you are passing the
-proto import arguments and using the fully qualified method name, for example:
-
-```text
-grm.service.v1.GrmService/ExecuteWorkspace
-```
-
-If `grpcurl` reports `permission denied` while opening `service.proto`, prefer
-the Dockerized `fullstorydev/grpcurl` command above. Some Snap-packaged native
-installs are blocked from reading proto files from a development checkout.
+- The server does not expose gRPC reflection.
+- Direct non-workspace RPC families are intentionally unsupported by the local
+  shell.
+- The Docker demo does not provide TLS, authentication, hosted durability, or
+  multi-writer coordination.
