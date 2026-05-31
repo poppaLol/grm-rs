@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .create_workspace(proto::WorkspaceCreateRequest {
             mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
             workspace: Some(workspace.clone()),
-            format: proto::DurabilityFormat::Json as i32,
+            format: proto::DurabilityFormat::Binary as i32,
         })
         .await?
         .into_inner();
@@ -258,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .open_workspace(proto::WorkspaceOpenRequest {
             snapshot: None,
             workspace: Some(workspace),
-            format: proto::DurabilityFormat::Json as i32,
+            format: proto::DurabilityFormat::Binary as i32,
         })
         .await?
         .into_inner();

@@ -200,6 +200,8 @@ The service listens on `localhost:50051` and supports the workspace-scoped RPCs:
 Schema, node, edge, simple find, and batch operations should be sent through
 `ExecuteWorkspace`. Direct non-workspace RPC families in the proto are still
 explicitly unsupported by the local shell.
+Checked service-backed clients use binary local autocommit workspace files by
+default; JSON remains an explicit debug/interchange-friendly option.
 
 Try the checked Rust client example:
 
