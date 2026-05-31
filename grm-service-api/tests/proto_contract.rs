@@ -1,12 +1,13 @@
 use std::fs;
 
 use grm_rs::{
-    BatchRequest, DurableOperation, EdgeRequest, NodeRequest, QueryRequest, RuntimeDispatchOutcome,
-    RuntimeRequest, RuntimeResponse, SchemaRequest, SchemaResponse, SessionState, NodeResponse, RuntimeDelete,
+    BatchRequest, DurableOperation, EdgeRequest, NodeRequest, NodeResponse, QueryRequest,
+    RuntimeDelete, RuntimeDispatchOutcome, RuntimeRequest, RuntimeResponse, SchemaRequest,
+    SchemaResponse, SessionState,
 };
 use grm_service_api as svc;
-use grm_service_api::{PROTO_FILES, proto_files, ServiceRequest, proto, proto_root};
 use grm_service_api::proto::{DefineNodeRequest, FieldSpec, FieldValueType};
+use grm_service_api::{PROTO_FILES, ServiceRequest, proto, proto_files, proto_root};
 use serde_json::json;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -477,9 +478,7 @@ async fn in_process_workspace_service_executes_generated_requests_against_handle
             proto::WorkspaceRuntimeRequest {
                 handle: Some(created.handle.clone().into()),
                 request: Some(proto::RuntimeRequest {
-                    request: Some(proto::runtime_request::Request::ApplyBatch(
-                        generated_batch,
-                    )),
+                    request: Some(proto::runtime_request::Request::ApplyBatch(generated_batch)),
                 }),
             }
             .try_into()
@@ -673,10 +672,9 @@ async fn generated_grpc_client_executes_workspace_requests_over_local_transport(
             .await
     });
 
-    let mut client =
-        proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
-            .await
-            .unwrap();
+    let mut client = proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
 
     let created = client
         .create_workspace(proto::WorkspaceCreateRequest {
@@ -797,10 +795,9 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
             .await
     });
 
-    let mut client =
-        proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
-            .await
-            .unwrap();
+    let mut client = proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
 
     let direct = client
         .define_node(proto::DefineNodeRequest {
@@ -956,9 +953,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let found = execute_workspace_proto(
         &mut client,
         &opened_handle,
-        proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
-            "Authored", authored,
-        )),
+        proto::runtime_request::Request::FindEdges(find_edges_by_id_proto("Authored", authored)),
     )
     .await;
     assert_eq!(edge_int_props(found, "year"), vec![2027]);
@@ -1159,9 +1154,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     let edges = execute_workspace_proto(
         &mut client,
         &reopened_handle,
-        proto::runtime_request::Request::FindEdges(find_edges_by_id_proto(
-            "Authored", authored,
-        )),
+        proto::runtime_request::Request::FindEdges(find_edges_by_id_proto("Authored", authored)),
     )
     .await;
     assert_eq!(edge_int_props(edges, "year"), vec![2027]);
@@ -1360,18 +1353,14 @@ fn find_edges_by_id_proto(model: &str, id: i64) -> proto::EdgeFindRequest {
 
 fn created_node_id(response: proto::WorkspaceRuntimeResponse) -> i64 {
     match response.response.and_then(|response| response.response) {
-        Some(proto::runtime_response::Response::CreateNode(response)) => {
-            response.node.unwrap().id
-        }
+        Some(proto::runtime_response::Response::CreateNode(response)) => response.node.unwrap().id,
         other => panic!("expected generated NodeCreate response, got {other:?}"),
     }
 }
 
 fn created_edge_id(response: proto::WorkspaceRuntimeResponse) -> i64 {
     match response.response.and_then(|response| response.response) {
-        Some(proto::runtime_response::Response::CreateEdge(response)) => {
-            response.edge.unwrap().id
-        }
+        Some(proto::runtime_response::Response::CreateEdge(response)) => response.edge.unwrap().id,
         other => panic!("expected generated EdgeCreate response, got {other:?}"),
     }
 }
