@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tonic::transport::Channel;
 use tonic::{Request, Response, Status};
 
 #[allow(warnings)]
@@ -80,6 +81,149 @@ impl From<grm_rs::GrmError> for WorkspaceServiceError {
 }
 
 pub type WorkspaceServiceResult<T> = std::result::Result<T, WorkspaceServiceError>;
+
+#[derive(Debug)]
+pub enum GrpcWorkspaceClientError {
+    Transport(tonic::transport::Error),
+    Status(tonic::Status),
+    MissingField(&'static str),
+}
+
+impl fmt::Display for GrpcWorkspaceClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(error) => write!(f, "gRPC transport error: {error}"),
+            Self::Status(status) => write!(f, "gRPC service error: {status}"),
+            Self::MissingField(field) => write!(f, "gRPC response missing required field {field}"),
+        }
+    }
+}
+
+impl Error for GrpcWorkspaceClientError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Transport(error) => Some(error),
+            Self::Status(status) => Some(status),
+            Self::MissingField(_) => None,
+        }
+    }
+}
+
+impl From<tonic::transport::Error> for GrpcWorkspaceClientError {
+    fn from(error: tonic::transport::Error) -> Self {
+        Self::Transport(error)
+    }
+}
+
+impl From<tonic::Status> for GrpcWorkspaceClientError {
+    fn from(status: tonic::Status) -> Self {
+        Self::Status(status)
+    }
+}
+
+pub type GrpcWorkspaceClientResult<T> = std::result::Result<T, GrpcWorkspaceClientError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrpcWorkspaceMode {
+    Create,
+    Open,
+}
+
+#[derive(Clone)]
+pub struct GrpcWorkspaceClient {
+    endpoint: String,
+    workspace: proto::WorkspaceRef,
+    handle: proto::WorkspaceHandle,
+    client: proto::grm_service_client::GrmServiceClient<Channel>,
+}
+
+impl GrpcWorkspaceClient {
+    pub async fn connect(
+        endpoint: impl Into<String>,
+        workspace_id: impl Into<String>,
+        mode: GrpcWorkspaceMode,
+    ) -> GrpcWorkspaceClientResult<Self> {
+        let endpoint = endpoint.into();
+        let workspace = proto::WorkspaceRef {
+            id: workspace_id.into(),
+        };
+        let mut client = proto::grm_service_client::GrmServiceClient::connect(endpoint.clone())
+            .await
+            .map_err(GrpcWorkspaceClientError::Transport)?;
+        let format = proto::DurabilityFormat::Json as i32;
+        let handle = match mode {
+            GrpcWorkspaceMode::Create => client
+                .create_workspace(proto::WorkspaceCreateRequest {
+                    mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+                    workspace: Some(workspace.clone()),
+                    format,
+                })
+                .await?
+                .into_inner()
+                .handle
+                .ok_or(GrpcWorkspaceClientError::MissingField(
+                    "WorkspaceCreateResponse.handle",
+                ))?,
+            GrpcWorkspaceMode::Open => client
+                .open_workspace(proto::WorkspaceOpenRequest {
+                    snapshot: None,
+                    workspace: Some(workspace.clone()),
+                    format,
+                })
+                .await?
+                .into_inner()
+                .handle
+                .ok_or(GrpcWorkspaceClientError::MissingField(
+                    "WorkspaceOpenResponse.handle",
+                ))?,
+        };
+
+        Ok(Self {
+            endpoint,
+            workspace,
+            handle,
+            client,
+        })
+    }
+
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub fn workspace_ref(&self) -> &proto::WorkspaceRef {
+        &self.workspace
+    }
+
+    pub fn handle(&self) -> &proto::WorkspaceHandle {
+        &self.handle
+    }
+
+    pub async fn execute_proto(
+        &mut self,
+        request: proto::runtime_request::Request,
+    ) -> GrpcWorkspaceClientResult<proto::WorkspaceRuntimeResponse> {
+        self.client
+            .execute_workspace(proto::WorkspaceRuntimeRequest {
+                handle: Some(self.handle.clone()),
+                request: Some(proto::RuntimeRequest {
+                    request: Some(request),
+                }),
+            })
+            .await
+            .map(|response| response.into_inner())
+            .map_err(GrpcWorkspaceClientError::Status)
+    }
+
+    pub async fn close(mut self) -> GrpcWorkspaceClientResult<proto::WorkspaceCloseResponse> {
+        self.client
+            .close_workspace(proto::WorkspaceCloseRequest {
+                handle: Some(self.handle.clone()),
+            })
+            .await
+            .map(|response| response.into_inner())
+            .map_err(GrpcWorkspaceClientError::Status)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkspaceHandle {
