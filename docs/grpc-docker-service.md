@@ -13,7 +13,9 @@ grm-local-workspace-server 0.0.0.0:50051 /workspaces
 
 `/workspaces` is a mounted workspace root. Workspace refs sent by clients are
 mapped by the service to local autocommit workspace files under that root.
-Clients do not send server-local filesystem paths.
+Clients do not send server-local filesystem paths. New service-backed client
+usage defaults to binary workspace files; JSON can still be selected explicitly
+for debugging or interchange-friendly inspection.
 
 ## Supported Surface
 
@@ -45,7 +47,8 @@ docker compose up --build
 ```
 
 The service listens on `localhost:50051`. Workspace data is stored in the named
-Docker volume `grm-workspaces`.
+Docker volume `grm-workspaces`. The checked clients create binary workspace
+files by default.
 
 Stop the service:
 

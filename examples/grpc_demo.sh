@@ -67,7 +67,7 @@ echo "1. Create local autocommit workspace"
 CREATE_RESPONSE=$(grpcurl_call -d "{
   \"mode\": \"WORKSPACE_CREATE_MODE_LOCAL_AUTOCOMMIT\",
   \"workspace\": {\"id\": \"$WORKSPACE_ID\"},
-  \"format\": \"DURABILITY_FORMAT_JSON\"
+  \"format\": \"DURABILITY_FORMAT_BINARY\"
 }" "$GRPC_ENDPOINT" "$METHOD_PREFIX/CreateWorkspace")
 echo "$CREATE_RESPONSE" | jq .
 HANDLE=$(echo "$CREATE_RESPONSE" | jq -r '.handle.id')

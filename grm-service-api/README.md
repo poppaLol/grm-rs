@@ -44,3 +44,7 @@ Run the local workspace shell and generated-client walkthrough with:
 cargo run -p grm-service-api --example local_workspace_server -- 127.0.0.1:50051 /tmp/grm-service-workspaces
 cargo run -p grm-service-api --example local_workspace_client -- http://127.0.0.1:50051 demo-workspace
 ```
+
+The checked service-backed client path uses binary local autocommit workspace
+files by default. JSON remains available when a caller explicitly requests the
+JSON durability format.

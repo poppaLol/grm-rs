@@ -11,7 +11,9 @@ docker compose up --build
 ```
 
 The service listens on `localhost:50051` and stores local autocommit workspace
-files in the `grm-workspaces` Docker volume.
+files in the `grm-workspaces` Docker volume. Checked service-backed clients use
+binary workspace files by default; JSON remains available when a client
+explicitly requests `DURABILITY_FORMAT_JSON`.
 
 ## Run The Checked Rust Smoke Test
 
