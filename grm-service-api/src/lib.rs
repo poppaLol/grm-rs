@@ -143,6 +143,15 @@ impl GrpcWorkspaceClient {
         workspace_id: impl Into<String>,
         mode: GrpcWorkspaceMode,
     ) -> GrpcWorkspaceClientResult<Self> {
+        Self::connect_with_format(endpoint, workspace_id, mode, DurabilityFormat::Binary).await
+    }
+
+    pub async fn connect_with_format(
+        endpoint: impl Into<String>,
+        workspace_id: impl Into<String>,
+        mode: GrpcWorkspaceMode,
+        format: DurabilityFormat,
+    ) -> GrpcWorkspaceClientResult<Self> {
         let endpoint = endpoint.into();
         let workspace = proto::WorkspaceRef {
             id: workspace_id.into(),
@@ -150,7 +159,7 @@ impl GrpcWorkspaceClient {
         let mut client = proto::grm_service_client::GrmServiceClient::connect(endpoint.clone())
             .await
             .map_err(GrpcWorkspaceClientError::Transport)?;
-        let format = proto::DurabilityFormat::Json as i32;
+        let format = proto_durability_format_code(format);
         let handle = match mode {
             GrpcWorkspaceMode::Create => client
                 .create_workspace(proto::WorkspaceCreateRequest {
@@ -1834,6 +1843,13 @@ impl From<DurabilityFormat> for grm_rs::DurabilityFormat {
             DurabilityFormat::Json => Self::Json,
             DurabilityFormat::Binary => Self::Binary,
         }
+    }
+}
+
+fn proto_durability_format_code(format: DurabilityFormat) -> i32 {
+    match format {
+        DurabilityFormat::Json => proto::DurabilityFormat::Json as i32,
+        DurabilityFormat::Binary => proto::DurabilityFormat::Binary as i32,
     }
 }
 
