@@ -43,17 +43,43 @@ impl ServiceWorkspaceMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServiceWorkspaceFormat {
+    Json,
+    Binary,
+}
+
+impl ServiceWorkspaceFormat {
+    pub(crate) fn parse(raw: &str) -> GrmResult<Self> {
+        match raw {
+            "json" => Ok(Self::Json),
+            "bin" | "binary" => Ok(Self::Binary),
+            other => Err(GrmError::Constraint(format!(
+                "unsupported GRM_SERVICE_WORKSPACE_FORMAT '{other}'; expected 'json', 'bin', or 'binary'"
+            ))),
+        }
+    }
+
+    pub(crate) fn as_proto_code(self) -> i32 {
+        match self {
+            Self::Json => proto::DurabilityFormat::Json as i32,
+            Self::Binary => proto::DurabilityFormat::Binary as i32,
+        }
+    }
+}
+
 impl ServiceMcpBackend {
     pub(crate) async fn connect(
         endpoint: String,
         workspace_id: String,
         mode: ServiceWorkspaceMode,
+        format: ServiceWorkspaceFormat,
     ) -> GrmResult<Self> {
         let workspace = proto::WorkspaceRef { id: workspace_id };
         let mut client = proto::grm_service_client::GrmServiceClient::connect(endpoint.clone())
             .await
             .map_err(service_transport_error)?;
-        let format = proto::DurabilityFormat::Json as i32;
+        let format = format.as_proto_code();
         let handle = match mode {
             ServiceWorkspaceMode::Create => client
                 .create_workspace(proto::WorkspaceCreateRequest {
@@ -120,7 +146,7 @@ impl ServiceMcpBackend {
             },
             "recommended_startup_flow": [
                 "Start the gRPC workspace service with a configured local workspace root.",
-                "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open.",
+                "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files.",
                 "Call grm_schema_list to verify the workspace schema before writing.",
                 "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace."
             ]
