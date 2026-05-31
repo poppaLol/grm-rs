@@ -65,13 +65,18 @@ impl GrmMcpServer {
         description = "Return the current GRM runtime schema and backend identity types. Call before graph reads/writes when model fields are unknown."
     )]
     async fn grm_schema_list(&self) -> Result<Json<JsonObject>, McpError> {
-        Ok(Json(to_object(self.schema_json().await)?))
+        Ok(Json(to_object(
+            self.schema_json().await.map_err(to_mcp_error)?,
+        )?))
     }
 
     #[tool(
         description = "Inspect GRM's current system index catalog. Indexes are backend-maintained derived metadata, not user-defined or durable source-of-truth data."
     )]
     async fn grm_index_list(&self) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_index_list") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_index_list") {
             return Err(err);
         }
@@ -86,6 +91,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<BatchParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .batch(params.0)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_batch(params.0).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -110,6 +124,17 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<DefineNodeParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let _ = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .define_node(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(
+                self.schema_json().await.map_err(to_mcp_error)?,
+            )?));
+        }
         if self.is_neo4j() {
             let mut state = self.state.lock().await;
             let outcome = state
@@ -143,6 +168,17 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<DefineEdgeParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let _ = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .define_edge(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(
+                self.schema_json().await.map_err(to_mcp_error)?,
+            )?));
+        }
         if self.is_neo4j() {
             let mut state = self.state.lock().await;
             let outcome = state
@@ -180,6 +216,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeCreateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .node_create(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_node_create(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -206,6 +251,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .node_update(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_node_update(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -230,6 +284,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .node_delete(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_node_delete(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -257,6 +320,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<NodeFindParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .node_find(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_node_find(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -290,6 +362,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeCreateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .edge_create(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_edge_create(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -316,6 +397,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeUpdateParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .edge_update(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_edge_update(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -340,6 +430,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeDeleteParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .edge_delete(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_edge_delete(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -367,6 +466,15 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<EdgeFindParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .edge_find(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
         if self.is_neo4j() {
             let value = self.neo4j_edge_find(params).await.map_err(to_mcp_error)?;
             return Ok(Json(to_object(value)?));
@@ -400,6 +508,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_query") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_query") {
             return Err(err);
         }
@@ -428,6 +539,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_explain") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_explain") {
             return Err(err);
         }
@@ -455,6 +569,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_profile") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_profile") {
             return Err(err);
         }
@@ -481,6 +598,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<FileFormatParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_save") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_save") {
             return Err(err);
         }
@@ -500,6 +620,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<FileFormatParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_load") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_load") {
             return Err(err);
         }
@@ -521,6 +644,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<PathParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_import") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_import") {
             return Err(err);
         }
@@ -539,6 +665,9 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<ExportParams>,
     ) -> Result<Json<JsonObject>, McpError> {
+        if let Some(err) = self.unsupported_in_service("grm_export") {
+            return Err(err);
+        }
         if let Some(err) = self.unsupported_in_neo4j("grm_export") {
             return Err(err);
         }
@@ -1711,7 +1840,9 @@ fn cypher_name(name: &str) -> String {
 #[tool_handler]
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
-        let instructions = if self.is_neo4j() {
+        let instructions = if self.is_service() {
+            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and simple node/edge find through ExecuteWorkspace. Direct service RPC families, import/export, explain/profile, and traversal/query parity are not supported yet."
+        } else if self.is_neo4j() {
             "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and simple node/edge find."
         } else {
             "Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible."
@@ -1755,9 +1886,14 @@ impl ServerHandler for GrmMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
         let text = match request.uri.as_str() {
-            "grm://schema" => serde_json::to_string_pretty(&self.schema_json().await)
-                .map_err(|err| McpError::internal_error(err.to_string(), None))?,
+            "grm://schema" => {
+                serde_json::to_string_pretty(&self.schema_json().await.map_err(to_mcp_error)?)
+                    .map_err(|err| McpError::internal_error(err.to_string(), None))?
+            }
             "grm://graph/export" => {
+                if let Some(err) = self.unsupported_in_service("grm://graph/export") {
+                    return Err(err);
+                }
                 if let Some(err) = self.unsupported_in_neo4j("grm://graph/export") {
                     return Err(err);
                 }
@@ -1765,6 +1901,9 @@ impl ServerHandler for GrmMcpServer {
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?
             }
             "grm://graph/summary" => {
+                if let Some(err) = self.unsupported_in_service("grm://graph/summary") {
+                    return Err(err);
+                }
                 if let Some(err) = self.unsupported_in_neo4j("grm://graph/summary") {
                     return Err(err);
                 }

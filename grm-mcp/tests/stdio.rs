@@ -1,4 +1,5 @@
 use grm_rs::{DurabilityFormat, GraphBackend, Neo4jBackend, Neo4jConfig, SessionState};
+use grm_service_api::GrpcWorkspaceService;
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, JsonObject};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
@@ -7,7 +8,11 @@ use std::env;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
+use tokio::net::TcpListener;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
 
 async fn client(args: &[&str]) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_grm-mcp"));
@@ -45,6 +50,44 @@ async fn neo4j_client() -> Option<rmcp::service::RunningService<rmcp::RoleClient
         .await
         .expect("connect to grm-mcp"),
     )
+}
+
+async fn grpc_service(root: PathBuf) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local gRPC service");
+    let addr = listener.local_addr().expect("local gRPC service address");
+    let incoming = TcpListenerStream::new(listener);
+    let service = GrpcWorkspaceService::with_local_workspace_root(root).into_server();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming(incoming)
+            .await
+            .expect("serve local gRPC workspace service");
+    });
+    (format!("http://{addr}"), handle)
+}
+
+async fn grpc_mcp_client(
+    endpoint: &str,
+    workspace_ref: &str,
+    mode: &str,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    let command = Command::new(env!("CARGO_BIN_EXE_grm-mcp"));
+
+    ().serve(
+        TokioChildProcess::new(command.configure(|cmd| {
+            cmd.kill_on_drop(true)
+                .env("GRM_BACKEND", "grpc")
+                .env("GRM_SERVICE_ENDPOINT", endpoint)
+                .env("GRM_WORKSPACE_REF", workspace_ref)
+                .env("GRM_SERVICE_WORKSPACE_MODE", mode);
+        }))
+        .expect("spawn grm-mcp in gRPC service mode"),
+    )
+    .await
+    .expect("connect to grm-mcp in gRPC service mode")
 }
 
 async fn call(
@@ -128,6 +171,170 @@ async fn schema_list_on_empty_stdio_session() {
     assert_eq!(schema["edges"], json!([]));
 
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
+    let temp = tempdir().unwrap();
+    let (endpoint, service) = grpc_service(temp.path().to_path_buf()).await;
+    let workspace_ref = unique_smoke_id();
+    let client = grpc_mcp_client(&endpoint, &workspace_ref, "create").await;
+
+    let schema = call(&client, "grm_schema_list", json!({})).await;
+    assert_eq!(schema["backend"]["mode"], json!("grpc"));
+    assert_eq!(
+        schema["backend"]["workspace_scope"],
+        json!("ExecuteWorkspace")
+    );
+    assert_eq!(schema["nodes"], json!([]));
+
+    let result = call(
+        &client,
+        "grm_batch",
+        json!({
+            "atomic": true,
+            "response": "detailed",
+            "ops": [
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "GrpcMcpUser",
+                        "id_field": "userId",
+                        "fields": [
+                            { "name": "name", "type": "string", "required": true },
+                            { "name": "smoke_id", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "GrpcMcpPost",
+                        "id_field": "postId",
+                        "fields": [
+                            { "name": "title", "type": "string", "required": true },
+                            { "name": "smoke_id", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "schema_define_edge",
+                    "args": {
+                        "name": "GRPC_MCP_AUTHORED",
+                        "from_model": "GrpcMcpUser",
+                        "to_model": "GrpcMcpPost",
+                        "id_field": "authoredId",
+                        "fields": [
+                            { "name": "smoke_id", "type": "string", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "user",
+                        "model": "GrpcMcpUser",
+                        "props": { "name": "Alice", "smoke_id": workspace_ref }
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "post",
+                        "model": "GrpcMcpPost",
+                        "props": { "title": "MCP over gRPC", "smoke_id": workspace_ref }
+                    }
+                },
+                {
+                    "op": "edge_create",
+                    "args": {
+                        "model": "GRPC_MCP_AUTHORED",
+                        "from": "user",
+                        "to": "post",
+                        "props": { "smoke_id": workspace_ref }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(result["applied"], json!(true));
+    assert_eq!(result["counts"]["node_create"]["GrpcMcpUser"], json!(1));
+    assert_eq!(
+        result["counts"]["edge_create"]["GRPC_MCP_AUTHORED"],
+        json!(1)
+    );
+    let user_id = result["ids"][0]["id"].as_i64().unwrap();
+    let post_id = result["ids"][1]["id"].as_i64().unwrap();
+    let edge_id = result["ids"][2]["id"].as_i64().unwrap();
+
+    let updated_user = call(
+        &client,
+        "grm_node_update",
+        json!({
+            "model": "GrpcMcpUser",
+            "id": user_id,
+            "props": { "name": "Alice Updated" }
+        }),
+    )
+    .await;
+    assert_eq!(updated_user["props"]["name"], json!("Alice Updated"));
+
+    let found_nodes = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "GrpcMcpUser",
+            "filters": { "id": user_id, "name": "Alice Updated" }
+        }),
+    )
+    .await;
+    assert_eq!(found_nodes["nodes"].as_array().unwrap().len(), 1);
+
+    let found_edges = call(
+        &client,
+        "grm_edge_find",
+        json!({
+            "model": "GRPC_MCP_AUTHORED",
+            "filters": { "id": edge_id, "from": user_id, "to": post_id }
+        }),
+    )
+    .await;
+    assert_eq!(found_edges["edges"].as_array().unwrap().len(), 1);
+
+    let unsupported_query = call_error(
+        &client,
+        "grm_query",
+        json!({ "command": "node.find GrpcMcpUser name=\"Alice Updated\"" }),
+    )
+    .await;
+    assert!(unsupported_query.contains("gRPC MCP mode"));
+
+    client.cancel().await.unwrap();
+
+    let reopened = grpc_mcp_client(&endpoint, &workspace_ref, "open").await;
+    let reopened_schema = call(&reopened, "grm_schema_list", json!({})).await;
+    assert_eq!(reopened_schema["backend"]["mode"], json!("grpc"));
+    assert!(
+        reopened_schema["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["name"] == json!("GrpcMcpUser"))
+    );
+    let reopened_nodes = call(
+        &reopened,
+        "grm_node_find",
+        json!({
+            "model": "GrpcMcpUser",
+            "filters": { "id": user_id, "name": "Alice Updated" }
+        }),
+    )
+    .await;
+    assert_eq!(reopened_nodes["nodes"].as_array().unwrap().len(), 1);
+
+    reopened.cancel().await.unwrap();
+    service.abort();
 }
 
 #[tokio::test]

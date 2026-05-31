@@ -2,6 +2,7 @@ mod config;
 mod help;
 mod schema;
 mod server;
+mod service;
 mod tools;
 
 pub use config::{
