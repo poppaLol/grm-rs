@@ -834,6 +834,8 @@ async fn workspace_client_executes_through_workspace_scope() {
         .await
         .unwrap();
     let node_id = created_node_id(created);
+    assert!(temp.path().join(format!("{workspace_ref}.bin")).exists());
+    assert!(!temp.path().join(format!("{workspace_ref}.json")).exists());
     client.close().await.unwrap();
 
     let mut reopened = svc::GrpcWorkspaceClient::connect(
@@ -857,7 +859,52 @@ async fn workspace_client_executes_through_workspace_scope() {
 }
 
 #[tokio::test]
-async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_save() {
+async fn workspace_client_accepts_explicit_json_workspace_format() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let workspace_ref = "workspace-client-json-smoke";
+    let client = svc::GrpcWorkspaceClient::connect_with_format(
+        format!("http://{addr}"),
+        workspace_ref,
+        svc::GrpcWorkspaceMode::Create,
+        svc::DurabilityFormat::Json,
+    )
+    .await
+    .unwrap();
+    let mut client = client;
+    client
+        .execute_proto(proto::runtime_request::Request::DefineNode(
+            proto::DefineNodeRequest {
+                name: "JsonClientUser".into(),
+                id_field: "userId".into(),
+                fields: Vec::new(),
+            },
+        ))
+        .await
+        .unwrap();
+    client.close().await.unwrap();
+
+    assert!(temp.path().join(format!("{workspace_ref}.json")).exists());
+    assert!(!temp.path().join(format!("{workspace_ref}.bin")).exists());
+
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn generated_grpc_client_reopens_binary_autocommitted_workspace_without_manual_save() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = proto::WorkspaceRef {
         id: "grpc_parity_workspace".into(),
@@ -917,7 +964,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         .create_workspace(proto::WorkspaceCreateRequest {
             mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
             workspace: Some(workspace.clone()),
-            format: proto::DurabilityFormat::Json as i32,
+            format: proto::DurabilityFormat::Binary as i32,
         })
         .await
         .unwrap()
@@ -925,6 +972,8 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
     assert_eq!(created.workspace.as_ref(), Some(&workspace));
     let opened_handle = created.handle.unwrap();
     assert!(!opened_handle.id.is_empty());
+    assert!(temp.path().join("grpc_parity_workspace.bin").exists());
+    assert!(!temp.path().join("grpc_parity_workspace.json").exists());
 
     execute_workspace_proto(
         &mut client,
@@ -1191,7 +1240,7 @@ async fn generated_grpc_client_reopens_autocommitted_workspace_without_manual_sa
         .open_workspace(proto::WorkspaceOpenRequest {
             snapshot: None,
             workspace: Some(workspace.clone()),
-            format: proto::DurabilityFormat::Json as i32,
+            format: proto::DurabilityFormat::Binary as i32,
         })
         .await
         .unwrap()
