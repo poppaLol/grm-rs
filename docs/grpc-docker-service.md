@@ -92,6 +92,37 @@ docker run --rm \
 
 See [grpc-quickstart.md](grpc-quickstart.md) for a small `grpcurl` walkthrough.
 
+## Dogfood Neo4j MCP Memory Migration
+
+To copy a Neo4j-backed MCP graph into a gRPC workspace for dogfooding, use the
+checked Rust migration example. It reads the session-local schema memory file
+used by Neo4j MCP mode, reads matching typed nodes and edges from Neo4j, then
+replays them into the workspace service through `ExecuteWorkspace`.
+
+```bash
+NEO4J_URI=bolt://localhost:7687 \
+NEO4J_USER=neo4j \
+NEO4J_PASSWORD=... \
+cargo run -p grm-service-api --example migrate_neo4j_to_grpc -- \
+  --schema /path/to/project-memory-schema.json \
+  --endpoint http://127.0.0.1:50051 \
+  --workspace project-memory-grpc \
+  --mode create
+```
+
+Then restart MCP against the migrated workspace:
+
+```bash
+GRM_BACKEND=grpc
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051
+GRM_WORKSPACE_REF=project-memory-grpc
+GRM_SERVICE_WORKSPACE_MODE=open
+```
+
+This is an experiment, not a lossless backup tool. It remaps Neo4j node IDs to
+new workspace-local IDs and currently requires schema labels and relationship
+types to match their GRM model names.
+
 ## Security And Durability Notes
 
 This demo uses local autocommit workspace files in the container volume. That is
