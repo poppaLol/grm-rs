@@ -1,0 +1,14 @@
+services:
+  grm-grpc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grm-rs-grpc:local
+    ports:
+      - "50051:50051"
+    volumes:
+      - grm-workspaces:/workspaces
+    restart: unless-stopped
+
+volumes:
+  grm-workspaces:

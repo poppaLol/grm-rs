@@ -19,6 +19,7 @@ flowchart LR
     CLI[CLI session] --> Core
     Python[Python session API] --> Core
     MCP[MCP tools] --> Core
+    gRPC[gRPC workspace service] --> Core
     Core --> Memory[Indexed in-memory backend]
     Core --> Neo4j[Neo4j backend]
 ```
@@ -177,6 +178,39 @@ CLI command strings.
 
 See [docs/mcp-batch-graph-patch-requirements.md](docs/mcp-batch-graph-patch-requirements.md).
 
+### gRPC Service Demo
+
+A Docker-hostable local gRPC workspace shell can expose GRM workspace operations
+over the generated protobuf API. This is a local development/demo path for
+adapter integration, not a production daemon or hosted durability claim.
+
+Start the insecure local service:
+
+```bash
+docker compose up --build
+```
+
+The service listens on `localhost:50051` and supports the workspace-scoped RPCs:
+
+- `CreateWorkspace`
+- `OpenWorkspace`
+- `ExecuteWorkspace`
+- `CloseWorkspace`
+
+Schema, node, edge, simple find, and batch operations should be sent through
+`ExecuteWorkspace`. Direct non-workspace RPC families in the proto are still
+explicitly unsupported by the local shell.
+
+Try the checked Rust client example:
+
+```bash
+cargo run -p grm-service-api --example local_workspace_client -- \
+  http://127.0.0.1:50051 demo-workspace
+```
+
+See [docs/grpc-docker-service.md](docs/grpc-docker-service.md) and
+[docs/grpc-quickstart.md](docs/grpc-quickstart.md).
+
 ## Architecture
 
 GRM is organized around a small backend contract. The same high-level behavior
@@ -230,6 +264,7 @@ Available tutorials include:
 - [CLI sessions](docs/tutorials/cli-session.md)
 - [Python sessions](docs/tutorials/python-session.md)
 - [MCP workflows](docs/tutorials/mcp-workflow.md)
+- [gRPC service](docs/grpc-docker-service.md)
 
 Additional reference docs:
 
