@@ -194,6 +194,7 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
 
     let schema = call(&client, "grm_schema_list", json!({})).await;
     assert_eq!(schema["backend"]["mode"], json!("grpc"));
+    assert_eq!(schema["backend"]["workspace_format"], json!("binary"));
     assert_eq!(
         schema["backend"]["workspace_scope"],
         json!("ExecuteWorkspace")
@@ -329,6 +330,10 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     let reopened = grpc_mcp_client(&endpoint, &workspace_ref, "open").await;
     let reopened_schema = call(&reopened, "grm_schema_list", json!({})).await;
     assert_eq!(reopened_schema["backend"]["mode"], json!("grpc"));
+    assert_eq!(
+        reopened_schema["backend"]["workspace_format"],
+        json!("binary")
+    );
     assert!(
         reopened_schema["nodes"]
             .as_array()
@@ -371,6 +376,8 @@ async fn grpc_service_mode_accepts_explicit_json_workspace_format() {
         }),
     )
     .await;
+    let schema = call(&client, "grm_schema_list", json!({})).await;
+    assert_eq!(schema["backend"]["workspace_format"], json!("json"));
     assert!(temp.path().join(format!("{workspace_ref}.json")).exists());
     assert!(!temp.path().join(format!("{workspace_ref}.bin")).exists());
 
