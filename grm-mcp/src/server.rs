@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::{AutocommitTarget, StartupOptions};
-use crate::service::{ServiceMcpBackend, ServiceWorkspaceMode};
+use crate::service::{ServiceMcpBackend, ServiceWorkspaceFormat, ServiceWorkspaceMode};
 use crate::tools::to_mcp_error;
 
 #[derive(Clone)]
@@ -130,7 +130,16 @@ impl GrmMcpServer {
                 ));
             }
         };
-        let service = ServiceMcpBackend::connect(endpoint, workspace_ref, mode).await?;
+        let format = match std::env::var("GRM_SERVICE_WORKSPACE_FORMAT") {
+            Ok(value) => ServiceWorkspaceFormat::parse(value.trim())?,
+            Err(std::env::VarError::NotPresent) => ServiceWorkspaceFormat::Binary,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(GrmError::Constraint(
+                    "GRM_SERVICE_WORKSPACE_FORMAT must be valid Unicode".into(),
+                ));
+            }
+        };
+        let service = ServiceMcpBackend::connect(endpoint, workspace_ref, mode, format).await?;
         Ok(Self {
             state: Arc::new(Mutex::new(SessionState::new())),
             neo4j: None,
