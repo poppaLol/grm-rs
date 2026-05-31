@@ -74,6 +74,15 @@ async fn grpc_mcp_client(
     workspace_ref: &str,
     mode: &str,
 ) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    grpc_mcp_client_with_format(endpoint, workspace_ref, mode, None).await
+}
+
+async fn grpc_mcp_client_with_format(
+    endpoint: &str,
+    workspace_ref: &str,
+    mode: &str,
+    format: Option<&str>,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let command = Command::new(env!("CARGO_BIN_EXE_grm-mcp"));
 
     ().serve(
@@ -83,6 +92,9 @@ async fn grpc_mcp_client(
                 .env("GRM_SERVICE_ENDPOINT", endpoint)
                 .env("GRM_WORKSPACE_REF", workspace_ref)
                 .env("GRM_SERVICE_WORKSPACE_MODE", mode);
+            if let Some(format) = format {
+                cmd.env("GRM_SERVICE_WORKSPACE_FORMAT", format);
+            }
         }))
         .expect("spawn grm-mcp in gRPC service mode"),
     )
@@ -264,6 +276,8 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
         result["counts"]["edge_create"]["GRPC_MCP_AUTHORED"],
         json!(1)
     );
+    assert!(temp.path().join(format!("{workspace_ref}.bin")).exists());
+    assert!(!temp.path().join(format!("{workspace_ref}.json")).exists());
     let user_id = result["ids"][0]["id"].as_i64().unwrap();
     let post_id = result["ids"][1]["id"].as_i64().unwrap();
     let edge_id = result["ids"][2]["id"].as_i64().unwrap();
@@ -334,6 +348,33 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     assert_eq!(reopened_nodes["nodes"].as_array().unwrap().len(), 1);
 
     reopened.cancel().await.unwrap();
+    service.abort();
+}
+
+#[tokio::test]
+async fn grpc_service_mode_accepts_explicit_json_workspace_format() {
+    let temp = tempdir().unwrap();
+    let (endpoint, service) = grpc_service(temp.path().to_path_buf()).await;
+    let workspace_ref = unique_smoke_id();
+    let client =
+        grpc_mcp_client_with_format(&endpoint, &workspace_ref, "create", Some("json")).await;
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "GrpcMcpJsonUser",
+            "id_field": "userId",
+            "fields": [
+                { "name": "name", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+    assert!(temp.path().join(format!("{workspace_ref}.json")).exists());
+    assert!(!temp.path().join(format!("{workspace_ref}.bin")).exists());
+
+    client.cancel().await.unwrap();
     service.abort();
 }
 
