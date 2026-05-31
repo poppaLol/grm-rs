@@ -2462,10 +2462,7 @@ fn proto_batch_response(
         applied: json_bool(&batch.value, "applied"),
         atomic: json_bool(&batch.value, "atomic"),
         operation_count: json_u32(&batch.value, "operation_count")?,
-        counts: json_array(&batch.value, "counts")
-            .iter()
-            .map(proto_batch_count)
-            .collect::<grm_rs::Result<Vec<_>>>()?,
+        counts: proto_batch_counts(&batch.value)?,
         errors: json_array(&batch.value, "errors")
             .iter()
             .map(proto_batch_error)
@@ -2478,19 +2475,53 @@ fn proto_batch_response(
     })
 }
 
-fn proto_batch_count(value: &Value) -> grm_rs::Result<proto::BatchCount> {
-    Ok(proto::BatchCount {
-        op: json_string(value, "op"),
-        model: json_string(value, "model"),
-        count: json_u32(value, "count")?,
-    })
+fn proto_batch_counts(value: &Value) -> grm_rs::Result<Vec<proto::BatchCount>> {
+    let Some(counts) = value.get("counts") else {
+        return Ok(Vec::new());
+    };
+    let Some(counts) = counts.as_object() else {
+        return Err(grm_rs::GrmError::Constraint(
+            "batch counts must be an object keyed by operation and model".into(),
+        ));
+    };
+
+    let mut proto_counts = Vec::new();
+    for (op, models) in counts {
+        let Some(models) = models.as_object() else {
+            return Err(grm_rs::GrmError::Constraint(format!(
+                "batch counts for operation '{op}' must be an object keyed by model"
+            )));
+        };
+        for (model, count) in models {
+            let count = count.as_u64().ok_or_else(|| {
+                grm_rs::GrmError::Constraint(format!(
+                    "batch count for {op}/{model} must be an unsigned integer"
+                ))
+            })?;
+            proto_counts.push(proto::BatchCount {
+                op: op.clone(),
+                model: model.clone(),
+                count: count.try_into().map_err(|_| {
+                    grm_rs::GrmError::Constraint(format!(
+                        "batch count for {op}/{model} is too large"
+                    ))
+                })?,
+            });
+        }
+    }
+    Ok(proto_counts)
 }
 
 fn proto_batch_error(value: &Value) -> grm_rs::Result<proto::BatchError> {
     Ok(proto::BatchError {
         index: json_u32(value, "index")?,
         message: json_string(value, "message"),
-        recovery_hint: json_string(value, "recovery_hint"),
+        recovery_hint: value
+            .get("recovery_hint")
+            .or_else(|| value.get("recovery"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 
