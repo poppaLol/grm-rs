@@ -66,10 +66,10 @@ impl GrmMcpServer {
     pub async fn from_startup_options(options: StartupOptions) -> GrmResult<Self> {
         match std::env::var("GRM_BACKEND").ok().as_deref() {
             Some("neo4j") => Self::new_neo4j(options).await,
-            Some("grpc") | Some("service") => Self::new_service(options).await,
+            Some("grpc") => Self::new_service(options).await,
             Some("memory") | Some("inmemory") | Some("in-memory") | None => Self::new(options),
             Some(other) => Err(GrmError::Constraint(format!(
-                "unsupported GRM_BACKEND '{other}'; expected 'neo4j', 'grpc', 'service', or omit it for in-memory"
+                "unsupported GRM_BACKEND '{other}'; expected 'neo4j', 'grpc', or omit it for in-memory"
             ))),
         }
     }
