@@ -11,7 +11,8 @@ license-file = "LICENSE"
 publish = false
 
 [workspace]
-members = ["grm-rs-macros", "grm-python", "grm-mcp", "grm-service-api"]
+members = ["grm-rs-macros", "grm-python", "grm-mcp", "grm-service-api", "grm-cli"]
+default-members = [".", "grm-rs-macros", "grm-python", "grm-mcp", "grm-service-api", "grm-cli"]
 
 [dependencies]
 grm-rs-macros = { version = "0.1.0", path = "./grm-rs-macros" }
