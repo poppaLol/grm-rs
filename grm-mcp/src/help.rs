@@ -350,12 +350,12 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 "Use top-level limit, offset, and order for paging and ordering.",
                 "Use via entries formatted as <out|in|both>:<LinkName|*>:<EndModel> for traversal steps.",
                 "Use end_filters and edge_filters for predicates on the returned end node and traversed edge.",
-                "Use return=root or return=end for traversal result shape; return=edge is not supported in gRPC service mode yet."
+                "Use return=root, return=end, or return=edge for traversal result shape in local and gRPC service modes."
             ],
             "common_errors": [
                 recovery("unknown field", "Call grm_schema_list and use a declared field."),
                 recovery("backend id filter", "Use id equality only; comparison operators are not supported for id filters."),
-                recovery("return=edge", "Use return=root or return=end on grm_node_find, or wait for edge-result support."),
+                recovery("return=edge", "Use a traversal-shaped grm_node_find request; Neo4j MCP mode still supports simple node finds only."),
                 recovery("invalid query term", "Use structured grm_node_find fields for supported traversals; call grm_tool_help for grm_query only when exact CLI-compatible text is required.")
             ],
             "related": ["grm_schema_list", "grm_query", "grm://docs/query-language"]

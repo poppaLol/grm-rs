@@ -994,6 +994,26 @@ async fn ergonomic_workspace_client_routes_supported_operations_through_execute_
     assert_eq!(traversed.nodes[0].props["title"], json!("Traversal"));
 
     let edge_return = client
+        .find_node_results(grm_rs::NodeFindRequest {
+            model: "User".into(),
+            traversals: vec![grm_rs::TraversalStepRequest {
+                direction: grm_rs::TraversalDirection::Out,
+                edge_model: Some("Authored".into()),
+                end_model: "Post".into(),
+            }],
+            return_mode: Some(grm_rs::TraversalReturn::Edge),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(edge_return.nodes.is_empty());
+    assert_eq!(edge_return.edges.len(), 1);
+    assert_eq!(edge_return.edges[0].rel_type, "Authored");
+    assert_eq!(edge_return.edges[0].from, created.id);
+    assert_eq!(edge_return.edges[0].to, post.id);
+    assert_eq!(edge_return.edges[0].props["year"], json!(2026));
+
+    let node_only_edge_return = client
         .find_nodes(grm_rs::NodeFindRequest {
             model: "User".into(),
             traversals: vec![grm_rs::TraversalStepRequest {
@@ -1006,7 +1026,7 @@ async fn ergonomic_workspace_client_routes_supported_operations_through_execute_
         })
         .await
         .unwrap_err();
-    assert!(edge_return.to_string().contains("return=edge"));
+    assert!(node_only_edge_return.to_string().contains("find_nodes"));
     assert!(temp.path().join("ergonomic-client-smoke.bin").exists());
 
     client.close().await.unwrap();

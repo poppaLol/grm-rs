@@ -381,14 +381,16 @@ impl<'a> ServiceCliSession<'a> {
             }
             SessionCommand::NodeFind { model_name, terms } => {
                 let request = NodeFindRequest::from_adapter_query_terms(model_name, terms)?;
-                reject_service_node_find_edge_return(&request)?;
                 let found = self
                     .client
-                    .find_nodes(request)
+                    .find_node_results(request)
                     .await
                     .map_err(service_error)?;
                 for node in found.nodes {
                     write_node(writer, &node, &self.colors)?;
+                }
+                for edge in found.edges {
+                    write_edge(writer, &edge, &self.colors)?;
                 }
             }
             SessionCommand::NodeUpdate {
@@ -604,7 +606,7 @@ impl<'a> ServiceCliSession<'a> {
         if verbose {
             writeln!(
                 writer,
-                "Supported traversal subset: node.find via/end/edge filters with return=root|end. Unsupported in gRPC CLI mode: node.find return=edge, local session save/load/import/export, transactions, explain/profile, free-form query parity, and session.indexes"
+                "Supported traversal subset: node.find via/end/edge filters with return=root|end|edge. Unsupported in gRPC CLI mode: local session save/load/import/export, transactions, explain/profile, free-form query parity, and session.indexes"
             )?;
         }
         Ok(())
@@ -685,7 +687,7 @@ fn write_service_help<W: Write>(writer: &mut W, colors: &CliColors) -> grm_rs::R
     writeln!(writer)?;
     writeln!(
         writer,
-        "Local-only or unsupported in gRPC service mode: node.find return=edge, session.save/load/import/export, session.autocommit, session.compact, tx.begin/commit, session.explain, session.profile, free-form query parity, session.indexes, model.show, and link.show."
+        "Local-only or unsupported in gRPC service mode: session.save/load/import/export, session.autocommit, session.compact, tx.begin/commit, session.explain, session.profile, free-form query parity, session.indexes, model.show, and link.show."
     )?;
     Ok(())
 }
@@ -1107,15 +1109,6 @@ fn required_env(name: &str) -> grm_rs::Result<String> {
 
 fn service_error(error: grm_service_api::GrpcWorkspaceClientError) -> grm_rs::GrmError {
     grm_rs::GrmError::Backend(error.to_string())
-}
-
-fn reject_service_node_find_edge_return(request: &NodeFindRequest) -> grm_rs::Result<()> {
-    if request.return_mode == Some(grm_rs::TraversalReturn::Edge) {
-        return Err(grm_rs::GrmError::NotSupported(
-            "node.find return=edge is not supported in gRPC service CLI mode yet",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

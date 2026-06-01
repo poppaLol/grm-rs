@@ -52,4 +52,5 @@ message NodeFindRequest {
 message NodeFindResponse {
   string model = 1;
   repeated StoredNode nodes = 2;
+  repeated StoredEdge edges = 3;
 }
