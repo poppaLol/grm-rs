@@ -803,14 +803,16 @@ impl PyServiceSession {
             limit,
             offset,
         )?;
-        reject_service_node_find_edge_return(&request)?;
         let response = self
             .runtime
-            .block_on(self.client.find_nodes(request))
+            .block_on(self.client.find_node_results(request))
             .map_err(service_err)?;
         let items = PyList::empty_bound(py);
         for node in response.nodes {
             items.append(stored_node_to_py(py, &node)?)?;
+        }
+        for rel in response.edges {
+            items.append(stored_rel_to_py(py, &rel)?)?;
         }
         Ok(items.into())
     }
@@ -1165,15 +1167,6 @@ where
 
 fn service_err(err: grm_service_api::GrpcWorkspaceClientError) -> PyErr {
     PyGrmError::new_err(err.to_string())
-}
-
-fn reject_service_node_find_edge_return(request: &NodeFindRequest) -> PyResult<()> {
-    if request.return_mode == Some(TraversalReturn::Edge) {
-        return Err(PyGrmError::new_err(
-            "node.find return=edge is not supported by ServiceSession.node_find yet",
-        ));
-    }
-    Ok(())
 }
 
 impl PyServiceWorkspaceFormat {

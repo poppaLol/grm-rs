@@ -149,7 +149,7 @@ empty session only.
 `ServiceSession` routes supported operations through the gRPC workspace service
 using workspace-scoped `ExecuteWorkspace`. The supported subset is schema
 define/list, node and edge create/update/delete/find, traversal-capable
-`node_find` for node/root/end results, batch, and reopen by constructing another
+`node_find` for node/root/end/edge results, batch, and reopen by constructing another
 `ServiceSession` with `mode="open"` and the same `workspace_ref`.
 
 ```python
@@ -174,6 +174,6 @@ assert len(reopened.node_find("User", {"name": "Ada"})) == 1
 
 Service workspaces use binary persistence by default. Pass
 `workspace_format="json"` explicitly when you need JSON workspace files. Direct
-unscoped service RPCs, `node_find(return_="edge")`, free-form query parity,
-explain/profile, import/export, hosted durability, auth/TLS, and multi-writer
-coordination are not provided by this Python service path.
+unscoped service RPCs, free-form query parity, explain/profile, import/export,
+hosted durability, auth/TLS, and multi-writer coordination are not provided by
+this Python service path.

@@ -351,6 +351,19 @@ impl GrpcWorkspaceClient {
         runtime_node_find_from_proto(response)
     }
 
+    pub async fn find_node_results(
+        &mut self,
+        request: grm_rs::NodeFindRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeNodeFindResultResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::FindNodes(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::FindNodes(response)) = response.response else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("FindNodes"));
+        };
+        runtime_node_find_result_from_proto(response)
+    }
+
     pub async fn create_edge(
         &mut self,
         request: grm_rs::EdgeCreateRequest,
@@ -3271,7 +3284,7 @@ fn proto_runtime_request_from_service_request(
         | ServiceRequest::IndexList(_)
         | ServiceRequest::Summary(_) => {
             return Err(grm_rs::GrmError::NotSupported(
-                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/find/batch through ExecuteWorkspace; node.find return=edge remains unsupported",
+                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/find/batch through ExecuteWorkspace",
             ));
         }
     })
@@ -3336,6 +3349,11 @@ fn proto_runtime_response(
                     .nodes
                     .into_iter()
                     .map(proto_stored_node)
+                    .collect::<grm_rs::Result<Vec<_>>>()?,
+                edges: found
+                    .edges
+                    .into_iter()
+                    .map(proto_stored_edge)
                     .collect::<grm_rs::Result<Vec<_>>>()?,
             })
         }
@@ -3908,6 +3926,24 @@ fn runtime_node_find_from_proto(
             .nodes
             .into_iter()
             .map(stored_node_from_proto)
+            .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?,
+    })
+}
+
+fn runtime_node_find_result_from_proto(
+    response: proto::NodeFindResponse,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeNodeFindResultResponse> {
+    Ok(grm_rs::RuntimeNodeFindResultResponse {
+        model: response.model,
+        nodes: response
+            .nodes
+            .into_iter()
+            .map(stored_node_from_proto)
+            .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?,
+        edges: response
+            .edges
+            .into_iter()
+            .map(stored_edge_from_proto)
             .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?,
     })
 }
