@@ -774,16 +774,36 @@ impl PyServiceSession {
             .map(|_| ())
     }
 
-    #[pyo3(signature = (model_name, filters=None))]
+    #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 method signature mirrors the Python API keyword arguments"
+    )]
     fn node_find(
         &mut self,
         py: Python<'_>,
         model_name: &str,
         filters: Option<&Bound<'_, PyDict>>,
+        via: Option<&Bound<'_, PyAny>>,
+        end_filters: Option<&Bound<'_, PyDict>>,
+        edge_filters: Option<&Bound<'_, PyDict>>,
+        return_: Option<&str>,
+        order: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
     ) -> PyResult<PyObject> {
-        let request =
-            NodeFindRequest::from_adapter_filter_values(model_name, extract_json_map(filters)?)
-                .map_err(grm_err)?;
+        let request = build_node_find_request(
+            model_name,
+            filters,
+            via,
+            end_filters,
+            edge_filters,
+            return_,
+            order,
+            limit,
+            offset,
+        )?;
+        reject_service_node_find_edge_return(&request)?;
         let response = self
             .runtime
             .block_on(self.client.find_nodes(request))
@@ -1145,6 +1165,15 @@ where
 
 fn service_err(err: grm_service_api::GrpcWorkspaceClientError) -> PyErr {
     PyGrmError::new_err(err.to_string())
+}
+
+fn reject_service_node_find_edge_return(request: &NodeFindRequest) -> PyResult<()> {
+    if request.return_mode == Some(TraversalReturn::Edge) {
+        return Err(PyGrmError::new_err(
+            "node.find return=edge is not supported by ServiceSession.node_find yet",
+        ));
+    }
+    Ok(())
 }
 
 impl PyServiceWorkspaceFormat {
@@ -1762,7 +1791,20 @@ mod tests {
                 .unwrap();
             let filters = PyDict::new_bound(py);
             filters.set_item("id", created).unwrap();
-            let found = session.node_find(py, "User", Some(&filters)).unwrap();
+            let found = session
+                .node_find(
+                    py,
+                    "User",
+                    Some(&filters),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
             assert_eq!(found.bind(py).downcast::<PyList>().unwrap().len(), 1);
         });
 

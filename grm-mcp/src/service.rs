@@ -131,7 +131,7 @@ impl ServiceMcpBackend {
                 "workspace_handle": self.handle.id,
                 "workspace_format": self.format.as_str(),
                 "workspace_scope": "ExecuteWorkspace",
-                "note": "MCP is using the GRM gRPC workspace service as the persisted operational-memory layer for the proven schema/CRUD/find/batch subset.",
+                "note": "MCP is using the GRM gRPC workspace service as the persisted operational-memory layer for the proven schema/CRUD/node.find traversal/find/batch subset.",
                 "supported_tools": [
                     "grm_schema_list",
                     "grm_schema_define_node",
@@ -151,14 +151,15 @@ impl ServiceMcpBackend {
                     "import/export",
                     "direct service RPC families",
                     "explain/profile",
-                    "traversal/query parity"
+                    "free-form query parity",
+                    "node.find return=edge results"
                 ]
             },
             "recommended_startup_flow": [
                 "Start the gRPC workspace service with a configured local workspace root.",
                 "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files.",
                 "Call grm_schema_list to verify the workspace schema before writing.",
-                "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace."
+                "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node results."
             ]
         })
     }
@@ -242,7 +243,8 @@ impl ServiceMcpBackend {
     }
 
     pub(crate) async fn node_find(&self, params: NodeFindParams) -> GrmResult<Value> {
-        let request = NodeFindRequest::from_adapter_filter_values(params.model, params.filters)?;
+        let request = params.into_node_find_request()?;
+        reject_node_find_edge_return(&request)?;
         self.execute_value(proto::runtime_request::Request::FindNodes(proto_node_find(
             request,
         )?))
@@ -324,6 +326,15 @@ impl ServiceMcpBackend {
             .map_err(service_status_error)
             .map(|response| response.into_inner())
     }
+}
+
+fn reject_node_find_edge_return(request: &NodeFindRequest) -> GrmResult<()> {
+    if request.return_mode == Some(grm_rs::TraversalReturn::Edge) {
+        return Err(GrmError::NotSupported(
+            "node.find return=edge is not supported in gRPC MCP mode yet",
+        ));
+    }
+    Ok(())
 }
 
 fn runtime_response_value(response: proto::runtime_response::Response) -> GrmResult<Value> {

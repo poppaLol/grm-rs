@@ -161,6 +161,58 @@ pub struct NodeFindParams {
     pub model: String,
     #[serde(default)]
     pub filters: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub via: Vec<String>,
+    #[serde(default)]
+    pub end_filters: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub edge_filters: BTreeMap<String, Value>,
+    #[serde(default, rename = "return")]
+    pub return_mode: Option<String>,
+    #[serde(default)]
+    pub order: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+    #[serde(default)]
+    pub offset: Option<u64>,
+}
+
+impl NodeFindParams {
+    pub(crate) fn into_node_find_request(self) -> grm_rs::Result<grm_rs::NodeFindRequest> {
+        let mut filters = self.filters;
+        for (key, value) in self.end_filters {
+            filters.insert(format!("end.{key}"), value);
+        }
+        for (key, value) in self.edge_filters {
+            filters.insert(format!("edge.{key}"), value);
+        }
+        if let Some(return_mode) = self.return_mode {
+            filters.insert("return".to_string(), Value::String(return_mode));
+        }
+        if let Some(order) = self.order {
+            filters.insert("order".to_string(), Value::String(order));
+        }
+        if let Some(limit) = self.limit {
+            filters.insert("limit".to_string(), Value::from(limit));
+        }
+        if let Some(offset) = self.offset {
+            filters.insert("offset".to_string(), Value::from(offset));
+        }
+
+        let mut request =
+            grm_rs::NodeFindRequest::from_adapter_filter_values(&self.model, filters)?;
+        for via in self.via {
+            let parsed = grm_rs::NodeFindRequest::from_adapter_query_terms(
+                &self.model,
+                [grm_rs::QueryTerm {
+                    key: "via".to_string(),
+                    value: via,
+                }],
+            )?;
+            request.traversals.extend(parsed.traversals);
+        }
+        Ok(request)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

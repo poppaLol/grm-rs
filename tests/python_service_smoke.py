@@ -64,8 +64,45 @@ def main() -> None:
                 "userId",
                 [{"name": "name", "type": "string", "required": True}],
             )
+            session.model_create(
+                "Post",
+                "postId",
+                [{"name": "title", "type": "string", "required": True}],
+            )
+            session.link_create(
+                "Authored",
+                "User",
+                "Post",
+                "authoredId",
+                [{"name": "year", "type": "int", "required": True}],
+            )
             ada = session.node_create("User", {"name": "Ada"})
+            post = session.node_create("Post", {"title": "Traversal"})
+            session.edge_create("Authored", ada["id"], post["id"], {"year": 2026})
             assert session.node_find("User", {"id": ada["id"]})[0]["props"]["name"] == "Ada"
+            traversed = session.node_find(
+                "User",
+                {"name": "Ada"},
+                via=[{"dir": "out", "link": "Authored", "model": "Post"}],
+                end_filters={"title": "Traversal"},
+                edge_filters={"year": 2026},
+                return_="end",
+                order="title:asc",
+                limit=1,
+                offset=0,
+            )
+            assert len(traversed) == 1
+            assert traversed[0]["id"] == post["id"]
+            try:
+                session.node_find(
+                    "User",
+                    {"name": "Ada"},
+                    via=[{"dir": "out", "link": "Authored", "model": "Post"}],
+                    return_="edge",
+                )
+                raise AssertionError("ServiceSession.node_find should reject return_=edge")
+            except Exception as exc:  # noqa: BLE001 - smoke test checks public error text.
+                assert "return=edge" in str(exc)
 
             reopened = ServiceSession(
                 endpoint=endpoint,
