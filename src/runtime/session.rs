@@ -446,7 +446,7 @@ impl SessionState {
             }
             NodeRequest::Find(request) => Ok(RuntimeDispatchOutcome {
                 response: RuntimeResponse::Node(NodeResponse::Find(
-                    self.node_find_response(request).await?,
+                    self.node_find_result_response(request).await?,
                 )),
                 durable_ops: Vec::new(),
             }),
@@ -489,7 +489,7 @@ impl SessionState {
         match request {
             QueryRequest::NodeFind(request) => Ok(RuntimeDispatchOutcome {
                 response: RuntimeResponse::Node(NodeResponse::Find(
-                    self.node_find_response(request).await?,
+                    self.node_find_result_response(request).await?,
                 )),
                 durable_ops: Vec::new(),
             }),
@@ -1264,6 +1264,25 @@ impl SessionState {
             SessionFindResult::Edges(_) => Err(crate::GrmError::NotSupported(
                 "edge return mode is not supported by node find responses",
             )),
+        }
+    }
+
+    pub async fn node_find_result_response(
+        &self,
+        request: NodeFindRequest,
+    ) -> Result<crate::RuntimeNodeFindResultResponse> {
+        let model = request.model.clone();
+        match self.node_find(request).await? {
+            SessionFindResult::Nodes(nodes) => Ok(crate::RuntimeNodeFindResultResponse {
+                model,
+                nodes,
+                edges: Vec::new(),
+            }),
+            SessionFindResult::Edges(edges) => Ok(crate::RuntimeNodeFindResultResponse {
+                model,
+                nodes: Vec::new(),
+                edges,
+            }),
         }
     }
 

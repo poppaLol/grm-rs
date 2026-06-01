@@ -83,7 +83,7 @@ pub enum NodeResponse {
     Create(StoredNode),
     Update(StoredNode),
     Delete(RuntimeDelete),
-    Find(RuntimeNodeFindResponse),
+    Find(RuntimeNodeFindResultResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +125,14 @@ pub type RuntimeEdgeDeleteOutcome = RuntimeOperationOutcome<RuntimeDelete>;
 pub struct RuntimeNodeFindResponse {
     pub model: String,
     pub nodes: Vec<StoredNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeNodeFindResultResponse {
+    pub model: String,
+    pub nodes: Vec<StoredNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<StoredRel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

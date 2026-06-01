@@ -93,16 +93,17 @@ def main() -> None:
             )
             assert len(traversed) == 1
             assert traversed[0]["id"] == post["id"]
-            try:
-                session.node_find(
-                    "User",
-                    {"name": "Ada"},
-                    via=[{"dir": "out", "link": "Authored", "model": "Post"}],
-                    return_="edge",
-                )
-                raise AssertionError("ServiceSession.node_find should reject return_=edge")
-            except Exception as exc:  # noqa: BLE001 - smoke test checks public error text.
-                assert "return=edge" in str(exc)
+            authored_edges = session.node_find(
+                "User",
+                {"name": "Ada"},
+                via=[{"dir": "out", "link": "Authored", "model": "Post"}],
+                return_="edge",
+            )
+            assert len(authored_edges) == 1
+            assert authored_edges[0]["type"] == "Authored"
+            assert authored_edges[0]["from"] == ada["id"]
+            assert authored_edges[0]["to"] == post["id"]
+            assert authored_edges[0]["props"]["year"] == 2026
 
             reopened = ServiceSession(
                 endpoint=endpoint,

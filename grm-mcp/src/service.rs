@@ -151,15 +151,14 @@ impl ServiceMcpBackend {
                     "import/export",
                     "direct service RPC families",
                     "explain/profile",
-                    "free-form query parity",
-                    "node.find return=edge results"
+                    "free-form query parity"
                 ]
             },
             "recommended_startup_flow": [
                 "Start the gRPC workspace service with a configured local workspace root.",
                 "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files.",
                 "Call grm_schema_list to verify the workspace schema before writing.",
-                "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node results."
+                "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results."
             ]
         })
     }
@@ -244,7 +243,6 @@ impl ServiceMcpBackend {
 
     pub(crate) async fn node_find(&self, params: NodeFindParams) -> GrmResult<Value> {
         let request = params.into_node_find_request()?;
-        reject_node_find_edge_return(&request)?;
         self.execute_value(proto::runtime_request::Request::FindNodes(proto_node_find(
             request,
         )?))
@@ -328,15 +326,6 @@ impl ServiceMcpBackend {
     }
 }
 
-fn reject_node_find_edge_return(request: &NodeFindRequest) -> GrmResult<()> {
-    if request.return_mode == Some(grm_rs::TraversalReturn::Edge) {
-        return Err(GrmError::NotSupported(
-            "node.find return=edge is not supported in gRPC MCP mode yet",
-        ));
-    }
-    Ok(())
-}
-
 fn runtime_response_value(response: proto::runtime_response::Response) -> GrmResult<Value> {
     use proto::runtime_response::Response;
     match response {
@@ -349,10 +338,21 @@ fn runtime_response_value(response: proto::runtime_response::Response) -> GrmRes
             let deleted = required(response.deleted, "deleted")?;
             Ok(json!({ "deleted": true, "model": deleted.model, "id": deleted.id }))
         }
-        Response::FindNodes(response) => Ok(json!({
-            "model": response.model,
-            "nodes": response.nodes.into_iter().map(stored_node_value).collect::<GrmResult<Vec<_>>>()?,
-        })),
+        Response::FindNodes(response) => {
+            let edges = response
+                .edges
+                .into_iter()
+                .map(stored_edge_value)
+                .collect::<GrmResult<Vec<_>>>()?;
+            let mut value = json!({
+                "model": response.model,
+                "nodes": response.nodes.into_iter().map(stored_node_value).collect::<GrmResult<Vec<_>>>()?,
+            });
+            if !edges.is_empty() {
+                value["edges"] = json!(edges);
+            }
+            Ok(value)
+        }
         Response::CreateEdge(response) => stored_edge_value(required(response.edge, "edge")?),
         Response::UpdateEdge(response) => stored_edge_value(required(response.edge, "edge")?),
         Response::DeleteEdge(response) => {
