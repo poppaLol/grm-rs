@@ -17,6 +17,7 @@ use grm_rs::{
     RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState,
     StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
+use grm_service_api::{GrpcWorkspaceClient, GrpcWorkspaceMode};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
@@ -37,6 +38,12 @@ struct PyNeo4jSession {
     catalog: SessionModelCatalog,
 }
 
+#[pyclass(name = "ServiceSession")]
+struct PyServiceSession {
+    runtime: tokio::runtime::Runtime,
+    client: GrpcWorkspaceClient,
+}
+
 #[derive(Clone)]
 struct PyAutocommitTarget {
     format: PySessionFileFormat,
@@ -45,6 +52,12 @@ struct PyAutocommitTarget {
 
 #[derive(Clone, Copy)]
 enum PySessionFileFormat {
+    Json,
+    Binary,
+}
+
+#[derive(Clone, Copy)]
+enum PyServiceWorkspaceFormat {
     Json,
     Binary,
 }
@@ -605,6 +618,285 @@ impl PySession {
 }
 
 #[pymethods]
+impl PyServiceSession {
+    #[new]
+    #[pyo3(signature = (*, endpoint, workspace_ref, mode="open", workspace_format="binary"))]
+    fn new(
+        _py: Python<'_>,
+        endpoint: &str,
+        workspace_ref: &str,
+        mode: &str,
+        workspace_format: &str,
+    ) -> PyResult<Self> {
+        let mode = parse_service_mode(mode)?;
+        let format = PyServiceWorkspaceFormat::parse(workspace_format)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let client = runtime
+            .block_on(GrpcWorkspaceClient::connect_with_format(
+                endpoint.to_string(),
+                workspace_ref.to_string(),
+                mode,
+                format.into(),
+            ))
+            .map_err(service_err)?;
+        Ok(Self { runtime, client })
+    }
+
+    fn endpoint(&self) -> &str {
+        self.client.endpoint()
+    }
+
+    fn workspace_ref(&self) -> &str {
+        &self.client.workspace_ref().id
+    }
+
+    fn node_id_type(&self) -> &'static str {
+        "int"
+    }
+
+    fn rel_id_type(&self) -> &'static str {
+        "int"
+    }
+
+    fn model_create(
+        &mut self,
+        _py: Python<'_>,
+        name: &str,
+        id_field: &str,
+        fields: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.runtime
+            .block_on(self.client.define_node(DefineNodeRequest {
+                name: name.to_string(),
+                id_field: id_field.to_string(),
+                fields: parse_field_specs(fields)?,
+            }))
+            .map_err(service_err)
+            .map(|_| ())
+    }
+
+    fn link_create(
+        &mut self,
+        _py: Python<'_>,
+        name: &str,
+        from_model: &str,
+        to_model: &str,
+        id_field: &str,
+        fields: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.runtime
+            .block_on(self.client.define_edge(DefineEdgeRequest {
+                name: name.to_string(),
+                from_model: from_model.to_string(),
+                to_model: to_model.to_string(),
+                id_field: id_field.to_string(),
+                fields: parse_field_specs(fields)?,
+            }))
+            .map_err(service_err)
+            .map(|_| ())
+    }
+
+    fn model_list(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let schema = self
+            .runtime
+            .block_on(self.client.schema_list())
+            .map_err(service_err)?;
+        let items = PyList::empty_bound(py);
+        for model in schema.node_models {
+            items.append(runtime_node_model_to_py(py, &model)?)?;
+        }
+        Ok(items.into())
+    }
+
+    fn link_list(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let schema = self
+            .runtime
+            .block_on(self.client.schema_list())
+            .map_err(service_err)?;
+        let items = PyList::empty_bound(py);
+        for model in schema.edge_models {
+            items.append(runtime_rel_model_to_py(py, &model)?)?;
+        }
+        Ok(items.into())
+    }
+
+    #[pyo3(signature = (model_name, values=None))]
+    fn node_create(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        values: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let node = self
+            .runtime
+            .block_on(self.client.create_node(NodeCreateRequest {
+                model: model_name.to_string(),
+                props: extract_json_map(values)?,
+            }))
+            .map_err(service_err)?;
+        stored_node_to_py(py, &node)
+    }
+
+    #[pyo3(signature = (model_name, node_id, values=None))]
+    fn node_update(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        node_id: &Bound<'_, PyAny>,
+        values: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let node = self
+            .runtime
+            .block_on(self.client.update_node(NodeUpdateRequest {
+                model: model_name.to_string(),
+                id: parse_python_i64(node_id, "node id")?,
+                props: extract_json_map(values)?,
+            }))
+            .map_err(service_err)?;
+        stored_node_to_py(py, &node)
+    }
+
+    fn node_delete(
+        &mut self,
+        _py: Python<'_>,
+        model_name: &str,
+        node_id: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.runtime
+            .block_on(self.client.delete_node(NodeDeleteRequest {
+                model: model_name.to_string(),
+                id: parse_python_i64(node_id, "node id")?,
+            }))
+            .map_err(service_err)
+            .map(|_| ())
+    }
+
+    #[pyo3(signature = (model_name, filters=None))]
+    fn node_find(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let request =
+            NodeFindRequest::from_adapter_filter_values(model_name, extract_json_map(filters)?)
+                .map_err(grm_err)?;
+        let response = self
+            .runtime
+            .block_on(self.client.find_nodes(request))
+            .map_err(service_err)?;
+        let items = PyList::empty_bound(py);
+        for node in response.nodes {
+            items.append(stored_node_to_py(py, &node)?)?;
+        }
+        Ok(items.into())
+    }
+
+    #[pyo3(signature = (model_name, from_id, to_id, values=None))]
+    fn edge_create(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        from_id: &Bound<'_, PyAny>,
+        to_id: &Bound<'_, PyAny>,
+        values: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let edge = self
+            .runtime
+            .block_on(self.client.create_edge(EdgeCreateRequest {
+                model: model_name.to_string(),
+                from: parse_python_i64(from_id, "from node")?,
+                to: parse_python_i64(to_id, "to node")?,
+                props: extract_json_map(values)?,
+            }))
+            .map_err(service_err)?;
+        stored_rel_to_py(py, &edge)
+    }
+
+    #[pyo3(signature = (model_name, edge_id, values=None))]
+    fn edge_update(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        edge_id: &Bound<'_, PyAny>,
+        values: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let edge = self
+            .runtime
+            .block_on(self.client.update_edge(EdgeUpdateRequest {
+                model: model_name.to_string(),
+                id: parse_python_i64(edge_id, "edge id")?,
+                props: extract_json_map(values)?,
+            }))
+            .map_err(service_err)?;
+        stored_rel_to_py(py, &edge)
+    }
+
+    fn edge_delete(
+        &mut self,
+        _py: Python<'_>,
+        model_name: &str,
+        edge_id: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.runtime
+            .block_on(self.client.delete_edge(EdgeDeleteRequest {
+                model: model_name.to_string(),
+                id: parse_python_i64(edge_id, "edge id")?,
+            }))
+            .map_err(service_err)
+            .map(|_| ())
+    }
+
+    #[pyo3(signature = (model_name, filters=None))]
+    fn edge_find(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let request =
+            EdgeFindRequest::from_adapter_filter_values(model_name, extract_json_map(filters)?)
+                .map_err(grm_err)?;
+        let response = self
+            .runtime
+            .block_on(self.client.find_edges(request))
+            .map_err(service_err)?;
+        let items = PyList::empty_bound(py);
+        for edge in response.edges {
+            items.append(stored_rel_to_py(py, &edge)?)?;
+        }
+        Ok(items.into())
+    }
+
+    #[pyo3(signature = (ops, *, atomic=true, response="summary", allow_deletes=false))]
+    fn batch(
+        &mut self,
+        py: Python<'_>,
+        ops: &Bound<'_, PyAny>,
+        atomic: bool,
+        response: &str,
+        allow_deletes: bool,
+    ) -> PyResult<PyObject> {
+        let params_value = Value::Object(serde_json::Map::from_iter([
+            ("ops".to_string(), py_any_to_json_value(ops)?),
+            ("atomic".to_string(), Value::Bool(atomic)),
+            ("response".to_string(), Value::String(response.to_string())),
+            ("allow_deletes".to_string(), Value::Bool(allow_deletes)),
+        ]));
+        let params: SessionBatchParams = serde_json::from_value(params_value)
+            .map_err(|err| PyTypeError::new_err(format!("invalid batch parameters: {err}")))?;
+        let outcome = self
+            .runtime
+            .block_on(self.client.apply_batch(params))
+            .map_err(service_err)?;
+        json_value_to_py(py, &outcome.value)
+    }
+}
+
+#[pymethods]
 impl PyNeo4jSession {
     #[new]
     #[pyo3(signature = (*, uri, user, password))]
@@ -849,6 +1141,47 @@ where
         .build()
         .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
     runtime.block_on(work).map_err(grm_err)
+}
+
+fn service_err(err: grm_service_api::GrpcWorkspaceClientError) -> PyErr {
+    PyGrmError::new_err(err.to_string())
+}
+
+impl PyServiceWorkspaceFormat {
+    fn parse(raw: &str) -> PyResult<Self> {
+        match raw {
+            "json" => Ok(Self::Json),
+            "bin" | "binary" => Ok(Self::Binary),
+            other => Err(PyTypeError::new_err(format!(
+                "unsupported workspace_format '{other}', expected 'binary' or 'json'"
+            ))),
+        }
+    }
+}
+
+impl From<PyServiceWorkspaceFormat> for grm_service_api::DurabilityFormat {
+    fn from(format: PyServiceWorkspaceFormat) -> Self {
+        match format {
+            PyServiceWorkspaceFormat::Json => Self::Json,
+            PyServiceWorkspaceFormat::Binary => Self::Binary,
+        }
+    }
+}
+
+fn parse_service_mode(raw: &str) -> PyResult<GrpcWorkspaceMode> {
+    match raw {
+        "create" => Ok(GrpcWorkspaceMode::Create),
+        "open" => Ok(GrpcWorkspaceMode::Open),
+        other => Err(PyTypeError::new_err(format!(
+            "unsupported mode '{other}', expected 'create' or 'open'"
+        ))),
+    }
+}
+
+fn parse_python_i64(value: &Bound<'_, PyAny>, name: &str) -> PyResult<i64> {
+    python_value_to_string(value)?
+        .parse::<i64>()
+        .map_err(|_| PyTypeError::new_err(format!("{name} must be an integer")))
 }
 
 fn parse_fields(fields: &Bound<'_, PyAny>) -> PyResult<Vec<RuntimeField>> {
@@ -1362,6 +1695,74 @@ fn grm_err(err: grm_rs::GrmError) -> PyErr {
 fn _grm_rs(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("GrmError", py.get_type_bound::<PyGrmError>())?;
     module.add_class::<PySession>()?;
+    module.add_class::<PyServiceSession>()?;
     module.add_class::<PyNeo4jSession>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
+
+    #[tokio::test]
+    async fn service_session_routes_supported_python_surface_through_grpc() {
+        pyo3::prepare_freethreaded_python();
+        let temp = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let service = grm_service_api::GrpcWorkspaceService::with_local_workspace_root(temp.path())
+            .into_server();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        Python::with_gil(|py| {
+            let mut session = PyServiceSession::new(
+                py,
+                &format!("http://{addr}"),
+                "python-service-smoke",
+                "create",
+                "binary",
+            )
+            .unwrap();
+            let field = PyDict::new_bound(py);
+            field.set_item("name", "name").unwrap();
+            field.set_item("type", "string").unwrap();
+            field.set_item("required", true).unwrap();
+            let fields = PyList::empty_bound(py);
+            fields.append(field).unwrap();
+            session
+                .model_create(py, "User", "userId", fields.as_any())
+                .unwrap();
+            let values = PyDict::new_bound(py);
+            values.set_item("name", "Ada").unwrap();
+            let created = session
+                .node_create(py, "User", Some(&values))
+                .unwrap()
+                .bind(py)
+                .downcast::<PyDict>()
+                .unwrap()
+                .get_item("id")
+                .unwrap()
+                .unwrap()
+                .extract::<i64>()
+                .unwrap();
+            let filters = PyDict::new_bound(py);
+            filters.set_item("id", created).unwrap();
+            let found = session.node_find(py, "User", Some(&filters)).unwrap();
+            assert_eq!(found.bind(py).downcast::<PyList>().unwrap().len(), 1);
+        });
+
+        assert!(temp.path().join("python-service-smoke.bin").exists());
+        shutdown_tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
 }

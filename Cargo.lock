@@ -662,8 +662,12 @@ name = "grm-cli"
 version = "0.1.0"
 dependencies = [
  "grm-rs",
+ "grm-service-api",
+ "serde_json",
  "tempfile",
  "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]
@@ -715,9 +719,13 @@ name = "grm-rs-python"
 version = "0.1.0"
 dependencies = [
  "grm-rs",
+ "grm-service-api",
  "pyo3",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-stream",
+ "tonic",
 ]
 
 [[package]]
