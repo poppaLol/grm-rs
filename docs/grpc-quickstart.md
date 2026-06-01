@@ -25,8 +25,9 @@ cargo run -p grm-service-api --example local_workspace_client -- \
 ```
 
 This is the primary checked client path. It creates or opens a workspace,
-defines schema, creates nodes and edges, runs simple finds and a batch request,
-closes and reopens the workspace, and verifies data is still present.
+defines schema, creates nodes and edges, runs simple finds, traversal-capable
+`node.find` requests for node/root/end results, and a batch request, closes and
+reopens the workspace, and verifies data is still present.
 Rust callers can use `grm_service_api::GrpcWorkspaceClient` directly for the
 same checked subset without building generated protobuf requests manually.
 
@@ -50,9 +51,11 @@ cargo run --bin grm -- session
 ```
 
 In this mode, `model.define`, `link.define`, node/edge CRUD, simple find,
-`model.list`, `link.list`, and `session.describe` use `ExecuteWorkspace`.
-Local session file commands, transactions, explain/profile, traversal parity,
-and import/export remain local-only or unsupported in service CLI mode.
+traversal-capable `node.find` for node/root/end results, `model.list`,
+`link.list`, and `session.describe` use `ExecuteWorkspace`.
+Local session file commands, transactions, explain/profile, `node.find
+return=edge`, free-form query parity, and import/export remain local-only or
+unsupported in service CLI mode.
 `GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; set it to `json` only when
 you explicitly want JSON workspace files.
 
