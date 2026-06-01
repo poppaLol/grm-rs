@@ -85,8 +85,10 @@ pub type WorkspaceServiceResult<T> = std::result::Result<T, WorkspaceServiceErro
 #[derive(Debug)]
 pub enum GrpcWorkspaceClientError {
     Transport(tonic::transport::Error),
-    Status(tonic::Status),
+    Status(Box<tonic::Status>),
     MissingField(&'static str),
+    Runtime(grm_rs::GrmError),
+    UnexpectedResponse(&'static str),
 }
 
 impl fmt::Display for GrpcWorkspaceClientError {
@@ -95,6 +97,10 @@ impl fmt::Display for GrpcWorkspaceClientError {
             Self::Transport(error) => write!(f, "gRPC transport error: {error}"),
             Self::Status(status) => write!(f, "gRPC service error: {status}"),
             Self::MissingField(field) => write!(f, "gRPC response missing required field {field}"),
+            Self::Runtime(error) => write!(f, "{error}"),
+            Self::UnexpectedResponse(expected) => {
+                write!(f, "gRPC response was not the expected {expected}")
+            }
         }
     }
 }
@@ -104,7 +110,9 @@ impl Error for GrpcWorkspaceClientError {
         match self {
             Self::Transport(error) => Some(error),
             Self::Status(status) => Some(status),
+            Self::Runtime(error) => Some(error),
             Self::MissingField(_) => None,
+            Self::UnexpectedResponse(_) => None,
         }
     }
 }
@@ -117,7 +125,13 @@ impl From<tonic::transport::Error> for GrpcWorkspaceClientError {
 
 impl From<tonic::Status> for GrpcWorkspaceClientError {
     fn from(status: tonic::Status) -> Self {
-        Self::Status(status)
+        Self::Status(Box::new(status))
+    }
+}
+
+impl From<grm_rs::GrmError> for GrpcWorkspaceClientError {
+    fn from(error: grm_rs::GrmError) -> Self {
+        Self::Runtime(error)
     }
 }
 
@@ -220,7 +234,192 @@ impl GrpcWorkspaceClient {
             })
             .await
             .map(|response| response.into_inner())
-            .map_err(GrpcWorkspaceClientError::Status)
+            .map_err(GrpcWorkspaceClientError::from)
+    }
+
+    pub async fn execute_service_request(
+        &mut self,
+        request: ServiceRequest,
+    ) -> GrpcWorkspaceClientResult<proto::RuntimeResponse> {
+        let response = self
+            .execute_proto(proto_runtime_request_from_service_request(request)?)
+            .await?;
+        response
+            .response
+            .ok_or(GrpcWorkspaceClientError::MissingField(
+                "WorkspaceRuntimeResponse.response",
+            ))
+    }
+
+    pub async fn define_node(
+        &mut self,
+        request: grm_rs::DefineNodeRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeNodeModel> {
+        let response = self
+            .execute_service_request(ServiceRequest::DefineNode(request.into()))
+            .await?;
+        let Some(proto::runtime_response::Response::DefineNode(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("DefineNode"));
+        };
+        runtime_node_model_from_proto(required_client(response.model, "DefineNodeResponse.model")?)
+    }
+
+    pub async fn define_edge(
+        &mut self,
+        request: grm_rs::DefineEdgeRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeRelModel> {
+        let response = self
+            .execute_service_request(ServiceRequest::DefineEdge(request.into()))
+            .await?;
+        let Some(proto::runtime_response::Response::DefineEdge(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("DefineEdge"));
+        };
+        runtime_edge_model_from_proto(required_client(response.model, "DefineEdgeResponse.model")?)
+    }
+
+    pub async fn schema_list(
+        &mut self,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeSchemaListResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::SchemaList(SchemaListRequest {}))
+            .await?;
+        let Some(proto::runtime_response::Response::SchemaList(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("SchemaList"));
+        };
+        runtime_schema_list_from_proto(response)
+    }
+
+    pub async fn create_node(
+        &mut self,
+        request: grm_rs::NodeCreateRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::StoredNode> {
+        let response = self
+            .execute_service_request(ServiceRequest::CreateNode(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::CreateNode(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("CreateNode"));
+        };
+        stored_node_from_proto(required_client(response.node, "NodeCreateResponse.node")?)
+    }
+
+    pub async fn update_node(
+        &mut self,
+        request: grm_rs::NodeUpdateRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::StoredNode> {
+        let response = self
+            .execute_service_request(ServiceRequest::UpdateNode(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::UpdateNode(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("UpdateNode"));
+        };
+        stored_node_from_proto(required_client(response.node, "NodeUpdateResponse.node")?)
+    }
+
+    pub async fn delete_node(
+        &mut self,
+        request: grm_rs::NodeDeleteRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeDelete> {
+        let response = self
+            .execute_service_request(ServiceRequest::DeleteNode(request.into()))
+            .await?;
+        let Some(proto::runtime_response::Response::DeleteNode(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("DeleteNode"));
+        };
+        runtime_delete_from_proto(required_client(
+            response.deleted,
+            "NodeDeleteResponse.deleted",
+        )?)
+    }
+
+    pub async fn find_nodes(
+        &mut self,
+        request: grm_rs::NodeFindRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeNodeFindResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::FindNodes(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::FindNodes(response)) = response.response else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("FindNodes"));
+        };
+        runtime_node_find_from_proto(response)
+    }
+
+    pub async fn create_edge(
+        &mut self,
+        request: grm_rs::EdgeCreateRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::StoredRel> {
+        let response = self
+            .execute_service_request(ServiceRequest::CreateEdge(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::CreateEdge(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("CreateEdge"));
+        };
+        stored_edge_from_proto(required_client(response.edge, "EdgeCreateResponse.edge")?)
+    }
+
+    pub async fn update_edge(
+        &mut self,
+        request: grm_rs::EdgeUpdateRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::StoredRel> {
+        let response = self
+            .execute_service_request(ServiceRequest::UpdateEdge(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::UpdateEdge(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("UpdateEdge"));
+        };
+        stored_edge_from_proto(required_client(response.edge, "EdgeUpdateResponse.edge")?)
+    }
+
+    pub async fn delete_edge(
+        &mut self,
+        request: grm_rs::EdgeDeleteRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeDelete> {
+        let response = self
+            .execute_service_request(ServiceRequest::DeleteEdge(request.into()))
+            .await?;
+        let Some(proto::runtime_response::Response::DeleteEdge(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("DeleteEdge"));
+        };
+        runtime_delete_from_proto(required_client(
+            response.deleted,
+            "EdgeDeleteResponse.deleted",
+        )?)
+    }
+
+    pub async fn find_edges(
+        &mut self,
+        request: grm_rs::EdgeFindRequest,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeEdgeFindResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::FindEdges(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::FindEdges(response)) = response.response else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("FindEdges"));
+        };
+        runtime_edge_find_from_proto(response)
+    }
+
+    pub async fn apply_batch(
+        &mut self,
+        request: grm_rs::SessionBatchParams,
+    ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeBatchResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::ApplyBatch(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::ApplyBatch(response)) = response.response
+        else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("ApplyBatch"));
+        };
+        runtime_batch_response_from_proto(response)
     }
 
     pub async fn close(mut self) -> GrpcWorkspaceClientResult<proto::WorkspaceCloseResponse> {
@@ -230,7 +429,7 @@ impl GrpcWorkspaceClient {
             })
             .await
             .map(|response| response.into_inner())
-            .map_err(GrpcWorkspaceClientError::Status)
+            .map_err(GrpcWorkspaceClientError::from)
     }
 }
 
@@ -1144,6 +1343,16 @@ impl TryFrom<DefineNodeRequest> for grm_rs::DefineNodeRequest {
     }
 }
 
+impl From<grm_rs::DefineNodeRequest> for DefineNodeRequest {
+    fn from(request: grm_rs::DefineNodeRequest) -> Self {
+        Self {
+            name: request.name,
+            id_field: request.id_field,
+            fields: request.fields.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DefineEdgeRequest {
     pub name: String,
@@ -1167,6 +1376,18 @@ impl TryFrom<DefineEdgeRequest> for grm_rs::DefineEdgeRequest {
     }
 }
 
+impl From<grm_rs::DefineEdgeRequest> for DefineEdgeRequest {
+    fn from(request: grm_rs::DefineEdgeRequest) -> Self {
+        Self {
+            name: request.name,
+            from_model: request.from_model,
+            to_model: request.to_model,
+            id_field: request.id_field,
+            fields: request.fields.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaListRequest {}
 
@@ -1186,6 +1407,16 @@ impl TryFrom<FieldSpec> for grm_rs::FieldSpec {
             value_type: field.value_type.try_into()?,
             required: field.required,
         })
+    }
+}
+
+impl From<grm_rs::FieldSpec> for FieldSpec {
+    fn from(field: grm_rs::FieldSpec) -> Self {
+        Self {
+            name: field.name,
+            value_type: field.value_type.into(),
+            required: field.required,
+        }
     }
 }
 
@@ -1214,6 +1445,17 @@ impl TryFrom<FieldValueType> for grm_rs::FieldValueType {
     }
 }
 
+impl From<grm_rs::FieldValueType> for FieldValueType {
+    fn from(value_type: grm_rs::FieldValueType) -> Self {
+        match value_type {
+            grm_rs::FieldValueType::String => Self::String,
+            grm_rs::FieldValueType::Int => Self::Int,
+            grm_rs::FieldValueType::Float => Self::Float,
+            grm_rs::FieldValueType::Bool => Self::Bool,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeCreateRequest {
     pub model: String,
@@ -1224,6 +1466,17 @@ impl TryFrom<NodeCreateRequest> for grm_rs::NodeCreateRequest {
     type Error = grm_rs::GrmError;
 
     fn try_from(request: NodeCreateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            props: request.props.try_into()?,
+        })
+    }
+}
+
+impl TryFrom<grm_rs::NodeCreateRequest> for NodeCreateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::NodeCreateRequest) -> grm_rs::Result<Self> {
         Ok(Self {
             model: request.model,
             props: request.props.try_into()?,
@@ -1250,6 +1503,18 @@ impl TryFrom<NodeUpdateRequest> for grm_rs::NodeUpdateRequest {
     }
 }
 
+impl TryFrom<grm_rs::NodeUpdateRequest> for NodeUpdateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::NodeUpdateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            id: request.id,
+            props: request.props.try_into()?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeDeleteRequest {
     pub model: String,
@@ -1258,6 +1523,15 @@ pub struct NodeDeleteRequest {
 
 impl From<NodeDeleteRequest> for grm_rs::NodeDeleteRequest {
     fn from(request: NodeDeleteRequest) -> Self {
+        Self {
+            model: request.model,
+            id: request.id,
+        }
+    }
+}
+
+impl From<grm_rs::NodeDeleteRequest> for NodeDeleteRequest {
+    fn from(request: grm_rs::NodeDeleteRequest) -> Self {
         Self {
             model: request.model,
             id: request.id,
@@ -1298,6 +1572,37 @@ impl TryFrom<NodeFindRequest> for grm_rs::NodeFindRequest {
     }
 }
 
+impl TryFrom<grm_rs::NodeFindRequest> for NodeFindRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::NodeFindRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            predicates: request
+                .predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            end_predicates: request
+                .end_predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            edge_predicates: request
+                .edge_predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            traversals: request.traversals.into_iter().map(Into::into).collect(),
+            order: request.order.into_iter().map(Into::into).collect(),
+            limit: request.limit.map(usize_to_u64).transpose()?,
+            offset: request.offset.map(usize_to_u64).transpose()?,
+            id: request.id,
+            return_mode: request.return_mode.map(Into::into),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeCreateRequest {
     pub model: String,
@@ -1310,6 +1615,19 @@ impl TryFrom<EdgeCreateRequest> for grm_rs::EdgeCreateRequest {
     type Error = grm_rs::GrmError;
 
     fn try_from(request: EdgeCreateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            from: request.from,
+            to: request.to,
+            props: request.props.try_into()?,
+        })
+    }
+}
+
+impl TryFrom<grm_rs::EdgeCreateRequest> for EdgeCreateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::EdgeCreateRequest) -> grm_rs::Result<Self> {
         Ok(Self {
             model: request.model,
             from: request.from,
@@ -1338,6 +1656,18 @@ impl TryFrom<EdgeUpdateRequest> for grm_rs::EdgeUpdateRequest {
     }
 }
 
+impl TryFrom<grm_rs::EdgeUpdateRequest> for EdgeUpdateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::EdgeUpdateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            id: request.id,
+            props: request.props.try_into()?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EdgeDeleteRequest {
     pub model: String,
@@ -1346,6 +1676,15 @@ pub struct EdgeDeleteRequest {
 
 impl From<EdgeDeleteRequest> for grm_rs::EdgeDeleteRequest {
     fn from(request: EdgeDeleteRequest) -> Self {
+        Self {
+            model: request.model,
+            id: request.id,
+        }
+    }
+}
+
+impl From<grm_rs::EdgeDeleteRequest> for EdgeDeleteRequest {
+    fn from(request: grm_rs::EdgeDeleteRequest) -> Self {
         Self {
             model: request.model,
             id: request.id,
@@ -1382,6 +1721,27 @@ impl TryFrom<EdgeFindRequest> for grm_rs::EdgeFindRequest {
     }
 }
 
+impl TryFrom<grm_rs::EdgeFindRequest> for EdgeFindRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::EdgeFindRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            predicates: request
+                .predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            order: request.order.into_iter().map(Into::into).collect(),
+            limit: request.limit.map(usize_to_u64).transpose()?,
+            offset: request.offset.map(usize_to_u64).transpose()?,
+            id: request.id,
+            from: request.from,
+            to: request.to,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PropertyMap {
     pub properties: Vec<Property>,
@@ -1404,6 +1764,24 @@ impl TryFrom<PropertyMap> for std::collections::BTreeMap<String, Value> {
             }
         }
         Ok(props)
+    }
+}
+
+impl TryFrom<std::collections::BTreeMap<String, Value>> for PropertyMap {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(props: std::collections::BTreeMap<String, Value>) -> grm_rs::Result<Self> {
+        Ok(Self {
+            properties: props
+                .into_iter()
+                .map(|(name, value)| {
+                    Ok(Property {
+                        name,
+                        value: value.try_into()?,
+                    })
+                })
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
     }
 }
 
@@ -1436,6 +1814,39 @@ impl TryFrom<PropertyValue> for Value {
     }
 }
 
+impl TryFrom<Value> for PropertyValue {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(value: Value) -> grm_rs::Result<Self> {
+        Ok(match value {
+            Value::String(value) => Self::String(value),
+            Value::Bool(value) => Self::Bool(value),
+            Value::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    Self::Int(value)
+                } else if let Some(value) = value.as_u64() {
+                    Self::Int(value.try_into().map_err(|_| {
+                        grm_rs::GrmError::Constraint(
+                            "integer property value is too large for int64".into(),
+                        )
+                    })?)
+                } else if let Some(value) = value.as_f64() {
+                    Self::Float(value)
+                } else {
+                    return Err(grm_rs::GrmError::Constraint(
+                        "numeric property value cannot be represented in service proto".into(),
+                    ));
+                }
+            }
+            Value::Null | Value::Array(_) | Value::Object(_) => {
+                return Err(grm_rs::GrmError::Constraint(
+                    "graph values must be strings, numbers, or booleans".into(),
+                ));
+            }
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PropertyPredicate {
     pub field: String,
@@ -1447,6 +1858,18 @@ impl TryFrom<PropertyPredicate> for grm_rs::PropertyPredicate {
     type Error = grm_rs::GrmError;
 
     fn try_from(predicate: PropertyPredicate) -> grm_rs::Result<Self> {
+        Ok(Self {
+            field: predicate.field,
+            op: predicate.op.into(),
+            value: predicate.value.try_into()?,
+        })
+    }
+}
+
+impl TryFrom<grm_rs::PropertyPredicate> for PropertyPredicate {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(predicate: grm_rs::PropertyPredicate) -> grm_rs::Result<Self> {
         Ok(Self {
             field: predicate.field,
             op: predicate.op.into(),
@@ -1480,6 +1903,20 @@ impl From<PredicateOp> for grm_rs::PredicateOp {
     }
 }
 
+impl From<grm_rs::PredicateOp> for PredicateOp {
+    fn from(op: grm_rs::PredicateOp) -> Self {
+        match op {
+            grm_rs::PredicateOp::Eq => Self::Eq,
+            grm_rs::PredicateOp::Ne => Self::Ne,
+            grm_rs::PredicateOp::Gt => Self::Gt,
+            grm_rs::PredicateOp::Ge => Self::Ge,
+            grm_rs::PredicateOp::Lt => Self::Lt,
+            grm_rs::PredicateOp::Le => Self::Le,
+            grm_rs::PredicateOp::Contains => Self::Contains,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrderSpec {
     pub field: String,
@@ -1488,6 +1925,15 @@ pub struct OrderSpec {
 
 impl From<OrderSpec> for grm_rs::OrderSpec {
     fn from(order: OrderSpec) -> Self {
+        Self {
+            field: order.field,
+            direction: order.direction.into(),
+        }
+    }
+}
+
+impl From<grm_rs::OrderSpec> for OrderSpec {
+    fn from(order: grm_rs::OrderSpec) -> Self {
         Self {
             field: order.field,
             direction: order.direction.into(),
@@ -1510,6 +1956,15 @@ impl From<OrderDirection> for grm_rs::OrderDirection {
     }
 }
 
+impl From<grm_rs::OrderDirection> for OrderDirection {
+    fn from(direction: grm_rs::OrderDirection) -> Self {
+        match direction {
+            grm_rs::OrderDirection::Asc => Self::Asc,
+            grm_rs::OrderDirection::Desc => Self::Desc,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraversalStep {
     pub direction: TraversalDirection,
@@ -1519,6 +1974,16 @@ pub struct TraversalStep {
 
 impl From<TraversalStep> for grm_rs::TraversalStepRequest {
     fn from(step: TraversalStep) -> Self {
+        Self {
+            direction: step.direction.into(),
+            edge_model: step.edge_model,
+            end_model: step.end_model,
+        }
+    }
+}
+
+impl From<grm_rs::TraversalStepRequest> for TraversalStep {
+    fn from(step: grm_rs::TraversalStepRequest) -> Self {
         Self {
             direction: step.direction.into(),
             edge_model: step.edge_model,
@@ -1544,6 +2009,16 @@ impl From<TraversalDirection> for grm_rs::TraversalDirection {
     }
 }
 
+impl From<grm_rs::TraversalDirection> for TraversalDirection {
+    fn from(direction: grm_rs::TraversalDirection) -> Self {
+        match direction {
+            grm_rs::TraversalDirection::Out => Self::Out,
+            grm_rs::TraversalDirection::In => Self::In,
+            grm_rs::TraversalDirection::Both => Self::Both,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraversalReturn {
     End,
@@ -1557,6 +2032,16 @@ impl From<TraversalReturn> for grm_rs::TraversalReturn {
             TraversalReturn::End => Self::End,
             TraversalReturn::Root => Self::Root,
             TraversalReturn::Edge => Self::Edge,
+        }
+    }
+}
+
+impl From<grm_rs::TraversalReturn> for TraversalReturn {
+    fn from(return_mode: grm_rs::TraversalReturn) -> Self {
+        match return_mode {
+            grm_rs::TraversalReturn::End => Self::End,
+            grm_rs::TraversalReturn::Root => Self::Root,
+            grm_rs::TraversalReturn::Edge => Self::Edge,
         }
     }
 }
@@ -1673,6 +2158,23 @@ impl TryFrom<BatchRequest> for grm_rs::BatchRequest {
     }
 }
 
+impl TryFrom<grm_rs::SessionBatchParams> for BatchRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::SessionBatchParams) -> grm_rs::Result<Self> {
+        Ok(Self {
+            atomic: request.atomic,
+            allow_deletes: request.allow_deletes,
+            response_mode: request.response.into(),
+            ops: request
+                .ops
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchResponseMode {
     Summary,
@@ -1684,6 +2186,15 @@ impl From<BatchResponseMode> for grm_rs::SessionBatchResponse {
         match mode {
             BatchResponseMode::Summary => Self::Summary,
             BatchResponseMode::Detailed => Self::Detailed,
+        }
+    }
+}
+
+impl From<grm_rs::SessionBatchResponse> for BatchResponseMode {
+    fn from(mode: grm_rs::SessionBatchResponse) -> Self {
+        match mode {
+            grm_rs::SessionBatchResponse::Summary => Self::Summary,
+            grm_rs::SessionBatchResponse::Detailed => Self::Detailed,
         }
     }
 }
@@ -1766,6 +2277,60 @@ impl TryFrom<BatchOperation> for grm_rs::SessionBatchOp {
     }
 }
 
+impl TryFrom<grm_rs::SessionBatchOp> for BatchOperation {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(op: grm_rs::SessionBatchOp) -> grm_rs::Result<Self> {
+        Ok(match op {
+            grm_rs::SessionBatchOp::SchemaDefineNode(request) => {
+                Self::SchemaDefineNode(DefineNodeRequest {
+                    name: request.name,
+                    id_field: request.id_field,
+                    fields: batch_fields_to_service_fields(request.fields)?,
+                })
+            }
+            grm_rs::SessionBatchOp::SchemaDefineEdge(request) => {
+                Self::SchemaDefineEdge(DefineEdgeRequest {
+                    name: request.name,
+                    from_model: request.from_model,
+                    to_model: request.to_model,
+                    id_field: request.id_field,
+                    fields: batch_fields_to_service_fields(request.fields)?,
+                })
+            }
+            grm_rs::SessionBatchOp::NodeCreate(request) => Self::NodeCreate(BatchNodeCreate {
+                model: request.model,
+                props: request.props.try_into()?,
+                local_ref: request.local_ref,
+            }),
+            grm_rs::SessionBatchOp::NodeUpdate(request) => Self::NodeUpdate(NodeUpdateRequest {
+                model: request.model,
+                id: request.id,
+                props: request.props.try_into()?,
+            }),
+            grm_rs::SessionBatchOp::NodeDelete(request) => Self::NodeDelete(NodeDeleteRequest {
+                model: request.model,
+                id: request.id,
+            }),
+            grm_rs::SessionBatchOp::EdgeCreate(request) => Self::EdgeCreate(BatchEdgeCreate {
+                model: request.model,
+                from: request.from.into(),
+                to: request.to.into(),
+                props: request.props.try_into()?,
+            }),
+            grm_rs::SessionBatchOp::EdgeUpdate(request) => Self::EdgeUpdate(EdgeUpdateRequest {
+                model: request.model,
+                id: request.id,
+                props: request.props.try_into()?,
+            }),
+            grm_rs::SessionBatchOp::EdgeDelete(request) => Self::EdgeDelete(EdgeDeleteRequest {
+                model: request.model,
+                id: request.id,
+            }),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchNodeCreate {
     pub model: String,
@@ -1792,6 +2357,15 @@ impl From<BatchEndpoint> for grm_rs::SessionBatchEndpoint {
         match endpoint {
             BatchEndpoint::Id(id) => Self::Id(id),
             BatchEndpoint::LocalRef(local_ref) => Self::Ref(local_ref),
+        }
+    }
+}
+
+impl From<grm_rs::SessionBatchEndpoint> for BatchEndpoint {
+    fn from(endpoint: grm_rs::SessionBatchEndpoint) -> Self {
+        match endpoint {
+            grm_rs::SessionBatchEndpoint::Id(id) => Self::Id(id),
+            grm_rs::SessionBatchEndpoint::Ref(local_ref) => Self::LocalRef(local_ref),
         }
     }
 }
@@ -1869,10 +2443,44 @@ impl TryFrom<proto::DefineNodeRequest> for DefineNodeRequest {
     }
 }
 
+impl TryFrom<DefineNodeRequest> for proto::DefineNodeRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: DefineNodeRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: request.name,
+            id_field: request.id_field,
+            fields: request
+                .fields
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
 impl TryFrom<proto::DefineEdgeRequest> for DefineEdgeRequest {
     type Error = grm_rs::GrmError;
 
     fn try_from(request: proto::DefineEdgeRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: request.name,
+            from_model: request.from_model,
+            to_model: request.to_model,
+            id_field: request.id_field,
+            fields: request
+                .fields
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+impl TryFrom<DefineEdgeRequest> for proto::DefineEdgeRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: DefineEdgeRequest) -> grm_rs::Result<Self> {
         Ok(Self {
             name: request.name,
             from_model: request.from_model,
@@ -1905,6 +2513,18 @@ impl TryFrom<proto::FieldSpec> for FieldSpec {
     }
 }
 
+impl TryFrom<FieldSpec> for proto::FieldSpec {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(field: FieldSpec) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: field.name,
+            value_type: proto_field_value_type_from_service(field.value_type)?,
+            required: field.required,
+        })
+    }
+}
+
 impl TryFrom<proto::NodeCreateRequest> for NodeCreateRequest {
     type Error = grm_rs::GrmError;
 
@@ -1912,6 +2532,17 @@ impl TryFrom<proto::NodeCreateRequest> for NodeCreateRequest {
         Ok(Self {
             model: request.model,
             props: proto_property_map_or_empty(request.props)?,
+        })
+    }
+}
+
+impl TryFrom<NodeCreateRequest> for proto::NodeCreateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: NodeCreateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            props: Some(request.props.try_into()?),
         })
     }
 }
@@ -1928,8 +2559,29 @@ impl TryFrom<proto::NodeUpdateRequest> for NodeUpdateRequest {
     }
 }
 
+impl TryFrom<NodeUpdateRequest> for proto::NodeUpdateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: NodeUpdateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            id: request.id,
+            props: Some(request.props.try_into()?),
+        })
+    }
+}
+
 impl From<proto::NodeDeleteRequest> for NodeDeleteRequest {
     fn from(request: proto::NodeDeleteRequest) -> Self {
+        Self {
+            model: request.model,
+            id: request.id,
+        }
+    }
+}
+
+impl From<NodeDeleteRequest> for proto::NodeDeleteRequest {
+    fn from(request: NodeDeleteRequest) -> Self {
         Self {
             model: request.model,
             id: request.id,
@@ -1959,6 +2611,37 @@ impl TryFrom<proto::NodeFindRequest> for NodeFindRequest {
     }
 }
 
+impl TryFrom<NodeFindRequest> for proto::NodeFindRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: NodeFindRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            predicates: request
+                .predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            end_predicates: request
+                .end_predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            edge_predicates: request
+                .edge_predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            traversals: request.traversals.into_iter().map(Into::into).collect(),
+            order: request.order.into_iter().map(Into::into).collect(),
+            limit: request.limit,
+            offset: request.offset,
+            id: request.id,
+            return_mode: request.return_mode.map(proto_traversal_return_from_service),
+        })
+    }
+}
+
 impl TryFrom<proto::EdgeCreateRequest> for EdgeCreateRequest {
     type Error = grm_rs::GrmError;
 
@@ -1968,6 +2651,19 @@ impl TryFrom<proto::EdgeCreateRequest> for EdgeCreateRequest {
             from: request.from,
             to: request.to,
             props: proto_property_map_or_empty(request.props)?,
+        })
+    }
+}
+
+impl TryFrom<EdgeCreateRequest> for proto::EdgeCreateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: EdgeCreateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            from: request.from,
+            to: request.to,
+            props: Some(request.props.try_into()?),
         })
     }
 }
@@ -1984,8 +2680,29 @@ impl TryFrom<proto::EdgeUpdateRequest> for EdgeUpdateRequest {
     }
 }
 
+impl TryFrom<EdgeUpdateRequest> for proto::EdgeUpdateRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: EdgeUpdateRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            id: request.id,
+            props: Some(request.props.try_into()?),
+        })
+    }
+}
+
 impl From<proto::EdgeDeleteRequest> for EdgeDeleteRequest {
     fn from(request: proto::EdgeDeleteRequest) -> Self {
+        Self {
+            model: request.model,
+            id: request.id,
+        }
+    }
+}
+
+impl From<EdgeDeleteRequest> for proto::EdgeDeleteRequest {
+    fn from(request: EdgeDeleteRequest) -> Self {
         Self {
             model: request.model,
             id: request.id,
@@ -2010,10 +2727,45 @@ impl TryFrom<proto::EdgeFindRequest> for EdgeFindRequest {
     }
 }
 
+impl TryFrom<EdgeFindRequest> for proto::EdgeFindRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: EdgeFindRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            predicates: request
+                .predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            order: request.order.into_iter().map(Into::into).collect(),
+            limit: request.limit,
+            offset: request.offset,
+            id: request.id,
+            from: request.from,
+            to: request.to,
+        })
+    }
+}
+
 impl TryFrom<proto::PropertyMap> for PropertyMap {
     type Error = grm_rs::GrmError;
 
     fn try_from(map: proto::PropertyMap) -> grm_rs::Result<Self> {
+        Ok(Self {
+            properties: map
+                .properties
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
+impl TryFrom<PropertyMap> for proto::PropertyMap {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(map: PropertyMap) -> grm_rs::Result<Self> {
         Ok(Self {
             properties: map
                 .properties
@@ -2038,6 +2790,17 @@ impl TryFrom<proto::Property> for Property {
     }
 }
 
+impl TryFrom<Property> for proto::Property {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(property: Property) -> grm_rs::Result<Self> {
+        Ok(Self {
+            name: property.name,
+            value: Some(property.value.into()),
+        })
+    }
+}
+
 impl TryFrom<proto::PropertyValue> for PropertyValue {
     type Error = grm_rs::GrmError;
 
@@ -2056,6 +2819,20 @@ impl TryFrom<proto::PropertyValue> for PropertyValue {
     }
 }
 
+impl From<PropertyValue> for proto::PropertyValue {
+    fn from(value: PropertyValue) -> Self {
+        use proto::property_value::Kind;
+
+        let kind = match value {
+            PropertyValue::String(value) => Kind::StringValue(value),
+            PropertyValue::Int(value) => Kind::IntValue(value),
+            PropertyValue::Float(value) => Kind::FloatValue(value),
+            PropertyValue::Bool(value) => Kind::BoolValue(value),
+        };
+        Self { kind: Some(kind) }
+    }
+}
+
 impl TryFrom<proto::PropertyPredicate> for PropertyPredicate {
     type Error = grm_rs::GrmError;
 
@@ -2071,6 +2848,18 @@ impl TryFrom<proto::PropertyPredicate> for PropertyPredicate {
     }
 }
 
+impl TryFrom<PropertyPredicate> for proto::PropertyPredicate {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(predicate: PropertyPredicate) -> grm_rs::Result<Self> {
+        Ok(Self {
+            field: predicate.field,
+            op: proto_predicate_op_from_service(predicate.op),
+            value: Some(predicate.value.into()),
+        })
+    }
+}
+
 impl TryFrom<proto::OrderSpec> for OrderSpec {
     type Error = grm_rs::GrmError;
 
@@ -2079,6 +2868,15 @@ impl TryFrom<proto::OrderSpec> for OrderSpec {
             field: order.field,
             direction: proto_order_direction(order.direction)?,
         })
+    }
+}
+
+impl From<OrderSpec> for proto::OrderSpec {
+    fn from(order: OrderSpec) -> Self {
+        Self {
+            field: order.field,
+            direction: proto_order_direction_from_service(order.direction),
+        }
     }
 }
 
@@ -2091,6 +2889,16 @@ impl TryFrom<proto::TraversalStep> for TraversalStep {
             edge_model: step.edge_model,
             end_model: step.end_model,
         })
+    }
+}
+
+impl From<TraversalStep> for proto::TraversalStep {
+    fn from(step: TraversalStep) -> Self {
+        Self {
+            direction: proto_traversal_direction_from_service(step.direction),
+            edge_model: step.edge_model,
+            end_model: step.end_model,
+        }
     }
 }
 
@@ -2200,6 +3008,23 @@ impl TryFrom<proto::BatchRequest> for BatchRequest {
     }
 }
 
+impl TryFrom<BatchRequest> for proto::BatchRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: BatchRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            atomic: request.atomic,
+            allow_deletes: request.allow_deletes,
+            response_mode: proto_batch_response_mode_from_service(request.response_mode),
+            ops: request
+                .ops
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+        })
+    }
+}
+
 impl TryFrom<proto::BatchOperation> for BatchOperation {
     type Error = grm_rs::GrmError;
 
@@ -2222,6 +3047,26 @@ impl TryFrom<proto::BatchOperation> for BatchOperation {
     }
 }
 
+impl TryFrom<BatchOperation> for proto::BatchOperation {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(op: BatchOperation) -> grm_rs::Result<Self> {
+        use proto::batch_operation::Op;
+
+        let op = match op {
+            BatchOperation::SchemaDefineNode(request) => Op::SchemaDefineNode(request.try_into()?),
+            BatchOperation::SchemaDefineEdge(request) => Op::SchemaDefineEdge(request.try_into()?),
+            BatchOperation::NodeCreate(request) => Op::NodeCreate(request.try_into()?),
+            BatchOperation::NodeUpdate(request) => Op::NodeUpdate(request.try_into()?),
+            BatchOperation::NodeDelete(request) => Op::NodeDelete(request.into()),
+            BatchOperation::EdgeCreate(request) => Op::EdgeCreate(request.try_into()?),
+            BatchOperation::EdgeUpdate(request) => Op::EdgeUpdate(request.try_into()?),
+            BatchOperation::EdgeDelete(request) => Op::EdgeDelete(request.into()),
+        };
+        Ok(Self { op: Some(op) })
+    }
+}
+
 impl TryFrom<proto::BatchNodeCreate> for BatchNodeCreate {
     type Error = grm_rs::GrmError;
 
@@ -2229,6 +3074,18 @@ impl TryFrom<proto::BatchNodeCreate> for BatchNodeCreate {
         Ok(Self {
             model: request.model,
             props: proto_property_map_or_empty(request.props)?,
+            local_ref: request.local_ref,
+        })
+    }
+}
+
+impl TryFrom<BatchNodeCreate> for proto::BatchNodeCreate {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: BatchNodeCreate) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            props: Some(request.props.try_into()?),
             local_ref: request.local_ref,
         })
     }
@@ -2253,6 +3110,19 @@ impl TryFrom<proto::BatchEdgeCreate> for BatchEdgeCreate {
     }
 }
 
+impl TryFrom<BatchEdgeCreate> for proto::BatchEdgeCreate {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: BatchEdgeCreate) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: request.model,
+            from: Some(request.from.into()),
+            to: Some(request.to.into()),
+            props: Some(request.props.try_into()?),
+        })
+    }
+}
+
 impl TryFrom<proto::BatchEndpoint> for BatchEndpoint {
     type Error = grm_rs::GrmError;
 
@@ -2265,6 +3135,19 @@ impl TryFrom<proto::BatchEndpoint> for BatchEndpoint {
         {
             Endpoint::Id(id) => Ok(Self::Id(id)),
             Endpoint::LocalRef(local_ref) => Ok(Self::LocalRef(local_ref)),
+        }
+    }
+}
+
+impl From<BatchEndpoint> for proto::BatchEndpoint {
+    fn from(endpoint: BatchEndpoint) -> Self {
+        use proto::batch_endpoint::Endpoint;
+
+        Self {
+            endpoint: Some(match endpoint {
+                BatchEndpoint::Id(id) => Endpoint::Id(id),
+                BatchEndpoint::LocalRef(local_ref) => Endpoint::LocalRef(local_ref),
+            }),
         }
     }
 }
@@ -2357,6 +3240,40 @@ where
     U: TryFrom<T, Error = grm_rs::GrmError>,
 {
     values.into_iter().map(TryInto::try_into).collect()
+}
+
+fn proto_runtime_request_from_service_request(
+    request: ServiceRequest,
+) -> grm_rs::Result<proto::runtime_request::Request> {
+    use proto::runtime_request::Request as ProtoRequest;
+
+    Ok(match request {
+        ServiceRequest::DefineNode(request) => ProtoRequest::DefineNode(request.try_into()?),
+        ServiceRequest::DefineEdge(request) => ProtoRequest::DefineEdge(request.try_into()?),
+        ServiceRequest::SchemaList(_) => ProtoRequest::SchemaList(proto::SchemaListRequest {}),
+        ServiceRequest::CreateNode(request) => ProtoRequest::CreateNode(request.try_into()?),
+        ServiceRequest::UpdateNode(request) => ProtoRequest::UpdateNode(request.try_into()?),
+        ServiceRequest::DeleteNode(request) => ProtoRequest::DeleteNode(request.into()),
+        ServiceRequest::FindNodes(request) => ProtoRequest::FindNodes(request.try_into()?),
+        ServiceRequest::CreateEdge(request) => ProtoRequest::CreateEdge(request.try_into()?),
+        ServiceRequest::UpdateEdge(request) => ProtoRequest::UpdateEdge(request.try_into()?),
+        ServiceRequest::DeleteEdge(request) => ProtoRequest::DeleteEdge(request.into()),
+        ServiceRequest::FindEdges(request) => ProtoRequest::FindEdges(request.try_into()?),
+        ServiceRequest::ApplyBatch(request) => ProtoRequest::ApplyBatch(request.try_into()?),
+        ServiceRequest::Query(_)
+        | ServiceRequest::Explain(_)
+        | ServiceRequest::Profile(_)
+        | ServiceRequest::Save(_)
+        | ServiceRequest::Load(_)
+        | ServiceRequest::Export(_)
+        | ServiceRequest::Import(_)
+        | ServiceRequest::IndexList(_)
+        | ServiceRequest::Summary(_) => {
+            return Err(grm_rs::GrmError::NotSupported(
+                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/simple find/batch through ExecuteWorkspace",
+            ));
+        }
+    })
 }
 
 fn proto_runtime_response(
@@ -2752,6 +3669,31 @@ fn service_fields_to_batch_fields(
         .collect()
 }
 
+fn batch_fields_to_service_fields(
+    fields: Vec<grm_rs::SessionBatchFieldParam>,
+) -> grm_rs::Result<Vec<FieldSpec>> {
+    fields
+        .into_iter()
+        .map(|field| {
+            Ok(FieldSpec {
+                name: field.name,
+                value_type: match field.value_type.as_str() {
+                    "string" => FieldValueType::String,
+                    "int" => FieldValueType::Int,
+                    "float" => FieldValueType::Float,
+                    "bool" => FieldValueType::Bool,
+                    other => {
+                        return Err(grm_rs::GrmError::Constraint(format!(
+                            "unsupported field type '{other}'; expected string, int, float, or bool"
+                        )));
+                    }
+                },
+                required: field.required,
+            })
+        })
+        .collect()
+}
+
 fn node_find_shape_to_runtime(shape: NodeFindShape) -> grm_rs::Result<grm_rs::NodeFindRequest> {
     Ok(grm_rs::NodeFindRequest {
         model: shape.model,
@@ -2805,6 +3747,12 @@ fn convert_u64_option_to_usize(value: Option<u64>, field: &str) -> grm_rs::Resul
         .transpose()
 }
 
+fn usize_to_u64(value: usize) -> grm_rs::Result<u64> {
+    value
+        .try_into()
+        .map_err(|_| grm_rs::GrmError::Constraint("value is too large for u64".into()))
+}
+
 fn field_value_type_keyword(value_type: FieldValueType) -> grm_rs::Result<&'static str> {
     match value_type {
         FieldValueType::Unspecified => Err(grm_rs::GrmError::Constraint(
@@ -2814,6 +3762,249 @@ fn field_value_type_keyword(value_type: FieldValueType) -> grm_rs::Result<&'stat
         FieldValueType::Int => Ok("int"),
         FieldValueType::Float => Ok("float"),
         FieldValueType::Bool => Ok("bool"),
+    }
+}
+
+fn required_client<T>(value: Option<T>, field: &'static str) -> GrpcWorkspaceClientResult<T> {
+    value.ok_or(GrpcWorkspaceClientError::MissingField(field))
+}
+
+fn runtime_schema_list_from_proto(
+    response: proto::SchemaListResponse,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeSchemaListResponse> {
+    Ok(grm_rs::RuntimeSchemaListResponse {
+        node_models: response
+            .node_models
+            .into_iter()
+            .map(runtime_node_model_from_proto)
+            .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?,
+        edge_models: response
+            .edge_models
+            .into_iter()
+            .map(runtime_edge_model_from_proto)
+            .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?,
+        backend_id_type: backend_id_type_from_proto(response.backend_id_type)?,
+    })
+}
+
+fn runtime_node_model_from_proto(
+    model: proto::NodeModel,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeNodeModel> {
+    let fields = model
+        .fields
+        .into_iter()
+        .map(runtime_field_from_proto)
+        .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?;
+    grm_rs::RuntimeNodeModel::new(
+        &model.name,
+        &model.id_field_name,
+        backend_id_type_from_proto(model.id_type)?,
+        fields,
+    )
+    .map_err(GrpcWorkspaceClientError::Runtime)
+}
+
+fn runtime_edge_model_from_proto(
+    model: proto::EdgeModel,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeRelModel> {
+    let fields = model
+        .fields
+        .into_iter()
+        .map(runtime_field_from_proto)
+        .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?;
+    grm_rs::RuntimeRelModel::new(
+        &model.name,
+        &model.from_model,
+        &model.to_model,
+        &model.id_field_name,
+        backend_id_type_from_proto(model.id_type)?,
+        fields,
+    )
+    .map_err(GrpcWorkspaceClientError::Runtime)
+}
+
+fn runtime_field_from_proto(
+    field: proto::FieldSpec,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeField> {
+    Ok(grm_rs::RuntimeField {
+        name: field.name,
+        value_type: runtime_value_type_from_proto(field.value_type)?,
+        required: field.required,
+    })
+}
+
+fn backend_id_type_from_proto(value: i32) -> GrpcWorkspaceClientResult<grm_rs::BackendIdType> {
+    match proto::IdType::try_from(value).ok() {
+        Some(proto::IdType::Int64) => Ok(grm_rs::BackendIdType::Int64),
+        _ => Err(GrpcWorkspaceClientError::Runtime(
+            grm_rs::GrmError::Constraint(format!("unknown IdType enum value {value}")),
+        )),
+    }
+}
+
+fn runtime_value_type_from_proto(
+    value: i32,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeValueType> {
+    match proto::FieldValueType::try_from(value).ok() {
+        Some(proto::FieldValueType::String) => Ok(grm_rs::RuntimeValueType::String),
+        Some(proto::FieldValueType::Int) => Ok(grm_rs::RuntimeValueType::Int),
+        Some(proto::FieldValueType::Float) => Ok(grm_rs::RuntimeValueType::Float),
+        Some(proto::FieldValueType::Bool) => Ok(grm_rs::RuntimeValueType::Bool),
+        _ => Err(GrpcWorkspaceClientError::Runtime(
+            grm_rs::GrmError::Constraint(format!("unknown FieldValueType enum value {value}")),
+        )),
+    }
+}
+
+fn stored_node_from_proto(
+    node: proto::StoredNode,
+) -> GrpcWorkspaceClientResult<grm_rs::StoredNode> {
+    Ok(grm_rs::StoredNode {
+        id: node.id,
+        labels: node.labels,
+        props: proto_property_map_or_empty(node.props)?.try_into()?,
+    })
+}
+
+fn stored_edge_from_proto(edge: proto::StoredEdge) -> GrpcWorkspaceClientResult<grm_rs::StoredRel> {
+    Ok(grm_rs::StoredRel {
+        id: edge.id,
+        rel_type: edge.rel_type,
+        from: edge.from,
+        to: edge.to,
+        props: proto_property_map_or_empty(edge.props)?.try_into()?,
+    })
+}
+
+fn runtime_delete_from_proto(
+    deleted: proto::DeleteResult,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeDelete> {
+    Ok(grm_rs::RuntimeDelete {
+        model: deleted.model,
+        id: deleted.id,
+    })
+}
+
+fn runtime_node_find_from_proto(
+    response: proto::NodeFindResponse,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeNodeFindResponse> {
+    Ok(grm_rs::RuntimeNodeFindResponse {
+        model: response.model,
+        nodes: response
+            .nodes
+            .into_iter()
+            .map(stored_node_from_proto)
+            .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?,
+    })
+}
+
+fn runtime_edge_find_from_proto(
+    response: proto::EdgeFindResponse,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeEdgeFindResponse> {
+    Ok(grm_rs::RuntimeEdgeFindResponse {
+        model: response.model,
+        edges: response
+            .edges
+            .into_iter()
+            .map(stored_edge_from_proto)
+            .collect::<GrpcWorkspaceClientResult<Vec<_>>>()?,
+    })
+}
+
+fn runtime_batch_response_from_proto(
+    response: proto::BatchResponse,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeBatchResponse> {
+    let mut counts = serde_json::Map::new();
+    for count in response.counts {
+        let entry = counts
+            .entry(count.op)
+            .or_insert_with(|| serde_json::json!({}));
+        let Value::Object(map) = entry else {
+            return Err(GrpcWorkspaceClientError::Runtime(
+                grm_rs::GrmError::Constraint("invalid batch count accumulator".into()),
+            ));
+        };
+        map.insert(count.model, serde_json::json!(count.count));
+    }
+    Ok(grm_rs::RuntimeBatchResponse {
+        should_persist: response
+            .durability
+            .as_ref()
+            .map(|durability| durability.has_durable_mutation)
+            .unwrap_or(response.applied),
+        value: serde_json::json!({
+            "applied": response.applied,
+            "atomic": response.atomic,
+            "operation_count": response.operation_count,
+            "counts": counts,
+            "errors": response.errors.into_iter().map(|error| serde_json::json!({
+                "index": error.index,
+                "message": error.message,
+                "recovery_hint": error.recovery_hint,
+            })).collect::<Vec<_>>(),
+            "ids": response.ids.into_iter().map(|id| serde_json::json!({
+                "op": id.op,
+                "model": id.model,
+                "id": id.id,
+                "ref": id.local_ref,
+            })).collect::<Vec<_>>(),
+        }),
+    })
+}
+
+fn proto_field_value_type_from_service(value_type: FieldValueType) -> grm_rs::Result<i32> {
+    Ok(match value_type {
+        FieldValueType::Unspecified => {
+            return Err(grm_rs::GrmError::Constraint(
+                "field value type must be specified".into(),
+            ));
+        }
+        FieldValueType::String => proto::FieldValueType::String as i32,
+        FieldValueType::Int => proto::FieldValueType::Int as i32,
+        FieldValueType::Float => proto::FieldValueType::Float as i32,
+        FieldValueType::Bool => proto::FieldValueType::Bool as i32,
+    })
+}
+
+fn proto_predicate_op_from_service(op: PredicateOp) -> i32 {
+    match op {
+        PredicateOp::Eq => proto::PredicateOp::Eq as i32,
+        PredicateOp::Ne => proto::PredicateOp::Ne as i32,
+        PredicateOp::Gt => proto::PredicateOp::Gt as i32,
+        PredicateOp::Ge => proto::PredicateOp::Ge as i32,
+        PredicateOp::Lt => proto::PredicateOp::Lt as i32,
+        PredicateOp::Le => proto::PredicateOp::Le as i32,
+        PredicateOp::Contains => proto::PredicateOp::Contains as i32,
+    }
+}
+
+fn proto_order_direction_from_service(direction: OrderDirection) -> i32 {
+    match direction {
+        OrderDirection::Asc => proto::OrderDirection::Asc as i32,
+        OrderDirection::Desc => proto::OrderDirection::Desc as i32,
+    }
+}
+
+fn proto_traversal_direction_from_service(direction: TraversalDirection) -> i32 {
+    match direction {
+        TraversalDirection::Out => proto::TraversalDirection::Out as i32,
+        TraversalDirection::In => proto::TraversalDirection::In as i32,
+        TraversalDirection::Both => proto::TraversalDirection::Both as i32,
+    }
+}
+
+fn proto_traversal_return_from_service(return_mode: TraversalReturn) -> i32 {
+    match return_mode {
+        TraversalReturn::End => proto::TraversalReturn::End as i32,
+        TraversalReturn::Root => proto::TraversalReturn::Root as i32,
+        TraversalReturn::Edge => proto::TraversalReturn::Edge as i32,
+    }
+}
+
+fn proto_batch_response_mode_from_service(mode: BatchResponseMode) -> i32 {
+    match mode {
+        BatchResponseMode::Summary => proto::BatchResponseMode::Summary as i32,
+        BatchResponseMode::Detailed => proto::BatchResponseMode::Detailed as i32,
     }
 }
 
