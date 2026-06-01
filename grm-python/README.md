@@ -1,6 +1,8 @@
 # grm-rs Python bindings
 
 This crate packages a first-pass Python API for the `grm-rs` runtime session surface.
+It includes the embedded/local `Session` API and a service-backed
+`ServiceSession` API for the checked gRPC workspace subset.
 
 The current Python package is a pre-release. It is meant for private wheel
 sharing and GitHub Release testing before any public PyPI upload.
@@ -141,3 +143,37 @@ Use `save_json` / `load_json` or `save_binary` / `load_binary` for local
 workspace snapshots. Use `export_json`, `export_dict`, and `import_json` for
 portable `grm.interchange` graph files; `import_json` currently imports into an
 empty session only.
+
+## Service-Backed Session
+
+`ServiceSession` routes supported operations through the gRPC workspace service
+using workspace-scoped `ExecuteWorkspace`. The supported subset is schema
+define/list, node and edge create/update/delete/find, batch, and reopen by
+constructing another `ServiceSession` with `mode="open"` and the same
+`workspace_ref`.
+
+```python
+from grm_rs import ServiceSession
+
+session = ServiceSession(
+    endpoint="http://127.0.0.1:50051",
+    workspace_ref="python-demo",
+    mode="create",
+)
+session.model_create("User", "userId", [{"name": "name", "type": "string", "required": True}])
+ada = session.node_create("User", {"name": "Ada"})
+assert session.node_find("User", {"id": ada["id"]})[0]["props"]["name"] == "Ada"
+
+reopened = ServiceSession(
+    endpoint="http://127.0.0.1:50051",
+    workspace_ref="python-demo",
+    mode="open",
+)
+assert len(reopened.node_find("User", {"name": "Ada"})) == 1
+```
+
+Service workspaces use binary persistence by default. Pass
+`workspace_format="json"` explicitly when you need JSON workspace files. Direct
+unscoped service RPCs, traversal parity, explain/profile, import/export, hosted
+durability, auth/TLS, and multi-writer coordination are not provided by this
+Python service path.
