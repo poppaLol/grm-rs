@@ -10,7 +10,7 @@ Recommended agent workflow:
 5. Prefer structured tools for schema, node, edge, introspection, import, export, and persistence operations.
 6. For more than 3 creates or updates, prefer grm_batch with ops as structured operation objects, not CLI strings or JSON-encoded strings.
 7. Use grm_explain or grm_profile to inspect node.find and edge.find plans when supported by the active backend.
-8. Use grm_query for traversal queries or exact CLI parity when supported by the active backend.
+8. Prefer grm_node_find for structured traversal-capable node.find requests; use grm_query for exact CLI parity when supported by the active backend.
 9. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
 10. Verify writes with grm://graph/summary, grm://graph/export, or grm_export when supported by the active backend.
 
@@ -39,7 +39,7 @@ pub fn help_index() -> Value {
             "Call grm_schema_list or read grm://schema before creating or querying data.",
             "If Neo4j mode is active, read grm://backend/status; if schema_template_loaded is true, call grm_schema_list and use the recovered models. If runtime schema is empty, define or reconstruct schema before typed reads or writes.",
             "Before defining schema, decide the graph's richness vs sparseness.",
-            "Prefer structured tools over grm_query except for traversal queries or CLI parity.",
+            "Prefer structured tools over grm_query except when exact CLI-compatible command text is required.",
             "Use grm_explain or grm_profile to inspect node.find and edge.find plans.",
             "For more than 3 creates or updates, prefer grm_batch with ops as structured operation objects, not CLI strings or JSON-encoded strings.",
             "After recoverable errors, call grm_tool_help with the tool name before retrying.",
@@ -101,9 +101,9 @@ pub fn help_index() -> Value {
             "Only fields declared in the runtime schema may be supplied."
         ],
         "when_to_use_grm_query": [
-            "Use grm_query for traversal syntax such as via=out:AUTHORED:Post.",
+            "Use grm_node_find for structured node traversals with via, end_filters, edge_filters, return, order, limit, and offset.",
             "Use grm_query when you want exact CLI-compatible behavior.",
-            "Prefer grm_node_find and grm_edge_find for simple model/filter lookups."
+            "Prefer grm_node_find and grm_edge_find for model/filter lookups and supported structured traversal-shaped node finds."
         ],
         "when_to_use_introspection": [
             "Use grm_explain to inspect the current logical plan without running the query.",
@@ -327,21 +327,36 @@ pub fn tool_help(name: &str) -> Option<Value> {
         }),
         "grm_node_find" => json!({
             "tool": "grm_node_find",
-            "purpose": "Find nodes for a model using GRM query filter terms.",
+            "purpose": "Find nodes for a model using structured filters, paging, ordering, and traversal-shaped node.find controls.",
             "example": {
                 "model": "File",
                 "filters": { "path": "grm-mcp/src/tools.rs", "limit": 10 }
+            },
+            "traversal_example": {
+                "model": "User",
+                "filters": { "name": "Alice" },
+                "via": ["out:AUTHORED:Post"],
+                "end_filters": { "title~": "Graph" },
+                "edge_filters": { "year>=": 2024 },
+                "return": "end",
+                "order": "title:asc",
+                "limit": 5,
+                "offset": 0
             },
             "filter_syntax": [
                 "Use field names for equality, for example {\"name\":\"Alice\"}.",
                 "Use operator suffixes for comparisons, for example age>=, age<, title~.",
                 "Use id or the model id_field for backend id equality only.",
-                "Use limit, offset, and order for paging and ordering."
+                "Use top-level limit, offset, and order for paging and ordering.",
+                "Use via entries formatted as <out|in|both>:<LinkName|*>:<EndModel> for traversal steps.",
+                "Use end_filters and edge_filters for predicates on the returned end node and traversed edge.",
+                "Use return=root or return=end for traversal result shape; return=edge is not supported in gRPC service mode yet."
             ],
             "common_errors": [
                 recovery("unknown field", "Call grm_schema_list and use a declared field."),
                 recovery("backend id filter", "Use id equality only; comparison operators are not supported for id filters."),
-                recovery("invalid query term", "Call grm_tool_help for grm_query or grm://docs/query-language if using advanced syntax.")
+                recovery("return=edge", "Use return=root or return=end on grm_node_find, or wait for edge-result support."),
+                recovery("invalid query term", "Use structured grm_node_find fields for supported traversals; call grm_tool_help for grm_query only when exact CLI-compatible text is required.")
             ],
             "related": ["grm_schema_list", "grm_query", "grm://docs/query-language"]
         }),
@@ -577,6 +592,16 @@ mod tests {
             help.to_string().contains("grm_schema_list"),
             "node create help should guide agents back to schema"
         );
+    }
+
+    #[test]
+    fn node_find_help_describes_structured_traversal_controls() {
+        let help = tool_help("grm_node_find").unwrap();
+        let rendered = help.to_string();
+        assert!(rendered.contains("via"));
+        assert!(rendered.contains("end_filters"));
+        assert!(rendered.contains("edge_filters"));
+        assert!(rendered.contains("return=edge"));
     }
 
     #[test]
