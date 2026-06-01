@@ -15,13 +15,16 @@ work once, then use it from the surfaces that make sense for the job.
 
 ```mermaid
 flowchart LR
-    Rust[Rust typed models] --> Core[GRM core]
-    CLI[CLI session] --> Core
-    Python[Python session API] --> Core
-    MCP[MCP tools] --> Core
-    gRPC[gRPC workspace service] --> Core
-    Core --> Memory[Indexed in-memory backend]
-    Core --> Neo4j[Neo4j backend]
+    Rust[Rust typed models] --> Runtime[Typed GRM runtime]
+    CLI[CLI session] --> Runtime
+    Python[Python session API] --> Runtime
+    MCP[MCP tools] --> Runtime
+
+    Runtime --> Embedded[Embedded/local workspace]
+    Runtime --> Service[gRPC/protobuf workspace service]
+    Runtime --> Neo4j[Neo4j backend]
+
+    Service --> Workspace[GRM workspace storage\nmemory/file backed]
 ```
 
 ## Why Use GRM?
@@ -225,6 +228,7 @@ flowchart TD
     Query --> Results[QueryResult rows keyed by VarId]
     Results --> Decode[Typed/runtime decoding]
     Query --> Memory[In-memory executor]
+    Query --> Workspace[Service-backed GRM workspace\nmemory/file backed]
     Query --> Cypher[Cypher translator]
     Cypher --> Neo4j[Neo4j backend]
 ```
