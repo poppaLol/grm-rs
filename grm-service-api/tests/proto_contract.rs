@@ -893,10 +893,52 @@ async fn ergonomic_workspace_client_routes_supported_operations_through_execute_
         })
         .await
         .unwrap();
+    client
+        .define_node(grm_rs::DefineNodeRequest {
+            name: "Post".into(),
+            id_field: "postId".into(),
+            fields: vec![grm_rs::FieldSpec {
+                name: "title".into(),
+                value_type: grm_rs::FieldValueType::String,
+                required: true,
+            }],
+        })
+        .await
+        .unwrap();
+    client
+        .define_edge(grm_rs::DefineEdgeRequest {
+            name: "Authored".into(),
+            from_model: "User".into(),
+            to_model: "Post".into(),
+            id_field: "authoredId".into(),
+            fields: vec![grm_rs::FieldSpec {
+                name: "year".into(),
+                value_type: grm_rs::FieldValueType::Int,
+                required: true,
+            }],
+        })
+        .await
+        .unwrap();
     let created = client
         .create_node(grm_rs::NodeCreateRequest {
             model: "User".into(),
             props: [("name".into(), json!("Ada"))].into_iter().collect(),
+        })
+        .await
+        .unwrap();
+    let post = client
+        .create_node(grm_rs::NodeCreateRequest {
+            model: "Post".into(),
+            props: [("title".into(), json!("Traversal"))].into_iter().collect(),
+        })
+        .await
+        .unwrap();
+    client
+        .create_edge(grm_rs::EdgeCreateRequest {
+            model: "Authored".into(),
+            from: created.id,
+            to: post.id,
+            props: [("year".into(), json!(2026))].into_iter().collect(),
         })
         .await
         .unwrap();
@@ -911,6 +953,60 @@ async fn ergonomic_workspace_client_routes_supported_operations_through_execute_
 
     assert_eq!(found.nodes.len(), 1);
     assert_eq!(found.nodes[0].props["name"], json!("Ada"));
+
+    let traversed = client
+        .find_nodes(grm_rs::NodeFindRequest {
+            model: "User".into(),
+            predicates: vec![grm_rs::PropertyPredicate {
+                field: "name".into(),
+                op: grm_rs::PredicateOp::Eq,
+                value: json!("Ada"),
+            }],
+            traversals: vec![grm_rs::TraversalStepRequest {
+                direction: grm_rs::TraversalDirection::Out,
+                edge_model: Some("Authored".into()),
+                end_model: "Post".into(),
+            }],
+            end_predicates: vec![grm_rs::PropertyPredicate {
+                field: "title".into(),
+                op: grm_rs::PredicateOp::Eq,
+                value: json!("Traversal"),
+            }],
+            edge_predicates: vec![grm_rs::PropertyPredicate {
+                field: "year".into(),
+                op: grm_rs::PredicateOp::Eq,
+                value: json!(2026),
+            }],
+            order: vec![grm_rs::OrderSpec {
+                field: "title".into(),
+                direction: grm_rs::OrderDirection::Asc,
+            }],
+            limit: Some(1),
+            offset: Some(0),
+            return_mode: Some(grm_rs::TraversalReturn::End),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(traversed.nodes.len(), 1);
+    assert_eq!(traversed.nodes[0].id, post.id);
+    assert_eq!(traversed.nodes[0].props["title"], json!("Traversal"));
+
+    let edge_return = client
+        .find_nodes(grm_rs::NodeFindRequest {
+            model: "User".into(),
+            traversals: vec![grm_rs::TraversalStepRequest {
+                direction: grm_rs::TraversalDirection::Out,
+                edge_model: Some("Authored".into()),
+                end_model: "Post".into(),
+            }],
+            return_mode: Some(grm_rs::TraversalReturn::Edge),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert!(edge_return.to_string().contains("return=edge"));
     assert!(temp.path().join("ergonomic-client-smoke.bin").exists());
 
     client.close().await.unwrap();

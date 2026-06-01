@@ -314,7 +314,7 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Find nodes using model filters. Supports equality, comparison suffixes, limit, offset, and order."
+        description = "Find nodes using model filters. Supports equality, comparison suffixes, via traversal steps, end_filters, edge_filters, return, order, limit, and offset."
     )]
     async fn grm_node_find(
         &self,
@@ -335,8 +335,7 @@ impl GrmMcpServer {
         }
 
         self.with_state_mut(false, async |state| {
-            let request =
-                NodeFindRequest::from_adapter_filter_values(params.model, params.filters)?;
+            let request = params.into_node_find_request()?;
             let response = match state
                 .execute_runtime(RuntimeRequest::Query(QueryRequest::NodeFind(request)))
                 .await?
@@ -1140,9 +1139,11 @@ fn parse_neo4j_node_find_request(
     params: NodeFindParams,
     model: &RuntimeNodeModel,
 ) -> grm_rs::Result<NodeFindRequest> {
+    let mut params = params;
     let mut filters = params.filters;
     let model_id = remove_model_id_alias(&mut filters, &model.id_field_name)?;
-    let mut request = NodeFindRequest::from_adapter_filter_values(params.model, filters)?;
+    params.filters = filters;
+    let mut request = params.into_node_find_request()?;
     merge_model_id_alias(&mut request.id, model_id, "node", &model.id_field_name)?;
     Ok(request)
 }
@@ -1841,7 +1842,7 @@ fn cypher_name(name: &str) -> String {
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.is_service() {
-            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and simple node/edge find through ExecuteWorkspace. Direct service RPC families, import/export, explain/profile, and traversal/query parity are not supported yet."
+            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node results, and edge_find through ExecuteWorkspace. Direct service RPC families, import/export, explain/profile, free-form query parity, and node.find return=edge results are not supported yet."
         } else if self.is_neo4j() {
             "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and simple node/edge find."
         } else {
@@ -2027,6 +2028,13 @@ mod tests {
                     ("limit".into(), json!(1)),
                     ("userId".into(), json!(7)),
                 ]),
+                via: Vec::new(),
+                end_filters: BTreeMap::new(),
+                edge_filters: BTreeMap::new(),
+                return_mode: None,
+                order: None,
+                limit: None,
+                offset: None,
             },
             &user_model(),
         )

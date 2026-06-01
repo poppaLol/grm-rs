@@ -187,7 +187,7 @@ impl GrmMcpServer {
         self.is_service().then(|| {
             McpError::internal_error(
                 format!(
-                    "{tool} is not supported in gRPC MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, simple grm_node_find, and simple grm_edge_find"
+                    "{tool} is not supported in gRPC MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, traversal-capable grm_node_find for node results, and simple grm_edge_find"
                 ),
                 None,
             )

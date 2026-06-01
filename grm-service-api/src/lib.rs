@@ -341,6 +341,7 @@ impl GrpcWorkspaceClient {
         &mut self,
         request: grm_rs::NodeFindRequest,
     ) -> GrpcWorkspaceClientResult<grm_rs::RuntimeNodeFindResponse> {
+        reject_node_find_edge_return(&request)?;
         let response = self
             .execute_service_request(ServiceRequest::FindNodes(request.try_into()?))
             .await?;
@@ -3270,7 +3271,7 @@ fn proto_runtime_request_from_service_request(
         | ServiceRequest::IndexList(_)
         | ServiceRequest::Summary(_) => {
             return Err(grm_rs::GrmError::NotSupported(
-                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/simple find/batch through ExecuteWorkspace",
+                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/find/batch through ExecuteWorkspace; node.find return=edge remains unsupported",
             ));
         }
     })
@@ -3883,6 +3884,19 @@ fn runtime_delete_from_proto(
         model: deleted.model,
         id: deleted.id,
     })
+}
+
+fn reject_node_find_edge_return(
+    request: &grm_rs::NodeFindRequest,
+) -> GrpcWorkspaceClientResult<()> {
+    if request.return_mode == Some(grm_rs::TraversalReturn::Edge) {
+        return Err(GrpcWorkspaceClientError::Runtime(
+            grm_rs::GrmError::NotSupported(
+                "node.find return=edge is not supported by GrpcWorkspaceClient::find_nodes yet",
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn runtime_node_find_from_proto(

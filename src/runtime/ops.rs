@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::batch::{SessionBatchOp, SessionBatchParams, SessionBatchResponse};
+use super::parser::QueryTerm;
 use crate::{
     CompareOp, DurableOperation, GrmError, Result, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
     RuntimeValueType, StoredNode, StoredRel,
@@ -235,27 +236,27 @@ impl NodeFindRequest {
         };
 
         for (raw_key, value) in filters {
-            let raw_value = value_to_raw(&value)?;
-            match raw_key.as_str() {
-                "format" => {}
-                "limit" => request.limit = Some(parse_usize_value(&raw_value, "limit")?),
-                "offset" => request.offset = Some(parse_usize_value(&raw_value, "offset")?),
-                "order" => request.order = parse_order_value(&raw_value)?,
-                "id" => request.id = Some(parse_i64_value(&raw_value, "id")?),
-                _ => {
-                    let (field, op) = split_filter_key(&raw_key)?;
-                    if field == "id" {
-                        return Err(GrmError::Constraint(
-                            "backend id filter 'id' only supports '='".into(),
-                        ));
-                    }
-                    request.predicates.push(PropertyPredicate {
-                        field: field.to_string(),
-                        op,
-                        value,
-                    });
-                }
-            }
+            push_node_find_adapter_value(&mut request, raw_key, value)?;
+        }
+
+        Ok(request)
+    }
+
+    /// Build a structured request from CLI/session-style key/value terms.
+    ///
+    /// Unlike a map-shaped adapter filter, this preserves repeated `via=` terms for
+    /// multi-hop traversals while still producing the canonical structured request.
+    pub fn from_adapter_query_terms(
+        model: impl Into<String>,
+        terms: impl IntoIterator<Item = QueryTerm>,
+    ) -> Result<Self> {
+        let mut request = Self {
+            model: model.into(),
+            ..Default::default()
+        };
+
+        for term in terms {
+            push_node_find_adapter_value(&mut request, term.key, Value::String(term.value))?;
         }
 
         Ok(request)
@@ -579,6 +580,107 @@ fn parse_order_value(raw: &str) -> Result<Vec<OrderSpec>> {
         });
     }
     Ok(order)
+}
+
+fn push_node_find_adapter_value(
+    request: &mut NodeFindRequest,
+    raw_key: String,
+    value: Value,
+) -> Result<()> {
+    let raw_value = value_to_raw(&value)?;
+    match raw_key.as_str() {
+        "format" => {}
+        "limit" => request.limit = Some(parse_usize_value(&raw_value, "limit")?),
+        "offset" => request.offset = Some(parse_usize_value(&raw_value, "offset")?),
+        "order" => request.order = parse_order_value(&raw_value)?,
+        "id" => request.id = Some(parse_i64_value(&raw_value, "id")?),
+        "via" => request.traversals.push(parse_traversal_value(&raw_value)?),
+        "return" => request.return_mode = Some(parse_traversal_return_value(&raw_value)?),
+        _ if raw_key.starts_with("end.") => {
+            let inner = raw_key.trim_start_matches("end.");
+            let (field, op) = split_filter_key(inner)?;
+            request.end_predicates.push(PropertyPredicate {
+                field: field.to_string(),
+                op,
+                value,
+            });
+        }
+        _ if raw_key.starts_with("edge.") || raw_key.starts_with("rel.") => {
+            let inner = raw_key
+                .strip_prefix("edge.")
+                .or_else(|| raw_key.strip_prefix("rel."))
+                .unwrap_or(raw_key.as_str());
+            let (field, op) = split_filter_key(inner)?;
+            request.edge_predicates.push(PropertyPredicate {
+                field: field.to_string(),
+                op,
+                value,
+            });
+        }
+        _ => {
+            let (field, op) = split_filter_key(&raw_key)?;
+            if field == "id" {
+                return Err(GrmError::Constraint(
+                    "backend id filter 'id' only supports '='".into(),
+                ));
+            }
+            request.predicates.push(PropertyPredicate {
+                field: field.to_string(),
+                op,
+                value,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_traversal_value(raw: &str) -> Result<TraversalStepRequest> {
+    let parts = raw.split(':').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err(GrmError::Constraint(
+            "via must use via=<out|in|both>:<LinkName|*>:<EndModel>".into(),
+        ));
+    }
+    let direction = match parts[0] {
+        "out" | "outgoing" => TraversalDirection::Out,
+        "in" | "incoming" => TraversalDirection::In,
+        "both" => TraversalDirection::Both,
+        _ => {
+            return Err(GrmError::Constraint(
+                "via direction must be one of: out, in, both".into(),
+            ));
+        }
+    };
+    let edge_model = match parts[1] {
+        "*" => None,
+        "" => {
+            return Err(GrmError::Constraint(
+                "via link model cannot be empty".into(),
+            ));
+        }
+        link => Some(link.to_string()),
+    };
+    if parts[2].is_empty() {
+        return Err(GrmError::Constraint("via end model cannot be empty".into()));
+    }
+
+    Ok(TraversalStepRequest {
+        direction,
+        edge_model,
+        end_model: parts[2].to_string(),
+    })
+}
+
+fn parse_traversal_return_value(raw: &str) -> Result<TraversalReturn> {
+    match raw {
+        "end" => Ok(TraversalReturn::End),
+        "root" => Ok(TraversalReturn::Root),
+        "edge" | "rel" => Ok(TraversalReturn::Edge),
+        _ => Err(GrmError::Constraint(
+            "return must be one of: root, end, edge".into(),
+        )),
+    }
 }
 
 fn parse_usize_value(raw: &str, field: &str) -> Result<usize> {
