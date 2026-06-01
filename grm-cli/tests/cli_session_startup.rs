@@ -27,6 +27,7 @@ fn run_grm_session(args: &[&str], input: &str) -> std::process::Output {
         .unwrap()
         .write_all(input.as_bytes())
         .unwrap();
+    drop(child.stdin.take());
 
     child.wait_with_output().unwrap()
 }
