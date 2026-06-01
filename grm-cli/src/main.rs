@@ -382,7 +382,7 @@ impl<'a> ServiceCliSession<'a> {
             SessionCommand::NodeFind { model_name, terms } => {
                 let request = NodeFindRequest::from_adapter_filter_values(
                     model_name,
-                    terms_to_json_filters(terms, &self.bindings)?,
+                    terms_to_json_filters(terms, &self.bindings, false)?,
                 )?;
                 let found = self
                     .client
@@ -425,8 +425,8 @@ impl<'a> ServiceCliSession<'a> {
                 assignments,
             } => {
                 let mut props = assignments_to_json(assignments, &self.bindings)?;
-                let from = take_required_id(&mut props, "from")?;
-                let to = take_required_id(&mut props, "to")?;
+                let from = take_required_id_or_binding(&mut props, "from", &self.bindings)?;
+                let to = take_required_id_or_binding(&mut props, "to", &self.bindings)?;
                 let edge = self
                     .client
                     .create_edge(EdgeCreateRequest {
@@ -442,7 +442,7 @@ impl<'a> ServiceCliSession<'a> {
             SessionCommand::EdgeFind { model_name, terms } => {
                 let request = EdgeFindRequest::from_adapter_filter_values(
                     model_name,
-                    terms_to_json_filters(terms, &self.bindings)?,
+                    terms_to_json_filters(terms, &self.bindings, true)?,
                 )?;
                 let found = self
                     .client
@@ -1009,21 +1009,29 @@ fn parse_field_args(args: &[String]) -> grm_rs::Result<Vec<FieldSpec>> {
 
 fn assignments_to_json(
     assignments: Vec<KeyValueArg>,
-    bindings: &BTreeMap<String, i64>,
+    _bindings: &BTreeMap<String, i64>,
 ) -> grm_rs::Result<BTreeMap<String, Value>> {
     assignments
         .into_iter()
-        .map(|arg| Ok((arg.key, parse_scalar_or_binding(&arg.value, bindings))))
+        .map(|arg| Ok((arg.key, parse_scalar(&arg.value))))
         .collect()
 }
 
 fn terms_to_json_filters(
     terms: Vec<grm_rs::QueryTerm>,
     bindings: &BTreeMap<String, i64>,
+    resolve_endpoint_ids: bool,
 ) -> grm_rs::Result<BTreeMap<String, Value>> {
     terms
         .into_iter()
-        .map(|term| Ok((term.key, parse_scalar_or_binding(&term.value, bindings))))
+        .map(|term| {
+            let value = if resolve_endpoint_ids && matches!(term.key.as_str(), "from" | "to") {
+                parse_scalar_or_binding(&term.value, bindings)
+            } else {
+                parse_scalar(&term.value)
+            };
+            Ok((term.key, value))
+        })
         .collect()
 }
 
@@ -1049,13 +1057,23 @@ fn parse_scalar(raw: &str) -> Value {
     }
 }
 
-fn take_required_id(props: &mut BTreeMap<String, Value>, key: &str) -> grm_rs::Result<i64> {
+fn take_required_id_or_binding(
+    props: &mut BTreeMap<String, Value>,
+    key: &str,
+    bindings: &BTreeMap<String, i64>,
+) -> grm_rs::Result<i64> {
     let value = props
         .remove(key)
         .ok_or_else(|| grm_rs::GrmError::Constraint(format!("edge.create requires {key}=<id>")))?;
-    value
-        .as_i64()
-        .ok_or_else(|| grm_rs::GrmError::Constraint(format!("{key} must be an integer id")))
+    match value {
+        Value::String(binding) => bindings
+            .get(&binding)
+            .copied()
+            .ok_or_else(|| grm_rs::GrmError::Constraint(format!("{key} must be an integer id"))),
+        value => value
+            .as_i64()
+            .ok_or_else(|| grm_rs::GrmError::Constraint(format!("{key} must be an integer id"))),
+    }
 }
 
 fn parse_i64(raw: &str, name: &str) -> grm_rs::Result<i64> {
@@ -1204,6 +1222,14 @@ mod tests {
             .await
             .unwrap();
         session
+            .handle_command(&mut output, "node.create Post title=alice")
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "node.find Post title=alice")
+            .await
+            .unwrap();
+        session
             .handle_command(&mut output, "session.describe")
             .await
             .unwrap();
@@ -1220,11 +1246,13 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("Defined node model"));
         assert!(output.contains("Node User id=1 {name=Ada}"));
+        assert!(output.contains("Node Post id=3 {title=alice}"));
         assert!(output.contains("Edge Authored id=1 from=1 to=2 {year=2026}"));
         assert!(output.contains("Session Summary"));
-        assert!(output.contains("Stored rows: 2 nodes, 1 edges"));
+        assert!(output.contains("Stored rows: 3 nodes, 1 edges"));
         assert!(output.contains("+------+----------+-------+"));
         assert!(output.contains("| node | User     | 1     |"));
+        assert!(output.contains("| node | Post     | 2     |"));
         assert!(output.contains("| edge | Authored | 1     |"));
         assert!(output.contains("Available commands in gRPC service mode:"));
         assert!(output.contains("let <name> = node.create"));
