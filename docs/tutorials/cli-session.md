@@ -28,6 +28,16 @@ grm(session)>
 
 The session starts empty.
 
+`cargo run --bin grm -- session` still starts the local embedded CLI session.
+When `GRM_BACKEND=grpc` is set, the same entry point opens a service-backed
+session instead and routes the supported schema/CRUD/simple-find subset through
+the gRPC workspace service. Configure it with `GRM_SERVICE_ENDPOINT`,
+`GRM_WORKSPACE_REF`, and optional `GRM_SERVICE_WORKSPACE_MODE=create|open`.
+Service workspace format defaults to binary; set
+`GRM_SERVICE_WORKSPACE_FORMAT=json` only when you explicitly want JSON files.
+Local file commands, transactions, explain/profile, graph traversal parity, and
+import/export remain local-only or unsupported in service CLI mode.
+
 ## Define A Small Graph
 
 Create two node models and one relationship model:

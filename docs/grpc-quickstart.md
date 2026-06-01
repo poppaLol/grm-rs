@@ -27,6 +27,55 @@ cargo run -p grm-service-api --example local_workspace_client -- \
 This is the primary checked client path. It creates or opens a workspace,
 defines schema, creates nodes and edges, runs simple finds and a batch request,
 closes and reopens the workspace, and verifies data is still present.
+Rust callers can use `grm_service_api::GrpcWorkspaceClient` directly for the
+same checked subset without building generated protobuf requests manually.
+
+## CLI Service Mode
+
+The regular local CLI remains:
+
+```bash
+cargo run --bin grm -- session
+```
+
+To explicitly route supported CLI session commands through the workspace
+service, configure the backend:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=quickstart-cli \
+GRM_SERVICE_WORKSPACE_MODE=create \
+cargo run --bin grm -- session
+```
+
+In this mode, `model.define`, `link.define`, node/edge CRUD, simple find,
+`model.list`, `link.list`, and `session.describe` use `ExecuteWorkspace`.
+Local session file commands, transactions, explain/profile, traversal parity,
+and import/export remain local-only or unsupported in service CLI mode.
+`GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; set it to `json` only when
+you explicitly want JSON workspace files.
+
+## Python Service Mode
+
+The Python package keeps the embedded `Session` API. It also exposes
+`ServiceSession` for the checked service subset:
+
+```python
+from grm_rs import ServiceSession
+
+session = ServiceSession(
+    endpoint="http://127.0.0.1:50051",
+    workspace_ref="quickstart-python",
+    mode="create",
+)
+session.model_create("User", "userId", [{"name": "name", "type": "string", "required": True}])
+session.node_create("User", {"name": "Ada"})
+assert len(session.node_find("User", {"name": "Ada"})) == 1
+```
+
+`ServiceSession(..., workspace_format="binary")` is the default. Use
+`workspace_format="json"` explicitly for JSON workspace files.
 
 ## Optional grpcurl Smoke Scripts
 

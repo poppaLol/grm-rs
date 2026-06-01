@@ -1,8 +1,17 @@
+use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, BufReader, IsTerminal};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
 
-use grm_rs::CliSession;
+use grm_rs::runtime::{KeyValueArg, SessionCommand, parse_command_line};
+use grm_rs::{
+    CliSession, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
+    EdgeFindRequest, EdgeUpdateRequest, FieldSpec, FieldValueType, NodeCreateRequest,
+    NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, RuntimeNodeModel, RuntimeRelModel,
+    StoredNode, StoredRel,
+};
+use grm_service_api::{DurabilityFormat, GrpcWorkspaceClient, GrpcWorkspaceMode};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupLoadFormat {
@@ -49,6 +58,21 @@ async fn main() {
             };
             let stdout = io::stdout();
             let writer = stdout.lock();
+            if std::env::var("GRM_BACKEND").ok().as_deref() == Some("grpc") {
+                if !matches!(startup, SessionStartup::Fresh) {
+                    eprintln!(
+                        "--script and --load are local CLI startup options and are not supported in gRPC service mode"
+                    );
+                    std::process::exit(1);
+                }
+                let stdin = io::stdin();
+                let reader = BufReader::new(stdin.lock());
+                if let Err(err) = run_service_session(reader, writer).await {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+                return;
+            }
             match startup {
                 SessionStartup::Script { path } => {
                     let file = match File::open(&path) {
@@ -220,12 +244,417 @@ fn parse_session_startup(args: Vec<String>) -> Result<SessionStartup, String> {
 }
 
 fn session_usage() -> &'static str {
-    "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]"
+    "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]\nSet GRM_BACKEND=grpc with GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and optional GRM_SERVICE_WORKSPACE_MODE=create|open to route supported commands through the gRPC workspace service."
+}
+
+async fn run_service_session<R: BufRead, W: Write>(reader: R, mut writer: W) -> grm_rs::Result<()> {
+    let endpoint = required_env("GRM_SERVICE_ENDPOINT")?;
+    let workspace_ref = required_env("GRM_WORKSPACE_REF")?;
+    let mode = match std::env::var("GRM_SERVICE_WORKSPACE_MODE").ok().as_deref() {
+        Some("create") => GrpcWorkspaceMode::Create,
+        Some("open") | None => GrpcWorkspaceMode::Open,
+        Some(other) => {
+            return Err(grm_rs::GrmError::Constraint(format!(
+                "unsupported GRM_SERVICE_WORKSPACE_MODE '{other}'; expected 'create' or 'open'"
+            )));
+        }
+    };
+    let format = match std::env::var("GRM_SERVICE_WORKSPACE_FORMAT")
+        .ok()
+        .as_deref()
+    {
+        Some("json") => DurabilityFormat::Json,
+        Some("bin" | "binary") | None => DurabilityFormat::Binary,
+        Some(other) => {
+            return Err(grm_rs::GrmError::Constraint(format!(
+                "unsupported GRM_SERVICE_WORKSPACE_FORMAT '{other}'; expected 'json', 'bin', or 'binary'"
+            )));
+        }
+    };
+    let mut client =
+        GrpcWorkspaceClient::connect_with_format(endpoint, workspace_ref, mode, format)
+            .await
+            .map_err(service_error)?;
+
+    writeln!(
+        writer,
+        "Welcome to GRM-RS CLI.\ngRPC workspace service session ready. Supported commands route through ExecuteWorkspace."
+    )?;
+    let mut lines = reader.lines();
+    loop {
+        write!(writer, "grm(service)> ")?;
+        writer.flush()?;
+        let Some(line) = lines.next() else {
+            writeln!(writer)?;
+            break;
+        };
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match handle_service_command(&mut client, &mut writer, trimmed).await {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(err) => writeln!(writer, "{err}")?,
+        }
+    }
+    Ok(())
+}
+
+async fn handle_service_command<W: Write>(
+    client: &mut GrpcWorkspaceClient,
+    writer: &mut W,
+    line: &str,
+) -> grm_rs::Result<bool> {
+    match parse_command_line(line)? {
+        SessionCommand::Help => write_service_help(writer)?,
+        SessionCommand::Exit => return Ok(true),
+        SessionCommand::SessionDescribe { .. }
+        | SessionCommand::ModelList
+        | SessionCommand::LinkList => {
+            let schema = client.schema_list().await.map_err(service_error)?;
+            write_service_schema(writer, &schema.node_models, &schema.edge_models)?;
+        }
+        SessionCommand::ModelDefine { args } => {
+            let request = parse_model_define_args(args)?;
+            client.define_node(request).await.map_err(service_error)?;
+            writeln!(writer, "Defined node model")?;
+        }
+        SessionCommand::LinkDefine { args } => {
+            let request = parse_link_define_args(args)?;
+            client.define_edge(request).await.map_err(service_error)?;
+            writeln!(writer, "Defined edge model")?;
+        }
+        SessionCommand::NodeCreate {
+            binding: _,
+            model_name,
+            assignments,
+        } => {
+            let node = client
+                .create_node(NodeCreateRequest {
+                    model: model_name,
+                    props: assignments_to_json(assignments),
+                })
+                .await
+                .map_err(service_error)?;
+            write_node(writer, &node)?;
+        }
+        SessionCommand::NodeFind { model_name, terms } => {
+            let request = NodeFindRequest::from_adapter_filter_values(
+                model_name,
+                terms_to_json_filters(terms),
+            )?;
+            let found = client.find_nodes(request).await.map_err(service_error)?;
+            for node in found.nodes {
+                write_node(writer, &node)?;
+            }
+        }
+        SessionCommand::NodeUpdate {
+            model_name,
+            id,
+            assignments,
+        } => {
+            let node = client
+                .update_node(NodeUpdateRequest {
+                    model: model_name,
+                    id: parse_i64(&id, "node id")?,
+                    props: assignments_to_json(assignments),
+                })
+                .await
+                .map_err(service_error)?;
+            write_node(writer, &node)?;
+        }
+        SessionCommand::NodeDelete { model_name, id } => {
+            let deleted = client
+                .delete_node(NodeDeleteRequest {
+                    model: model_name,
+                    id: parse_i64(&id, "node id")?,
+                })
+                .await
+                .map_err(service_error)?;
+            writeln!(writer, "Deleted node {} id={}", deleted.model, deleted.id)?;
+        }
+        SessionCommand::EdgeCreate {
+            model_name,
+            assignments,
+        } => {
+            let mut props = assignments_to_json(assignments);
+            let from = take_required_id(&mut props, "from")?;
+            let to = take_required_id(&mut props, "to")?;
+            let edge = client
+                .create_edge(EdgeCreateRequest {
+                    model: model_name,
+                    from,
+                    to,
+                    props,
+                })
+                .await
+                .map_err(service_error)?;
+            write_edge(writer, &edge)?;
+        }
+        SessionCommand::EdgeFind { model_name, terms } => {
+            let request = EdgeFindRequest::from_adapter_filter_values(
+                model_name,
+                terms_to_json_filters(terms),
+            )?;
+            let found = client.find_edges(request).await.map_err(service_error)?;
+            for edge in found.edges {
+                write_edge(writer, &edge)?;
+            }
+        }
+        SessionCommand::EdgeUpdate {
+            model_name,
+            id,
+            assignments,
+        } => {
+            let edge = client
+                .update_edge(EdgeUpdateRequest {
+                    model: model_name,
+                    id: parse_i64(&id, "edge id")?,
+                    props: assignments_to_json(assignments),
+                })
+                .await
+                .map_err(service_error)?;
+            write_edge(writer, &edge)?;
+        }
+        SessionCommand::EdgeDelete { model_name, id } => {
+            let deleted = client
+                .delete_edge(EdgeDeleteRequest {
+                    model: model_name,
+                    id: parse_i64(&id, "edge id")?,
+                })
+                .await
+                .map_err(service_error)?;
+            writeln!(writer, "Deleted edge {} id={}", deleted.model, deleted.id)?;
+        }
+        SessionCommand::Unknown { .. } => writeln!(writer, "Unknown command: {line}")?,
+        SessionCommand::SessionSave { args: _ }
+        | SessionCommand::SessionLoad { args: _ }
+        | SessionCommand::SessionImport { args: _ }
+        | SessionCommand::SessionExport { args: _ }
+        | SessionCommand::SessionCompact
+        | SessionCommand::SessionAutocommit { args: _ }
+        | SessionCommand::SessionIndexes { .. }
+        | SessionCommand::TxBegin
+        | SessionCommand::TxCommit
+        | SessionCommand::ModelShow { .. }
+        | SessionCommand::LinkShow { .. }
+        | SessionCommand::SessionExplainNodeFind { .. }
+        | SessionCommand::SessionProfileNodeFind { .. }
+        | SessionCommand::SessionExplainEdgeFind { .. }
+        | SessionCommand::SessionProfileEdgeFind { .. } => {
+            writeln!(
+                writer,
+                "Command is local-only or not supported in gRPC service CLI mode yet"
+            )?;
+        }
+    }
+    Ok(false)
+}
+
+fn write_service_help<W: Write>(writer: &mut W) -> grm_rs::Result<()> {
+    writeln!(writer, "Supported gRPC service commands:")?;
+    writeln!(
+        writer,
+        "  model.define <Name> <id_field> [field:type:required|optional ...]"
+    )?;
+    writeln!(
+        writer,
+        "  link.define <Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]"
+    )?;
+    writeln!(writer, "  model.list | link.list | session.describe")?;
+    writeln!(
+        writer,
+        "  node.create/find/update/delete and edge.create/find/update/delete"
+    )?;
+    writeln!(writer, "  session.exit")?;
+    Ok(())
+}
+
+fn write_service_schema<W: Write>(
+    writer: &mut W,
+    nodes: &[RuntimeNodeModel],
+    edges: &[RuntimeRelModel],
+) -> grm_rs::Result<()> {
+    writeln!(writer, "Service Schema")?;
+    for node in nodes {
+        writeln!(
+            writer,
+            "| node | {} | id={} |",
+            node.name, node.id_field_name
+        )?;
+    }
+    for edge in edges {
+        writeln!(
+            writer,
+            "| edge | {} | {} -> {} | id={} |",
+            edge.name, edge.from_model, edge.to_model, edge.id_field_name
+        )?;
+    }
+    Ok(())
+}
+
+fn write_node<W: Write>(writer: &mut W, node: &StoredNode) -> grm_rs::Result<()> {
+    writeln!(
+        writer,
+        "Node {} id={} {}",
+        node.labels.first().map(String::as_str).unwrap_or(""),
+        node.id,
+        props_display(&node.props)
+    )?;
+    Ok(())
+}
+
+fn write_edge<W: Write>(writer: &mut W, edge: &StoredRel) -> grm_rs::Result<()> {
+    writeln!(
+        writer,
+        "Edge {} id={} from={} to={} {}",
+        edge.rel_type,
+        edge.id,
+        edge.from,
+        edge.to,
+        props_display(&edge.props)
+    )?;
+    Ok(())
+}
+
+fn props_display(props: &BTreeMap<String, Value>) -> String {
+    let values = props
+        .iter()
+        .map(|(key, value)| format!("{key}={}", scalar_display(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{values}}}")
+}
+
+fn scalar_display(value: &Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn parse_model_define_args(args: Vec<String>) -> grm_rs::Result<DefineNodeRequest> {
+    if args.len() < 2 {
+        return Err(grm_rs::GrmError::Constraint(
+            "usage: model.define <Name> <id_field> [field:type:required|optional ...]".into(),
+        ));
+    }
+    Ok(DefineNodeRequest {
+        name: args[0].clone(),
+        id_field: args[1].clone(),
+        fields: parse_field_args(&args[2..])?,
+    })
+}
+
+fn parse_link_define_args(args: Vec<String>) -> grm_rs::Result<DefineEdgeRequest> {
+    if args.len() < 4 {
+        return Err(grm_rs::GrmError::Constraint(
+            "usage: link.define <Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]".into(),
+        ));
+    }
+    Ok(DefineEdgeRequest {
+        name: args[0].clone(),
+        from_model: args[1].clone(),
+        to_model: args[2].clone(),
+        id_field: args[3].clone(),
+        fields: parse_field_args(&args[4..])?,
+    })
+}
+
+fn parse_field_args(args: &[String]) -> grm_rs::Result<Vec<FieldSpec>> {
+    args.iter()
+        .map(|arg| {
+            let parts = arg.split(':').collect::<Vec<_>>();
+            if parts.len() != 3 {
+                return Err(grm_rs::GrmError::Constraint(format!(
+                    "field spec '{arg}' must be name:type:required|optional"
+                )));
+            }
+            Ok(FieldSpec {
+                name: parts[0].to_string(),
+                value_type: match parts[1] {
+                    "string" => FieldValueType::String,
+                    "int" => FieldValueType::Int,
+                    "float" => FieldValueType::Float,
+                    "bool" => FieldValueType::Bool,
+                    other => {
+                        return Err(grm_rs::GrmError::Constraint(format!(
+                            "unsupported field type '{other}'"
+                        )));
+                    }
+                },
+                required: match parts[2] {
+                    "required" => true,
+                    "optional" => false,
+                    other => {
+                        return Err(grm_rs::GrmError::Constraint(format!(
+                            "unsupported field requirement '{other}'"
+                        )));
+                    }
+                },
+            })
+        })
+        .collect()
+}
+
+fn assignments_to_json(assignments: Vec<KeyValueArg>) -> BTreeMap<String, Value> {
+    assignments
+        .into_iter()
+        .map(|arg| (arg.key, parse_scalar(&arg.value)))
+        .collect()
+}
+
+fn terms_to_json_filters(terms: Vec<grm_rs::QueryTerm>) -> BTreeMap<String, Value> {
+    terms
+        .into_iter()
+        .map(|term| (term.key, parse_scalar(&term.value)))
+        .collect()
+}
+
+fn parse_scalar(raw: &str) -> Value {
+    if raw == "true" {
+        Value::Bool(true)
+    } else if raw == "false" {
+        Value::Bool(false)
+    } else if let Ok(value) = raw.parse::<i64>() {
+        Value::from(value)
+    } else if let Ok(value) = raw.parse::<f64>() {
+        Value::from(value)
+    } else {
+        Value::String(raw.to_string())
+    }
+}
+
+fn take_required_id(props: &mut BTreeMap<String, Value>, key: &str) -> grm_rs::Result<i64> {
+    let value = props
+        .remove(key)
+        .ok_or_else(|| grm_rs::GrmError::Constraint(format!("edge.create requires {key}=<id>")))?;
+    value
+        .as_i64()
+        .ok_or_else(|| grm_rs::GrmError::Constraint(format!("{key} must be an integer id")))
+}
+
+fn parse_i64(raw: &str, name: &str) -> grm_rs::Result<i64> {
+    raw.parse::<i64>()
+        .map_err(|_| grm_rs::GrmError::Constraint(format!("{name} must be an integer")))
+}
+
+fn required_env(name: &str) -> grm_rs::Result<String> {
+    std::env::var(name)
+        .map_err(|_| grm_rs::GrmError::Constraint(format!("{name} must be set in gRPC mode")))
+}
+
+fn service_error(error: grm_service_api::GrpcWorkspaceClientError) -> grm_rs::GrmError {
+    grm_rs::GrmError::Backend(error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
 
     #[test]
     fn parses_fresh_session() {
@@ -261,5 +690,55 @@ mod tests {
                 .unwrap_err()
                 .contains("--load")
         );
+    }
+
+    #[tokio::test]
+    async fn service_command_adapter_routes_supported_commands_through_grpc() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let service =
+            grm_service_api::GrpcWorkspaceService::with_local_workspace_root(tempdir.path())
+                .into_server();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let mut client = GrpcWorkspaceClient::connect(
+            format!("http://{addr}"),
+            "cli-service-smoke",
+            GrpcWorkspaceMode::Create,
+        )
+        .await
+        .unwrap();
+        let mut output = Vec::new();
+        handle_service_command(
+            &mut client,
+            &mut output,
+            "model.define User userId name:string:required",
+        )
+        .await
+        .unwrap();
+        handle_service_command(&mut client, &mut output, "node.create User name=Ada")
+            .await
+            .unwrap();
+        handle_service_command(&mut client, &mut output, "node.find User name=Ada")
+            .await
+            .unwrap();
+
+        drop(client);
+        shutdown_tx.send(()).unwrap();
+        server.await.unwrap().unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("Defined node model"));
+        assert!(output.contains("Node User id=1 {name=Ada}"));
+        assert!(tempdir.path().join("cli-service-smoke.bin").exists());
     }
 }
