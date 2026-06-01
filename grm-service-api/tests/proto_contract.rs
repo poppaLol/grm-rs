@@ -859,6 +859,66 @@ async fn workspace_client_executes_through_workspace_scope() {
 }
 
 #[tokio::test]
+async fn ergonomic_workspace_client_routes_supported_operations_through_execute_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let mut client = svc::GrpcWorkspaceClient::connect(
+        format!("http://{addr}"),
+        "ergonomic-client-smoke",
+        svc::GrpcWorkspaceMode::Create,
+    )
+    .await
+    .unwrap();
+    client
+        .define_node(grm_rs::DefineNodeRequest {
+            name: "User".into(),
+            id_field: "userId".into(),
+            fields: vec![grm_rs::FieldSpec {
+                name: "name".into(),
+                value_type: grm_rs::FieldValueType::String,
+                required: true,
+            }],
+        })
+        .await
+        .unwrap();
+    let created = client
+        .create_node(grm_rs::NodeCreateRequest {
+            model: "User".into(),
+            props: [("name".into(), json!("Ada"))].into_iter().collect(),
+        })
+        .await
+        .unwrap();
+    let found = client
+        .find_nodes(grm_rs::NodeFindRequest {
+            model: "User".into(),
+            id: Some(created.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(found.nodes.len(), 1);
+    assert_eq!(found.nodes[0].props["name"], json!("Ada"));
+    assert!(temp.path().join("ergonomic-client-smoke.bin").exists());
+
+    client.close().await.unwrap();
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn workspace_client_accepts_explicit_json_workspace_format() {
     let temp = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
