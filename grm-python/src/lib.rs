@@ -1706,22 +1706,27 @@ mod tests {
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 
-    #[tokio::test]
-    async fn service_session_routes_supported_python_surface_through_grpc() {
+    #[test]
+    fn service_session_routes_supported_python_surface_through_grpc() {
         pyo3::prepare_freethreaded_python();
         let temp = tempfile::tempdir().unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let service = grm_service_api::GrpcWorkspaceService::with_local_workspace_root(temp.path())
-            .into_server();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(async move {
-            Server::builder()
-                .add_service(service)
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                    let _ = shutdown_rx.await;
-                })
-                .await
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (addr, shutdown_tx, server) = runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let service =
+                grm_service_api::GrpcWorkspaceService::with_local_workspace_root(temp.path())
+                    .into_server();
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                Server::builder()
+                    .add_service(service)
+                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+            });
+            (addr, shutdown_tx, server)
         });
 
         Python::with_gil(|py| {
@@ -1763,6 +1768,8 @@ mod tests {
 
         assert!(temp.path().join("python-service-smoke.bin").exists());
         shutdown_tx.send(()).unwrap();
-        server.await.unwrap().unwrap();
+        runtime.block_on(async {
+            server.await.unwrap().unwrap();
+        });
     }
 }
