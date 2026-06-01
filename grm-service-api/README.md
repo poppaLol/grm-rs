@@ -17,14 +17,19 @@ Generated protobuf DTOs are build-checked and can be converted into the
 service/runtime request shape. Tests prove generated schema and batch requests
 can execute through `SessionState::execute_runtime`; batch execution reuses the
 existing runtime batch path and preserves grouped durable operation metadata.
+`GrpcWorkspaceClient` also exposes Rust-facing helpers for the checked
+workspace subset, so callers can use `define_node`, `schema_list`,
+`create_node`, `find_nodes`, `create_edge`, `find_edges`, and `apply_batch`
+without assembling generated protobuf messages by hand. The generated proto
+module remains public for lower-level callers.
 A minimal local gRPC shell exposes the workspace RPCs over the same generated
 contract and delegates to `InProcessWorkspaceService`. The shell can also bind
 opaque `WorkspaceRef` values to local autocommit workspace files under a
 server-configured root, letting generated clients create, execute, close, and
 reopen a durable local workspace without sending server filesystem paths.
-Generated-client tests also exercise the practical MCP-Neo4j CRUD parity subset
-through `ExecuteWorkspace`: schema define/list, schema-aware node and edge
-CRUD, simple find, batch, and reopen verification.
+Generated-client and ergonomic-client tests also exercise the practical
+MCP-Neo4j CRUD parity subset through `ExecuteWorkspace`: schema define/list,
+schema-aware node and edge CRUD, simple find, batch, and reopen verification.
 
 The contract does not expose CLI command text as a query surface. Query,
 traversal, explain, and profile requests are typed request messages.
