@@ -12,3 +12,4 @@ requires-python = ">=3.9"
 [tool.maturin]
 python-source = "python"
 module-name = "grm_rs._grm_rs"
+features = ["extension-module"]
