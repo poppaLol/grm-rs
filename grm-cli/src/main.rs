@@ -324,9 +324,10 @@ impl<'a> ServiceCliSession<'a> {
         match parse_command_line(line)? {
             SessionCommand::Help => write_service_help(writer)?,
             SessionCommand::Exit => return Ok(true),
-            SessionCommand::SessionDescribe { .. }
-            | SessionCommand::ModelList
-            | SessionCommand::LinkList => {
+            SessionCommand::SessionDescribe { verbose } => {
+                self.write_summary(writer, verbose).await?;
+            }
+            SessionCommand::ModelList | SessionCommand::LinkList => {
                 let schema = self.client.schema_list().await.map_err(service_error)?;
                 write_service_schema(writer, &schema.node_models, &schema.edge_models)?;
             }
@@ -492,10 +493,102 @@ impl<'a> ServiceCliSession<'a> {
         }
         Ok(false)
     }
+
+    async fn write_summary<W: Write>(
+        &mut self,
+        writer: &mut W,
+        verbose: bool,
+    ) -> grm_rs::Result<()> {
+        let schema = self.client.schema_list().await.map_err(service_error)?;
+        writeln!(writer, "Session Summary")?;
+        writeln!(writer, "Backend: gRPC workspace service")?;
+        writeln!(writer, "Workspace: {}", self.client.workspace_ref().id)?;
+        writeln!(writer, "Scope: ExecuteWorkspace")?;
+
+        writeln!(writer, "Types defined:")?;
+        if schema.node_models.is_empty() && schema.edge_models.is_empty() {
+            writeln!(writer, "  none")?;
+        } else {
+            if !schema.node_models.is_empty() {
+                let nodes = schema
+                    .node_models
+                    .iter()
+                    .map(|model| model.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(writer, "  nodes: {nodes}")?;
+            }
+            if !schema.edge_models.is_empty() {
+                let edges = schema
+                    .edge_models
+                    .iter()
+                    .map(|model| model.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                writeln!(writer, "  links: {edges}")?;
+            }
+        }
+
+        let mut rows = Vec::new();
+        let mut node_total = 0usize;
+        for model in &schema.node_models {
+            let found = self
+                .client
+                .find_nodes(NodeFindRequest {
+                    model: model.name.clone(),
+                    ..Default::default()
+                })
+                .await
+                .map_err(service_error)?;
+            node_total += found.nodes.len();
+            if !found.nodes.is_empty() {
+                rows.push(("node", model.name.clone(), found.nodes.len()));
+            }
+        }
+
+        let mut edge_total = 0usize;
+        for model in &schema.edge_models {
+            let found = self
+                .client
+                .find_edges(EdgeFindRequest {
+                    model: model.name.clone(),
+                    ..Default::default()
+                })
+                .await
+                .map_err(service_error)?;
+            edge_total += found.edges.len();
+            if !found.edges.is_empty() {
+                rows.push(("edge", model.name.clone(), found.edges.len()));
+            }
+        }
+
+        writeln!(
+            writer,
+            "Stored rows: {node_total} nodes, {edge_total} edges"
+        )?;
+        writeln!(writer, "By type:")?;
+        if rows.is_empty() {
+            writeln!(writer, "  none")?;
+        } else {
+            writeln!(writer, "| kind | type | count |")?;
+            for (kind, model, count) in rows {
+                writeln!(writer, "| {kind} | {model} | {count} |")?;
+            }
+        }
+
+        writeln!(writer, "Autocommit: service-managed local workspace")?;
+        if verbose {
+            writeln!(
+                writer,
+                "Unsupported in gRPC CLI mode: local session save/load/import/export, transactions, explain/profile, traversal parity, and session.indexes"
+            )?;
+        }
+        Ok(())
+    }
 }
 
 fn write_service_help<W: Write>(writer: &mut W) -> grm_rs::Result<()> {
-    writeln!(writer, "Supported gRPC service commands:")?;
+    writeln!(writer, "Available commands in gRPC service mode:")?;
     writeln!(
         writer,
         "  model.define <Name> <id_field> [field:type:required|optional ...]"
@@ -505,11 +598,41 @@ fn write_service_help<W: Write>(writer: &mut W) -> grm_rs::Result<()> {
         "  link.define <Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]"
     )?;
     writeln!(writer, "  model.list | link.list | session.describe")?;
+    writeln!(writer, "  node.create <ModelName> [field=value ...]")?;
     writeln!(
         writer,
-        "  node.create/find/update/delete and edge.create/find/update/delete"
+        "  let <name> = node.create <ModelName> [field=value ...]"
     )?;
+    writeln!(
+        writer,
+        "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]"
+    )?;
+    writeln!(
+        writer,
+        "  node.update <ModelName> <id|binding> [field=value ...]"
+    )?;
+    writeln!(writer, "  node.delete <ModelName> <id|binding>")?;
+    writeln!(
+        writer,
+        "  edge.create <LinkName> from=<id|binding> to=<id|binding> [field=value ...]"
+    )?;
+    writeln!(
+        writer,
+        "  edge.find <LinkName> [from=<id|binding>] [to=<id|binding>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]"
+    )?;
+    writeln!(
+        writer,
+        "  edge.update <LinkName> <id|binding> [field=value ...]"
+    )?;
+    writeln!(writer, "  edge.delete <LinkName> <id|binding>")?;
+    writeln!(writer, "  session.describe [--verbose]")?;
+    writeln!(writer, "  session.help")?;
     writeln!(writer, "  session.exit")?;
+    writeln!(writer)?;
+    writeln!(
+        writer,
+        "Local-only or unsupported in gRPC service mode: session.save/load/import/export, session.autocommit, session.compact, tx.begin/commit, session.explain, session.profile, traversal parity, session.indexes, model.show, and link.show."
+    )?;
     Ok(())
 }
 
@@ -836,6 +959,14 @@ mod tests {
             .handle_command(&mut output, "edge.find Authored from=alice")
             .await
             .unwrap();
+        session
+            .handle_command(&mut output, "session.describe")
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "session.help")
+            .await
+            .unwrap();
 
         drop(session);
         drop(client);
@@ -846,6 +977,13 @@ mod tests {
         assert!(output.contains("Defined node model"));
         assert!(output.contains("Node User id=1 {name=Ada}"));
         assert!(output.contains("Edge Authored id=1 from=1 to=2 {year=2026}"));
+        assert!(output.contains("Session Summary"));
+        assert!(output.contains("Stored rows: 2 nodes, 1 edges"));
+        assert!(output.contains("| node | User | 1 |"));
+        assert!(output.contains("| edge | Authored | 1 |"));
+        assert!(output.contains("Available commands in gRPC service mode:"));
+        assert!(output.contains("let <name> = node.create"));
+        assert!(output.contains("edge.create <LinkName> from=<id|binding> to=<id|binding>"));
         assert!(tempdir.path().join("cli-service-smoke.bin").exists());
     }
 }
