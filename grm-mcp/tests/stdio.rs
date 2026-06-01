@@ -325,7 +325,7 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     assert_eq!(traversed["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(traversed["nodes"][0]["id"], json!(post_id));
 
-    let edge_return_error = call_error(
+    let edge_return = call(
         &client,
         "grm_node_find",
         json!({
@@ -336,7 +336,14 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
         }),
     )
     .await;
-    assert!(edge_return_error.contains("return=edge"));
+    assert_eq!(edge_return["nodes"].as_array().unwrap().len(), 0);
+    assert_eq!(edge_return["edges"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        edge_return["edges"][0]["rel_type"],
+        json!("GRPC_MCP_AUTHORED")
+    );
+    assert_eq!(edge_return["edges"][0]["from"], json!(user_id));
+    assert_eq!(edge_return["edges"][0]["to"], json!(post_id));
 
     let found_edges = call(
         &client,

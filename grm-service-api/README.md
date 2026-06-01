@@ -19,7 +19,8 @@ can execute through `SessionState::execute_runtime`; batch execution reuses the
 existing runtime batch path and preserves grouped durable operation metadata.
 `GrpcWorkspaceClient` also exposes Rust-facing helpers for the checked
 workspace subset, so callers can use `define_node`, `schema_list`,
-`create_node`, `find_nodes`, `create_edge`, `find_edges`, and `apply_batch`
+`create_node`, `find_nodes` for node-only results, `find_node_results` for
+node.find node-or-edge results, `create_edge`, `find_edges`, and `apply_batch`
 without assembling generated protobuf messages by hand. The generated proto
 module remains public for lower-level callers.
 A minimal local gRPC shell exposes the workspace RPCs over the same generated

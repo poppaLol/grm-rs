@@ -32,12 +32,12 @@ The session starts empty.
 When `GRM_BACKEND=grpc` is set, the same entry point opens a service-backed
 session instead and routes the supported schema/CRUD/find subset through the
 gRPC workspace service. That includes traversal-capable `node.find` for
-node/root/end results through `ExecuteWorkspace`. Configure it with
+node/root/end/edge results through `ExecuteWorkspace`. Configure it with
 `GRM_SERVICE_ENDPOINT`, `GRM_WORKSPACE_REF`, and optional
 `GRM_SERVICE_WORKSPACE_MODE=create|open`. Service workspace format defaults to
 binary; set `GRM_SERVICE_WORKSPACE_FORMAT=json` only when you explicitly want
-JSON files. Local file commands, transactions, explain/profile, `node.find
-return=edge`, free-form query parity, and import/export remain local-only or
+JSON files. Local file commands, transactions, explain/profile, free-form query
+parity, and import/export remain local-only or
 unsupported in service CLI mode.
 
 ## Define A Small Graph

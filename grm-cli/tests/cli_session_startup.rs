@@ -156,6 +156,6 @@ async fn grpc_service_session_node_find_supports_traversal_terms() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("gRPC workspace service session ready"));
     assert!(stdout.contains("Node Post id=2 {title=Traversal}"));
-    assert!(stdout.contains("node.find return=edge is not supported"));
+    assert!(stdout.contains("Edge Authored id=1 from=1 to=2 {year=2026}"));
     assert!(temp.path().join("cli-traversal-smoke.bin").exists());
 }
