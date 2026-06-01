@@ -306,6 +306,38 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     .await;
     assert_eq!(found_nodes["nodes"].as_array().unwrap().len(), 1);
 
+    let traversed = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "GrpcMcpUser",
+            "filters": { "name": "Alice Updated" },
+            "via": ["out:GRPC_MCP_AUTHORED:GrpcMcpPost"],
+            "end_filters": { "title": "MCP over gRPC" },
+            "edge_filters": { "smoke_id": workspace_ref },
+            "return": "end",
+            "order": "title:asc",
+            "limit": 1,
+            "offset": 0
+        }),
+    )
+    .await;
+    assert_eq!(traversed["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(traversed["nodes"][0]["id"], json!(post_id));
+
+    let edge_return_error = call_error(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "GrpcMcpUser",
+            "filters": { "name": "Alice Updated" },
+            "via": ["out:GRPC_MCP_AUTHORED:GrpcMcpPost"],
+            "return": "edge"
+        }),
+    )
+    .await;
+    assert!(edge_return_error.contains("return=edge"));
+
     let found_edges = call(
         &client,
         "grm_edge_find",
