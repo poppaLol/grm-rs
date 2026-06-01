@@ -280,6 +280,7 @@ async fn run_service_session<R: BufRead, W: Write>(reader: R, mut writer: W) -> 
         writer,
         "Welcome to GRM-RS CLI.\ngRPC workspace service session ready. Supported commands route through ExecuteWorkspace."
     )?;
+    let mut session = ServiceCliSession::new(&mut client);
     let mut lines = reader.lines();
     loop {
         write!(writer, "grm(service)> ")?;
@@ -293,7 +294,7 @@ async fn run_service_session<R: BufRead, W: Write>(reader: R, mut writer: W) -> 
         if trimmed.is_empty() {
             continue;
         }
-        match handle_service_command(&mut client, &mut writer, trimmed).await {
+        match session.handle_command(&mut writer, trimmed).await {
             Ok(true) => break,
             Ok(false) => {}
             Err(err) => writeln!(writer, "{err}")?,
@@ -302,155 +303,195 @@ async fn run_service_session<R: BufRead, W: Write>(reader: R, mut writer: W) -> 
     Ok(())
 }
 
-async fn handle_service_command<W: Write>(
-    client: &mut GrpcWorkspaceClient,
-    writer: &mut W,
-    line: &str,
-) -> grm_rs::Result<bool> {
-    match parse_command_line(line)? {
-        SessionCommand::Help => write_service_help(writer)?,
-        SessionCommand::Exit => return Ok(true),
-        SessionCommand::SessionDescribe { .. }
-        | SessionCommand::ModelList
-        | SessionCommand::LinkList => {
-            let schema = client.schema_list().await.map_err(service_error)?;
-            write_service_schema(writer, &schema.node_models, &schema.edge_models)?;
-        }
-        SessionCommand::ModelDefine { args } => {
-            let request = parse_model_define_args(args)?;
-            client.define_node(request).await.map_err(service_error)?;
-            writeln!(writer, "Defined node model")?;
-        }
-        SessionCommand::LinkDefine { args } => {
-            let request = parse_link_define_args(args)?;
-            client.define_edge(request).await.map_err(service_error)?;
-            writeln!(writer, "Defined edge model")?;
-        }
-        SessionCommand::NodeCreate {
-            binding: _,
-            model_name,
-            assignments,
-        } => {
-            let node = client
-                .create_node(NodeCreateRequest {
-                    model: model_name,
-                    props: assignments_to_json(assignments),
-                })
-                .await
-                .map_err(service_error)?;
-            write_node(writer, &node)?;
-        }
-        SessionCommand::NodeFind { model_name, terms } => {
-            let request = NodeFindRequest::from_adapter_filter_values(
-                model_name,
-                terms_to_json_filters(terms),
-            )?;
-            let found = client.find_nodes(request).await.map_err(service_error)?;
-            for node in found.nodes {
-                write_node(writer, &node)?;
-            }
-        }
-        SessionCommand::NodeUpdate {
-            model_name,
-            id,
-            assignments,
-        } => {
-            let node = client
-                .update_node(NodeUpdateRequest {
-                    model: model_name,
-                    id: parse_i64(&id, "node id")?,
-                    props: assignments_to_json(assignments),
-                })
-                .await
-                .map_err(service_error)?;
-            write_node(writer, &node)?;
-        }
-        SessionCommand::NodeDelete { model_name, id } => {
-            let deleted = client
-                .delete_node(NodeDeleteRequest {
-                    model: model_name,
-                    id: parse_i64(&id, "node id")?,
-                })
-                .await
-                .map_err(service_error)?;
-            writeln!(writer, "Deleted node {} id={}", deleted.model, deleted.id)?;
-        }
-        SessionCommand::EdgeCreate {
-            model_name,
-            assignments,
-        } => {
-            let mut props = assignments_to_json(assignments);
-            let from = take_required_id(&mut props, "from")?;
-            let to = take_required_id(&mut props, "to")?;
-            let edge = client
-                .create_edge(EdgeCreateRequest {
-                    model: model_name,
-                    from,
-                    to,
-                    props,
-                })
-                .await
-                .map_err(service_error)?;
-            write_edge(writer, &edge)?;
-        }
-        SessionCommand::EdgeFind { model_name, terms } => {
-            let request = EdgeFindRequest::from_adapter_filter_values(
-                model_name,
-                terms_to_json_filters(terms),
-            )?;
-            let found = client.find_edges(request).await.map_err(service_error)?;
-            for edge in found.edges {
-                write_edge(writer, &edge)?;
-            }
-        }
-        SessionCommand::EdgeUpdate {
-            model_name,
-            id,
-            assignments,
-        } => {
-            let edge = client
-                .update_edge(EdgeUpdateRequest {
-                    model: model_name,
-                    id: parse_i64(&id, "edge id")?,
-                    props: assignments_to_json(assignments),
-                })
-                .await
-                .map_err(service_error)?;
-            write_edge(writer, &edge)?;
-        }
-        SessionCommand::EdgeDelete { model_name, id } => {
-            let deleted = client
-                .delete_edge(EdgeDeleteRequest {
-                    model: model_name,
-                    id: parse_i64(&id, "edge id")?,
-                })
-                .await
-                .map_err(service_error)?;
-            writeln!(writer, "Deleted edge {} id={}", deleted.model, deleted.id)?;
-        }
-        SessionCommand::Unknown { .. } => writeln!(writer, "Unknown command: {line}")?,
-        SessionCommand::SessionSave { args: _ }
-        | SessionCommand::SessionLoad { args: _ }
-        | SessionCommand::SessionImport { args: _ }
-        | SessionCommand::SessionExport { args: _ }
-        | SessionCommand::SessionCompact
-        | SessionCommand::SessionAutocommit { args: _ }
-        | SessionCommand::SessionIndexes { .. }
-        | SessionCommand::TxBegin
-        | SessionCommand::TxCommit
-        | SessionCommand::ModelShow { .. }
-        | SessionCommand::LinkShow { .. }
-        | SessionCommand::SessionExplainNodeFind { .. }
-        | SessionCommand::SessionProfileNodeFind { .. }
-        | SessionCommand::SessionExplainEdgeFind { .. }
-        | SessionCommand::SessionProfileEdgeFind { .. } => {
-            writeln!(
-                writer,
-                "Command is local-only or not supported in gRPC service CLI mode yet"
-            )?;
+struct ServiceCliSession<'a> {
+    client: &'a mut GrpcWorkspaceClient,
+    bindings: BTreeMap<String, i64>,
+}
+
+impl<'a> ServiceCliSession<'a> {
+    fn new(client: &'a mut GrpcWorkspaceClient) -> ServiceCliSession<'a> {
+        ServiceCliSession {
+            client,
+            bindings: BTreeMap::new(),
         }
     }
-    Ok(false)
+
+    async fn handle_command<W: Write>(
+        &mut self,
+        writer: &mut W,
+        line: &str,
+    ) -> grm_rs::Result<bool> {
+        match parse_command_line(line)? {
+            SessionCommand::Help => write_service_help(writer)?,
+            SessionCommand::Exit => return Ok(true),
+            SessionCommand::SessionDescribe { .. }
+            | SessionCommand::ModelList
+            | SessionCommand::LinkList => {
+                let schema = self.client.schema_list().await.map_err(service_error)?;
+                write_service_schema(writer, &schema.node_models, &schema.edge_models)?;
+            }
+            SessionCommand::ModelDefine { args } => {
+                let request = parse_model_define_args(args)?;
+                self.client
+                    .define_node(request)
+                    .await
+                    .map_err(service_error)?;
+                writeln!(writer, "Defined node model")?;
+            }
+            SessionCommand::LinkDefine { args } => {
+                let request = parse_link_define_args(args)?;
+                self.client
+                    .define_edge(request)
+                    .await
+                    .map_err(service_error)?;
+                writeln!(writer, "Defined edge model")?;
+            }
+            SessionCommand::NodeCreate {
+                binding,
+                model_name,
+                assignments,
+            } => {
+                if let Some(binding) = &binding {
+                    ensure_binding_available(&self.bindings, binding)?;
+                }
+                let node = self
+                    .client
+                    .create_node(NodeCreateRequest {
+                        model: model_name,
+                        props: assignments_to_json(assignments, &self.bindings)?,
+                    })
+                    .await
+                    .map_err(service_error)?;
+                if let Some(binding) = binding {
+                    self.bindings.insert(binding, node.id);
+                }
+                write_node(writer, &node)?;
+            }
+            SessionCommand::NodeFind { model_name, terms } => {
+                let request = NodeFindRequest::from_adapter_filter_values(
+                    model_name,
+                    terms_to_json_filters(terms, &self.bindings)?,
+                )?;
+                let found = self
+                    .client
+                    .find_nodes(request)
+                    .await
+                    .map_err(service_error)?;
+                for node in found.nodes {
+                    write_node(writer, &node)?;
+                }
+            }
+            SessionCommand::NodeUpdate {
+                model_name,
+                id,
+                assignments,
+            } => {
+                let node = self
+                    .client
+                    .update_node(NodeUpdateRequest {
+                        model: model_name,
+                        id: parse_i64_or_binding(&id, "node id", &self.bindings)?,
+                        props: assignments_to_json(assignments, &self.bindings)?,
+                    })
+                    .await
+                    .map_err(service_error)?;
+                write_node(writer, &node)?;
+            }
+            SessionCommand::NodeDelete { model_name, id } => {
+                let deleted = self
+                    .client
+                    .delete_node(NodeDeleteRequest {
+                        model: model_name,
+                        id: parse_i64_or_binding(&id, "node id", &self.bindings)?,
+                    })
+                    .await
+                    .map_err(service_error)?;
+                writeln!(writer, "Deleted node {} id={}", deleted.model, deleted.id)?;
+            }
+            SessionCommand::EdgeCreate {
+                model_name,
+                assignments,
+            } => {
+                let mut props = assignments_to_json(assignments, &self.bindings)?;
+                let from = take_required_id(&mut props, "from")?;
+                let to = take_required_id(&mut props, "to")?;
+                let edge = self
+                    .client
+                    .create_edge(EdgeCreateRequest {
+                        model: model_name,
+                        from,
+                        to,
+                        props,
+                    })
+                    .await
+                    .map_err(service_error)?;
+                write_edge(writer, &edge)?;
+            }
+            SessionCommand::EdgeFind { model_name, terms } => {
+                let request = EdgeFindRequest::from_adapter_filter_values(
+                    model_name,
+                    terms_to_json_filters(terms, &self.bindings)?,
+                )?;
+                let found = self
+                    .client
+                    .find_edges(request)
+                    .await
+                    .map_err(service_error)?;
+                for edge in found.edges {
+                    write_edge(writer, &edge)?;
+                }
+            }
+            SessionCommand::EdgeUpdate {
+                model_name,
+                id,
+                assignments,
+            } => {
+                let edge = self
+                    .client
+                    .update_edge(EdgeUpdateRequest {
+                        model: model_name,
+                        id: parse_i64_or_binding(&id, "edge id", &self.bindings)?,
+                        props: assignments_to_json(assignments, &self.bindings)?,
+                    })
+                    .await
+                    .map_err(service_error)?;
+                write_edge(writer, &edge)?;
+            }
+            SessionCommand::EdgeDelete { model_name, id } => {
+                let deleted = self
+                    .client
+                    .delete_edge(EdgeDeleteRequest {
+                        model: model_name,
+                        id: parse_i64_or_binding(&id, "edge id", &self.bindings)?,
+                    })
+                    .await
+                    .map_err(service_error)?;
+                writeln!(writer, "Deleted edge {} id={}", deleted.model, deleted.id)?;
+            }
+            SessionCommand::Unknown { .. } => writeln!(writer, "Unknown command: {line}")?,
+            SessionCommand::SessionSave { args: _ }
+            | SessionCommand::SessionLoad { args: _ }
+            | SessionCommand::SessionImport { args: _ }
+            | SessionCommand::SessionExport { args: _ }
+            | SessionCommand::SessionCompact
+            | SessionCommand::SessionAutocommit { args: _ }
+            | SessionCommand::SessionIndexes { .. }
+            | SessionCommand::TxBegin
+            | SessionCommand::TxCommit
+            | SessionCommand::ModelShow { .. }
+            | SessionCommand::LinkShow { .. }
+            | SessionCommand::SessionExplainNodeFind { .. }
+            | SessionCommand::SessionProfileNodeFind { .. }
+            | SessionCommand::SessionExplainEdgeFind { .. }
+            | SessionCommand::SessionProfileEdgeFind { .. } => {
+                writeln!(
+                    writer,
+                    "Command is local-only or not supported in gRPC service CLI mode yet"
+                )?;
+            }
+        }
+        Ok(false)
+    }
 }
 
 fn write_service_help<W: Write>(writer: &mut W) -> grm_rs::Result<()> {
@@ -599,18 +640,32 @@ fn parse_field_args(args: &[String]) -> grm_rs::Result<Vec<FieldSpec>> {
         .collect()
 }
 
-fn assignments_to_json(assignments: Vec<KeyValueArg>) -> BTreeMap<String, Value> {
+fn assignments_to_json(
+    assignments: Vec<KeyValueArg>,
+    bindings: &BTreeMap<String, i64>,
+) -> grm_rs::Result<BTreeMap<String, Value>> {
     assignments
         .into_iter()
-        .map(|arg| (arg.key, parse_scalar(&arg.value)))
+        .map(|arg| Ok((arg.key, parse_scalar_or_binding(&arg.value, bindings))))
         .collect()
 }
 
-fn terms_to_json_filters(terms: Vec<grm_rs::QueryTerm>) -> BTreeMap<String, Value> {
+fn terms_to_json_filters(
+    terms: Vec<grm_rs::QueryTerm>,
+    bindings: &BTreeMap<String, i64>,
+) -> grm_rs::Result<BTreeMap<String, Value>> {
     terms
         .into_iter()
-        .map(|term| (term.key, parse_scalar(&term.value)))
+        .map(|term| Ok((term.key, parse_scalar_or_binding(&term.value, bindings))))
         .collect()
+}
+
+fn parse_scalar_or_binding(raw: &str, bindings: &BTreeMap<String, i64>) -> Value {
+    bindings
+        .get(raw)
+        .copied()
+        .map(Value::from)
+        .unwrap_or_else(|| parse_scalar(raw))
 }
 
 fn parse_scalar(raw: &str) -> Value {
@@ -639,6 +694,27 @@ fn take_required_id(props: &mut BTreeMap<String, Value>, key: &str) -> grm_rs::R
 fn parse_i64(raw: &str, name: &str) -> grm_rs::Result<i64> {
     raw.parse::<i64>()
         .map_err(|_| grm_rs::GrmError::Constraint(format!("{name} must be an integer")))
+}
+
+fn parse_i64_or_binding(
+    raw: &str,
+    name: &str,
+    bindings: &BTreeMap<String, i64>,
+) -> grm_rs::Result<i64> {
+    bindings
+        .get(raw)
+        .copied()
+        .map(Ok)
+        .unwrap_or_else(|| parse_i64(raw, name))
+}
+
+fn ensure_binding_available(bindings: &BTreeMap<String, i64>, binding: &str) -> grm_rs::Result<()> {
+    if bindings.contains_key(binding) {
+        return Err(grm_rs::GrmError::Constraint(format!(
+            "binding '{binding}' already exists"
+        )));
+    }
+    Ok(())
 }
 
 fn required_env(name: &str) -> grm_rs::Result<String> {
@@ -717,21 +793,51 @@ mod tests {
         )
         .await
         .unwrap();
+        let mut session = ServiceCliSession::new(&mut client);
         let mut output = Vec::new();
-        handle_service_command(
-            &mut client,
-            &mut output,
-            "model.define User userId name:string:required",
-        )
-        .await
-        .unwrap();
-        handle_service_command(&mut client, &mut output, "node.create User name=Ada")
+        session
+            .handle_command(&mut output, "model.define User userId name:string:required")
             .await
             .unwrap();
-        handle_service_command(&mut client, &mut output, "node.find User name=Ada")
+        session
+            .handle_command(
+                &mut output,
+                "model.define Post postId title:string:required",
+            )
+            .await
+            .unwrap();
+        session
+            .handle_command(
+                &mut output,
+                "link.define Authored User Post authoredId year:int:required",
+            )
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "let alice = node.create User name=Ada")
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "let post = node.create Post title=Notes")
+            .await
+            .unwrap();
+        session
+            .handle_command(
+                &mut output,
+                "edge.create Authored from=alice to=post year=2026",
+            )
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "node.find User name=Ada")
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "edge.find Authored from=alice")
             .await
             .unwrap();
 
+        drop(session);
         drop(client);
         shutdown_tx.send(()).unwrap();
         server.await.unwrap().unwrap();
@@ -739,6 +845,7 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("Defined node model"));
         assert!(output.contains("Node User id=1 {name=Ada}"));
+        assert!(output.contains("Edge Authored id=1 from=1 to=2 {year=2026}"));
         assert!(tempdir.path().join("cli-service-smoke.bin").exists());
     }
 }
