@@ -67,7 +67,7 @@ async fn main() {
                 }
                 let stdin = io::stdin();
                 let reader = BufReader::new(stdin.lock());
-                if let Err(err) = run_service_session(reader, writer).await {
+                if let Err(err) = run_service_session(reader, writer, should_enable_color()).await {
                     eprintln!("{err}");
                     std::process::exit(1);
                 }
@@ -247,7 +247,11 @@ fn session_usage() -> &'static str {
     "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]\nSet GRM_BACKEND=grpc with GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and optional GRM_SERVICE_WORKSPACE_MODE=create|open to route supported commands through the gRPC workspace service."
 }
 
-async fn run_service_session<R: BufRead, W: Write>(reader: R, mut writer: W) -> grm_rs::Result<()> {
+async fn run_service_session<R: BufRead, W: Write>(
+    reader: R,
+    mut writer: W,
+    color_enabled: bool,
+) -> grm_rs::Result<()> {
     let endpoint = required_env("GRM_SERVICE_ENDPOINT")?;
     let workspace_ref = required_env("GRM_WORKSPACE_REF")?;
     let mode = match std::env::var("GRM_SERVICE_WORKSPACE_MODE").ok().as_deref() {
@@ -280,7 +284,7 @@ async fn run_service_session<R: BufRead, W: Write>(reader: R, mut writer: W) -> 
         writer,
         "Welcome to GRM-RS CLI.\ngRPC workspace service session ready. Supported commands route through ExecuteWorkspace."
     )?;
-    let mut session = ServiceCliSession::new(&mut client);
+    let mut session = ServiceCliSession::new(&mut client, color_enabled);
     let mut lines = reader.lines();
     loop {
         write!(writer, "grm(service)> ")?;
@@ -306,13 +310,15 @@ async fn run_service_session<R: BufRead, W: Write>(reader: R, mut writer: W) -> 
 struct ServiceCliSession<'a> {
     client: &'a mut GrpcWorkspaceClient,
     bindings: BTreeMap<String, i64>,
+    colors: CliColors,
 }
 
 impl<'a> ServiceCliSession<'a> {
-    fn new(client: &'a mut GrpcWorkspaceClient) -> ServiceCliSession<'a> {
+    fn new(client: &'a mut GrpcWorkspaceClient, color_enabled: bool) -> ServiceCliSession<'a> {
         ServiceCliSession {
             client,
             bindings: BTreeMap::new(),
+            colors: CliColors::for_terminal(color_enabled),
         }
     }
 
@@ -322,14 +328,19 @@ impl<'a> ServiceCliSession<'a> {
         line: &str,
     ) -> grm_rs::Result<bool> {
         match parse_command_line(line)? {
-            SessionCommand::Help => write_service_help(writer)?,
+            SessionCommand::Help => write_service_help(writer, &self.colors)?,
             SessionCommand::Exit => return Ok(true),
             SessionCommand::SessionDescribe { verbose } => {
                 self.write_summary(writer, verbose).await?;
             }
             SessionCommand::ModelList | SessionCommand::LinkList => {
                 let schema = self.client.schema_list().await.map_err(service_error)?;
-                write_service_schema(writer, &schema.node_models, &schema.edge_models)?;
+                write_service_schema(
+                    writer,
+                    &schema.node_models,
+                    &schema.edge_models,
+                    &self.colors,
+                )?;
             }
             SessionCommand::ModelDefine { args } => {
                 let request = parse_model_define_args(args)?;
@@ -366,7 +377,7 @@ impl<'a> ServiceCliSession<'a> {
                 if let Some(binding) = binding {
                     self.bindings.insert(binding, node.id);
                 }
-                write_node(writer, &node)?;
+                write_node(writer, &node, &self.colors)?;
             }
             SessionCommand::NodeFind { model_name, terms } => {
                 let request = NodeFindRequest::from_adapter_filter_values(
@@ -379,7 +390,7 @@ impl<'a> ServiceCliSession<'a> {
                     .await
                     .map_err(service_error)?;
                 for node in found.nodes {
-                    write_node(writer, &node)?;
+                    write_node(writer, &node, &self.colors)?;
                 }
             }
             SessionCommand::NodeUpdate {
@@ -396,7 +407,7 @@ impl<'a> ServiceCliSession<'a> {
                     })
                     .await
                     .map_err(service_error)?;
-                write_node(writer, &node)?;
+                write_node(writer, &node, &self.colors)?;
             }
             SessionCommand::NodeDelete { model_name, id } => {
                 let deleted = self
@@ -426,7 +437,7 @@ impl<'a> ServiceCliSession<'a> {
                     })
                     .await
                     .map_err(service_error)?;
-                write_edge(writer, &edge)?;
+                write_edge(writer, &edge, &self.colors)?;
             }
             SessionCommand::EdgeFind { model_name, terms } => {
                 let request = EdgeFindRequest::from_adapter_filter_values(
@@ -439,7 +450,7 @@ impl<'a> ServiceCliSession<'a> {
                     .await
                     .map_err(service_error)?;
                 for edge in found.edges {
-                    write_edge(writer, &edge)?;
+                    write_edge(writer, &edge, &self.colors)?;
                 }
             }
             SessionCommand::EdgeUpdate {
@@ -456,7 +467,7 @@ impl<'a> ServiceCliSession<'a> {
                     })
                     .await
                     .map_err(service_error)?;
-                write_edge(writer, &edge)?;
+                write_edge(writer, &edge, &self.colors)?;
             }
             SessionCommand::EdgeDelete { model_name, id } => {
                 let deleted = self
@@ -513,7 +524,7 @@ impl<'a> ServiceCliSession<'a> {
                 let nodes = schema
                     .node_models
                     .iter()
-                    .map(|model| model.name.as_str())
+                    .map(|model| self.colors.type_name(&model.name))
                     .collect::<Vec<_>>()
                     .join(", ");
                 writeln!(writer, "  nodes: {nodes}")?;
@@ -522,7 +533,7 @@ impl<'a> ServiceCliSession<'a> {
                 let edges = schema
                     .edge_models
                     .iter()
-                    .map(|model| model.name.as_str())
+                    .map(|model| self.colors.type_name(&model.name))
                     .collect::<Vec<_>>()
                     .join(", ");
                 writeln!(writer, "  links: {edges}")?;
@@ -542,7 +553,11 @@ impl<'a> ServiceCliSession<'a> {
                 .map_err(service_error)?;
             node_total += found.nodes.len();
             if !found.nodes.is_empty() {
-                rows.push(("node", model.name.clone(), found.nodes.len()));
+                rows.push(vec![
+                    "node".to_string(),
+                    self.colors.type_name(&model.name),
+                    found.nodes.len().to_string(),
+                ]);
             }
         }
 
@@ -558,7 +573,11 @@ impl<'a> ServiceCliSession<'a> {
                 .map_err(service_error)?;
             edge_total += found.edges.len();
             if !found.edges.is_empty() {
-                rows.push(("edge", model.name.clone(), found.edges.len()));
+                rows.push(vec![
+                    "edge".to_string(),
+                    self.colors.type_name(&model.name),
+                    found.edges.len().to_string(),
+                ]);
             }
         }
 
@@ -570,10 +589,17 @@ impl<'a> ServiceCliSession<'a> {
         if rows.is_empty() {
             writeln!(writer, "  none")?;
         } else {
-            writeln!(writer, "| kind | type | count |")?;
-            for (kind, model, count) in rows {
-                writeln!(writer, "| {kind} | {model} | {count} |")?;
-            }
+            write_cli_table(
+                writer,
+                &["kind", "type", "count"],
+                &[
+                    TableHeaderKind::Plain,
+                    TableHeaderKind::Type,
+                    TableHeaderKind::Property,
+                ],
+                &rows,
+                &self.colors,
+            )?;
         }
 
         writeln!(writer, "Autocommit: service-managed local workspace")?;
@@ -587,47 +613,77 @@ impl<'a> ServiceCliSession<'a> {
     }
 }
 
-fn write_service_help<W: Write>(writer: &mut W) -> grm_rs::Result<()> {
+fn write_service_help<W: Write>(writer: &mut W, colors: &CliColors) -> grm_rs::Result<()> {
     writeln!(writer, "Available commands in gRPC service mode:")?;
     writeln!(
         writer,
-        "  model.define <Name> <id_field> [field:type:required|optional ...]"
+        "  {} <Name> <id_field> [field:type:required|optional ...]",
+        colors.property_name("model.define")
     )?;
     writeln!(
         writer,
-        "  link.define <Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]"
-    )?;
-    writeln!(writer, "  model.list | link.list | session.describe")?;
-    writeln!(writer, "  node.create <ModelName> [field=value ...]")?;
-    writeln!(
-        writer,
-        "  let <name> = node.create <ModelName> [field=value ...]"
+        "  {} <Name> <from_model> <to_model> <id_field> [field:type:required|optional ...]",
+        colors.property_name("link.define")
     )?;
     writeln!(
         writer,
-        "  node.find <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]"
+        "  {} | {} | {}",
+        colors.property_name("model.list"),
+        colors.property_name("link.list"),
+        colors.property_name("session.describe")
     )?;
     writeln!(
         writer,
-        "  node.update <ModelName> <id|binding> [field=value ...]"
-    )?;
-    writeln!(writer, "  node.delete <ModelName> <id|binding>")?;
-    writeln!(
-        writer,
-        "  edge.create <LinkName> from=<id|binding> to=<id|binding> [field=value ...]"
+        "  {} <ModelName> [field=value ...]",
+        colors.property_name("node.create")
     )?;
     writeln!(
         writer,
-        "  edge.find <LinkName> [from=<id|binding>] [to=<id|binding>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]"
+        "  let <name> = {} <ModelName> [field=value ...]",
+        colors.property_name("node.create")
     )?;
     writeln!(
         writer,
-        "  edge.update <LinkName> <id|binding> [field=value ...]"
+        "  {} <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]",
+        colors.property_name("node.find")
     )?;
-    writeln!(writer, "  edge.delete <LinkName> <id|binding>")?;
-    writeln!(writer, "  session.describe [--verbose]")?;
-    writeln!(writer, "  session.help")?;
-    writeln!(writer, "  session.exit")?;
+    writeln!(
+        writer,
+        "  {} <ModelName> <id|binding> [field=value ...]",
+        colors.property_name("node.update")
+    )?;
+    writeln!(
+        writer,
+        "  {} <ModelName> <id|binding>",
+        colors.property_name("node.delete")
+    )?;
+    writeln!(
+        writer,
+        "  {} <LinkName> from=<id|binding> to=<id|binding> [field=value ...]",
+        colors.property_name("edge.create")
+    )?;
+    writeln!(
+        writer,
+        "  {} <LinkName> [from=<id|binding>] [to=<id|binding>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]",
+        colors.property_name("edge.find")
+    )?;
+    writeln!(
+        writer,
+        "  {} <LinkName> <id|binding> [field=value ...]",
+        colors.property_name("edge.update")
+    )?;
+    writeln!(
+        writer,
+        "  {} <LinkName> <id|binding>",
+        colors.property_name("edge.delete")
+    )?;
+    writeln!(
+        writer,
+        "  {} [--verbose]",
+        colors.property_name("session.describe")
+    )?;
+    writeln!(writer, "  {}", colors.property_name("session.help"))?;
+    writeln!(writer, "  {}", colors.property_name("session.exit"))?;
     writeln!(writer)?;
     writeln!(
         writer,
@@ -640,63 +696,251 @@ fn write_service_schema<W: Write>(
     writer: &mut W,
     nodes: &[RuntimeNodeModel],
     edges: &[RuntimeRelModel],
+    colors: &CliColors,
 ) -> grm_rs::Result<()> {
     writeln!(writer, "Service Schema")?;
+    let mut rows = Vec::new();
     for node in nodes {
-        writeln!(
-            writer,
-            "| node | {} | id={} |",
-            node.name, node.id_field_name
-        )?;
+        rows.push(vec![
+            "node".to_string(),
+            colors.type_name(&node.name),
+            colors.property_name(&node.id_field_name),
+            String::new(),
+        ]);
     }
     for edge in edges {
-        writeln!(
+        rows.push(vec![
+            "edge".to_string(),
+            colors.type_name(&edge.name),
+            colors.property_name(&edge.id_field_name),
+            format!(
+                "{} -> {}",
+                colors.type_name(&edge.from_model),
+                colors.type_name(&edge.to_model)
+            ),
+        ]);
+    }
+    if rows.is_empty() {
+        writeln!(writer, "  none")?;
+    } else {
+        write_cli_table(
             writer,
-            "| edge | {} | {} -> {} | id={} |",
-            edge.name, edge.from_model, edge.to_model, edge.id_field_name
+            &["kind", "type", "id field", "endpoints"],
+            &[
+                TableHeaderKind::Plain,
+                TableHeaderKind::Type,
+                TableHeaderKind::Property,
+                TableHeaderKind::Plain,
+            ],
+            &rows,
+            colors,
         )?;
     }
     Ok(())
 }
 
-fn write_node<W: Write>(writer: &mut W, node: &StoredNode) -> grm_rs::Result<()> {
+fn write_node<W: Write>(
+    writer: &mut W,
+    node: &StoredNode,
+    colors: &CliColors,
+) -> grm_rs::Result<()> {
     writeln!(
         writer,
         "Node {} id={} {}",
-        node.labels.first().map(String::as_str).unwrap_or(""),
+        colors.type_name(node.labels.first().map(String::as_str).unwrap_or("")),
         node.id,
-        props_display(&node.props)
+        props_display(&node.props, colors)
     )?;
     Ok(())
 }
 
-fn write_edge<W: Write>(writer: &mut W, edge: &StoredRel) -> grm_rs::Result<()> {
+fn write_edge<W: Write>(
+    writer: &mut W,
+    edge: &StoredRel,
+    colors: &CliColors,
+) -> grm_rs::Result<()> {
     writeln!(
         writer,
         "Edge {} id={} from={} to={} {}",
-        edge.rel_type,
+        colors.type_name(&edge.rel_type),
         edge.id,
         edge.from,
         edge.to,
-        props_display(&edge.props)
+        props_display(&edge.props, colors)
     )?;
     Ok(())
 }
 
-fn props_display(props: &BTreeMap<String, Value>) -> String {
+fn props_display(props: &BTreeMap<String, Value>, colors: &CliColors) -> String {
+    if props.is_empty() {
+        return "{}".to_string();
+    }
     let values = props
         .iter()
-        .map(|(key, value)| format!("{key}={}", scalar_display(value)))
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                colors.property_name(key),
+                scalar_display(value, colors)
+            )
+        })
         .collect::<Vec<_>>()
-        .join(", ");
+        .join(" ");
     format!("{{{values}}}")
 }
 
-fn scalar_display(value: &Value) -> String {
-    value
-        .as_str()
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| value.to_string())
+fn scalar_display(value: &Value, colors: &CliColors) -> String {
+    match value {
+        Value::String(value) if value.contains(char::is_whitespace) => {
+            colors.string_value(&format!("\"{value}\""))
+        }
+        Value::String(value) => colors.string_value(value),
+        _ => value.to_string(),
+    }
+}
+
+fn write_cli_table<W: Write>(
+    writer: &mut W,
+    headers: &[&str],
+    header_kinds: &[TableHeaderKind],
+    rows: &[Vec<String>],
+    colors: &CliColors,
+) -> grm_rs::Result<()> {
+    let mut widths: Vec<usize> = headers.iter().map(|header| header.len()).collect();
+    for row in rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(visible_width(cell));
+        }
+    }
+
+    let border = format_table_border(&widths);
+    writeln!(writer, "{border}")?;
+    writeln!(
+        writer,
+        "{}",
+        format_table_header_row(headers, header_kinds, &widths, colors)
+    )?;
+    writeln!(writer, "{border}")?;
+    for row in rows {
+        writeln!(writer, "{}", format_table_row(row, &widths))?;
+    }
+    writeln!(writer, "{border}")?;
+    Ok(())
+}
+
+fn format_table_border(widths: &[usize]) -> String {
+    let mut line = String::new();
+    line.push('+');
+    for width in widths {
+        line.push_str(&"-".repeat(*width + 2));
+        line.push('+');
+    }
+    line
+}
+
+fn format_table_header_row(
+    headers: &[&str],
+    header_kinds: &[TableHeaderKind],
+    widths: &[usize],
+    colors: &CliColors,
+) -> String {
+    let styled = headers
+        .iter()
+        .zip(header_kinds.iter())
+        .map(|(header, kind)| match kind {
+            TableHeaderKind::Plain => (*header).to_string(),
+            TableHeaderKind::Property => colors.property_name(header),
+            TableHeaderKind::Type => colors.type_name(header),
+        })
+        .collect::<Vec<_>>();
+    format_table_row(&styled, widths)
+}
+
+fn format_table_row(cells: &[String], widths: &[usize]) -> String {
+    let mut line = String::new();
+    line.push('|');
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        let padding = width.saturating_sub(visible_width(cell));
+        line.push(' ');
+        line.push_str(cell);
+        line.push_str(&" ".repeat(padding));
+        line.push_str(" |");
+    }
+    line
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TableHeaderKind {
+    Plain,
+    Property,
+    Type,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CliColors {
+    enabled: bool,
+}
+
+impl CliColors {
+    const GREEN: &'static str = "\x1b[32m";
+    const BLUE: &'static str = "\x1b[34m";
+    const ORANGE: &'static str = "\x1b[38;5;208m";
+    const RESET: &'static str = "\x1b[0m";
+
+    fn for_terminal(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    fn type_name(&self, text: &str) -> String {
+        self.wrap(text, Self::GREEN)
+    }
+
+    fn property_name(&self, text: &str) -> String {
+        self.wrap(text, Self::BLUE)
+    }
+
+    fn string_value(&self, text: &str) -> String {
+        self.wrap(text, Self::ORANGE)
+    }
+
+    fn wrap(&self, text: &str, color: &str) -> String {
+        if self.enabled {
+            format!("{color}{text}{}", Self::RESET)
+        } else {
+            text.to_string()
+        }
+    }
+}
+
+fn visible_width(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut width = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == 0x1b {
+            index += 1;
+            if index < bytes.len() && bytes[index] == b'[' {
+                index += 1;
+                while index < bytes.len() && bytes[index] != b'm' {
+                    index += 1;
+                }
+                if index < bytes.len() {
+                    index += 1;
+                }
+                continue;
+            }
+        }
+
+        if let Some(ch) = text[index..].chars().next() {
+            width += 1;
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    width
 }
 
 fn parse_model_define_args(args: Vec<String>) -> grm_rs::Result<DefineNodeRequest> {
@@ -916,7 +1160,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut session = ServiceCliSession::new(&mut client);
+        let mut session = ServiceCliSession::new(&mut client, false);
         let mut output = Vec::new();
         session
             .handle_command(&mut output, "model.define User userId name:string:required")
@@ -979,11 +1223,19 @@ mod tests {
         assert!(output.contains("Edge Authored id=1 from=1 to=2 {year=2026}"));
         assert!(output.contains("Session Summary"));
         assert!(output.contains("Stored rows: 2 nodes, 1 edges"));
-        assert!(output.contains("| node | User | 1 |"));
-        assert!(output.contains("| edge | Authored | 1 |"));
+        assert!(output.contains("+------+----------+-------+"));
+        assert!(output.contains("| node | User     | 1     |"));
+        assert!(output.contains("| edge | Authored | 1     |"));
         assert!(output.contains("Available commands in gRPC service mode:"));
         assert!(output.contains("let <name> = node.create"));
         assert!(output.contains("edge.create <LinkName> from=<id|binding> to=<id|binding>"));
         assert!(tempdir.path().join("cli-service-smoke.bin").exists());
+    }
+
+    #[test]
+    fn visible_width_ignores_ansi_colors() {
+        let colors = CliColors::for_terminal(true);
+        assert_eq!(visible_width(&colors.type_name("User")), 4);
+        assert_eq!(visible_width(&colors.property_name("name")), 4);
     }
 }
