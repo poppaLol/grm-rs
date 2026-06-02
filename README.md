@@ -181,11 +181,13 @@ CLI command strings.
 
 See [docs/mcp-batch-graph-patch-requirements.md](docs/mcp-batch-graph-patch-requirements.md).
 
-### gRPC Service Demo
+### Service-Backed Workspace Storage
 
-A Docker-hostable local gRPC workspace shell can expose GRM workspace operations
-over the generated protobuf API. This is a local development/demo path for
-adapter integration, not a production daemon or hosted durability claim.
+A Docker-hostable local gRPC workspace shell can expose GRM workspace storage
+operations over the generated protobuf API. This is a backend/storage mode for
+GRM-owned memory/file backed workspaces and adapter integration, not a separate
+user-facing surface, production daemon, Neo4j-backed service, or hosted
+durability claim.
 
 Start the insecure local service:
 
@@ -212,6 +214,20 @@ Try the checked Rust client example:
 cargo run -p grm-service-api --example local_workspace_client -- \
   http://127.0.0.1:50051 demo-workspace
 ```
+
+Or route the regular CLI session through the service-backed workspace path:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=demo-workspace \
+GRM_SERVICE_WORKSPACE_MODE=create \
+cargo run --bin grm -- session
+```
+
+`GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; JSON is an explicit opt-in.
+Use `GRM_SERVICE_WORKSPACE_MODE=open` to reopen an existing service-managed
+workspace.
 
 See [docs/grpc-docker-service.md](docs/grpc-docker-service.md) and
 [docs/grpc-quickstart.md](docs/grpc-quickstart.md).

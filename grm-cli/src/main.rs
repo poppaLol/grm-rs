@@ -244,7 +244,7 @@ fn parse_session_startup(args: Vec<String>) -> Result<SessionStartup, String> {
 }
 
 fn session_usage() -> &'static str {
-    "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]\nSet GRM_BACKEND=grpc with GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and optional GRM_SERVICE_WORKSPACE_MODE=create|open to route supported commands through the gRPC workspace service."
+    "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]\n\nLocal mode:\n  cargo run --bin grm -- session\n\nService-backed workspace mode:\n  GRM_BACKEND=grpc GRM_SERVICE_ENDPOINT=<url> GRM_WORKSPACE_REF=<ref> \\\n    GRM_SERVICE_WORKSPACE_MODE=create|open cargo run --bin grm -- session\n\nGRM_SERVICE_WORKSPACE_MODE defaults to open when omitted.\nGRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set json only as an explicit opt-in.\nSupported service-mode commands route through ExecuteWorkspace."
 }
 
 async fn run_service_session<R: BufRead, W: Write>(
@@ -263,10 +263,8 @@ async fn run_service_session<R: BufRead, W: Write>(
             )));
         }
     };
-    let format = match std::env::var("GRM_SERVICE_WORKSPACE_FORMAT")
-        .ok()
-        .as_deref()
-    {
+    let format_env = std::env::var("GRM_SERVICE_WORKSPACE_FORMAT").ok();
+    let format = match format_env.as_deref() {
         Some("json") => DurabilityFormat::Json,
         Some("bin" | "binary") | None => DurabilityFormat::Binary,
         Some(other) => {
@@ -276,15 +274,42 @@ async fn run_service_session<R: BufRead, W: Write>(
         }
     };
     let mut client =
-        GrpcWorkspaceClient::connect_with_format(endpoint, workspace_ref, mode, format)
+        GrpcWorkspaceClient::connect_with_format(&endpoint, &workspace_ref, mode, format)
             .await
             .map_err(service_error)?;
 
     writeln!(
         writer,
-        "Welcome to GRM-RS CLI.\ngRPC workspace service session ready. Supported commands route through ExecuteWorkspace."
+        "Welcome to GRM-RS CLI.\nService-backed workspace session ready."
     )?;
-    let mut session = ServiceCliSession::new(&mut client, color_enabled);
+    writeln!(writer, "Backend: gRPC workspace storage")?;
+    writeln!(writer, "Endpoint: {endpoint}")?;
+    writeln!(writer, "Workspace: {workspace_ref}")?;
+    writeln!(writer, "Mode: {}", service_mode_display(mode))?;
+    writeln!(
+        writer,
+        "Persistence format: {}{}",
+        durability_format_display(format),
+        if format_env.is_some() {
+            " (explicit)"
+        } else {
+            " (default)"
+        }
+    )?;
+    writeln!(
+        writer,
+        "Scope: ExecuteWorkspace. Unsupported commands stay local-only or unavailable in this mode."
+    )?;
+    let mut session = ServiceCliSession::new(
+        &mut client,
+        ServiceSessionInfo {
+            endpoint,
+            mode,
+            format,
+            format_explicit: format_env.is_some(),
+        },
+        color_enabled,
+    );
     let mut lines = reader.lines();
     loop {
         write!(writer, "grm(service)> ")?;
@@ -309,14 +334,28 @@ async fn run_service_session<R: BufRead, W: Write>(
 
 struct ServiceCliSession<'a> {
     client: &'a mut GrpcWorkspaceClient,
+    info: ServiceSessionInfo,
     bindings: BTreeMap<String, i64>,
     colors: CliColors,
 }
 
+#[derive(Debug, Clone)]
+struct ServiceSessionInfo {
+    endpoint: String,
+    mode: GrpcWorkspaceMode,
+    format: DurabilityFormat,
+    format_explicit: bool,
+}
+
 impl<'a> ServiceCliSession<'a> {
-    fn new(client: &'a mut GrpcWorkspaceClient, color_enabled: bool) -> ServiceCliSession<'a> {
+    fn new(
+        client: &'a mut GrpcWorkspaceClient,
+        info: ServiceSessionInfo,
+        color_enabled: bool,
+    ) -> ServiceCliSession<'a> {
         ServiceCliSession {
             client,
+            info,
             bindings: BTreeMap::new(),
             colors: CliColors::for_terminal(color_enabled),
         }
@@ -512,8 +551,20 @@ impl<'a> ServiceCliSession<'a> {
     ) -> grm_rs::Result<()> {
         let schema = self.client.schema_list().await.map_err(service_error)?;
         writeln!(writer, "Session Summary")?;
-        writeln!(writer, "Backend: gRPC workspace service")?;
+        writeln!(writer, "Backend: gRPC workspace storage")?;
+        writeln!(writer, "Endpoint: {}", self.info.endpoint)?;
         writeln!(writer, "Workspace: {}", self.client.workspace_ref().id)?;
+        writeln!(writer, "Mode: {}", service_mode_display(self.info.mode))?;
+        writeln!(
+            writer,
+            "Persistence format: {}{}",
+            durability_format_display(self.info.format),
+            if self.info.format_explicit {
+                " (explicit)"
+            } else {
+                " (default)"
+            }
+        )?;
         writeln!(writer, "Scope: ExecuteWorkspace")?;
 
         writeln!(writer, "Types defined:")?;
@@ -610,6 +661,20 @@ impl<'a> ServiceCliSession<'a> {
             )?;
         }
         Ok(())
+    }
+}
+
+fn service_mode_display(mode: GrpcWorkspaceMode) -> &'static str {
+    match mode {
+        GrpcWorkspaceMode::Create => "create",
+        GrpcWorkspaceMode::Open => "open",
+    }
+}
+
+fn durability_format_display(format: DurabilityFormat) -> &'static str {
+    match format {
+        DurabilityFormat::Json => "json",
+        DurabilityFormat::Binary => "binary",
     }
 }
 
@@ -1178,7 +1243,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut session = ServiceCliSession::new(&mut client, false);
+        let mut session = ServiceCliSession::new(
+            &mut client,
+            ServiceSessionInfo {
+                endpoint: format!("http://{addr}"),
+                mode: GrpcWorkspaceMode::Create,
+                format: DurabilityFormat::Binary,
+                format_explicit: false,
+            },
+            false,
+        );
         let mut output = Vec::new();
         session
             .handle_command(&mut output, "model.define User userId name:string:required")
@@ -1254,6 +1328,9 @@ mod tests {
         assert!(output.contains("| node | User     | 1     |"));
         assert!(output.contains("| node | Post     | 2     |"));
         assert!(output.contains("| edge | Authored | 1     |"));
+        assert!(output.contains("Backend: gRPC workspace storage"));
+        assert!(output.contains("Mode: create"));
+        assert!(output.contains("Persistence format: binary (default)"));
         assert!(output.contains("Available commands in gRPC service mode:"));
         assert!(output.contains("let <name> = node.create"));
         assert!(output.contains("edge.create <LinkName> from=<id|binding> to=<id|binding>"));

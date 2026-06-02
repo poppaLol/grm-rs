@@ -31,7 +31,7 @@ reopens the workspace, and verifies data is still present.
 Rust callers can use `grm_service_api::GrpcWorkspaceClient` directly for the
 same checked subset without building generated protobuf requests manually.
 
-## CLI Service Mode
+## CLI Service-Backed Workspace Mode
 
 The regular local CLI remains:
 
@@ -50,6 +50,22 @@ GRM_SERVICE_WORKSPACE_MODE=create \
 cargo run --bin grm -- session
 ```
 
+The CLI prints the selected endpoint, workspace ref, create/open mode,
+persistence format, and `ExecuteWorkspace` scope before the prompt appears.
+Use `GRM_SERVICE_WORKSPACE_MODE=create` to initialize or overwrite a local
+service-managed workspace file. Use `GRM_SERVICE_WORKSPACE_MODE=open` to reopen
+an existing workspace:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=quickstart-cli \
+GRM_SERVICE_WORKSPACE_MODE=open \
+cargo run --bin grm -- session
+```
+
+If `GRM_SERVICE_WORKSPACE_MODE` is omitted, the CLI uses `open`.
+
 In this mode, `model.define`, `link.define`, node/edge CRUD, simple find,
 traversal-capable `node.find` for node/root/end/edge results, `model.list`,
 `link.list`, and `session.describe` use `ExecuteWorkspace`.
@@ -57,7 +73,10 @@ Local session file commands, transactions, explain/profile, free-form query
 parity, and import/export remain local-only or
 unsupported in service CLI mode.
 `GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; set it to `json` only when
-you explicitly want JSON workspace files.
+you explicitly want JSON workspace files. The local Docker service stores these
+workspace files under its configured workspace root; this is checked local
+single-writer persistence behavior, not a hosted durability, auth/TLS, or
+multi-writer guarantee.
 
 ## Python Service Mode
 
