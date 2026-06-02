@@ -104,6 +104,25 @@ def main() -> None:
             assert authored_edges[0]["from"] == ada["id"]
             assert authored_edges[0]["to"] == post["id"]
             assert authored_edges[0]["props"]["year"] == 2026
+            explain = session.explain_node_find(
+                "User",
+                {"name": "Ada"},
+                via=[{"dir": "out", "link": "Authored", "model": "Post"}],
+                end_filters={"title": "Traversal"},
+                return_="end",
+            )
+            assert explain["command"] == "node.find"
+            assert any("ExpandOut" in step for step in explain["plan"]["steps"])
+            profile = session.profile_node_find(
+                "User",
+                {"name": "Ada"},
+                via=[{"dir": "out", "link": "Authored", "model": "Post"}],
+                end_filters={"title": "Traversal"},
+                return_="end",
+            )
+            assert profile["command"] == "node.find"
+            assert profile["result_rows"] == 1
+            assert isinstance(profile["elapsed"]["micros"], int)
 
             reopened = ServiceSession(
                 endpoint=endpoint,
