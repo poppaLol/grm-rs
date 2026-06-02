@@ -2,13 +2,13 @@
 
 ## Introduction
 
-The Graph Relational Model (GRM) Protocol is an open, implementation-independent standard for secure, structured graph operations.
+The Graph Relational Model (GRM) Protocol is proposed as an open, implementation-independent standard for secure, structured graph operations.
 
 The protocol defines a typed operational interface for creating, querying, traversing and managing graph data without requiring clients to construct or execute backend-specific query languages.
 
 Rather than exposing executable query strings, GRM clients express operational intent through a strongly-typed protocol. GRM implementations are responsible for validating, planning and executing these operations against one or more storage backends.
 
-The protocol is designed to support traditional application development, distributed systems, agentic runtimes, operational memory systems and future graph-native infrastructure while remaining secure by default and portable across implementations.
+The protocol is designed to support traditional application development, distributed systems, agentic runtimes, operational memory systems and future graph-native infrastructure while establishing secure-by-default and portable behaviour as explicit goals.
 
 ---
 
@@ -18,9 +18,9 @@ The protocol is designed to support traditional application development, distrib
 
 Clients communicate using structured protocol messages rather than executable query text.
 
-The protocol aims to eliminate entire classes of common application vulnerabilities arising from query construction, string interpolation and backend-specific execution semantics.
+The protocol aims to reduce entire classes of common application vulnerabilities arising from query construction, string interpolation and backend-specific execution semantics.
 
-Security is considered a core property of the protocol rather than an optional implementation detail.
+Security is considered a core protocol design concern rather than an optional implementation afterthought. Specific authentication, authorisation and transport-security requirements remain future standardisation work.
 
 ### Typed Operations
 
@@ -41,7 +41,7 @@ Implementations may execute operations against:
 * Distributed graph systems
 * Future storage technologies
 
-A compliant implementation exposes the same protocol behaviour regardless of underlying persistence technology.
+A compliant implementation exposes the same core protocol contract regardless of underlying persistence technology, subject to explicitly declared capabilities.
 
 ### Explainability
 
@@ -131,7 +131,7 @@ Supported concepts include:
 
 ### Execution Analysis
 
-Implementations should support:
+Implementations should support, or explicitly declare lack of support for:
 
 * Explain
 * Profile
@@ -146,12 +146,12 @@ Implementations may provide transactional guarantees where supported by the unde
 
 ### Persistence
 
-The protocol currently defines:
+The current reference GRM service implementation uses:
 
-* Binary workspace persistence as the default format
-* JSON persistence as an explicit interoperability option
+* Binary workspace persistence as the default local workspace format
+* JSON persistence as an explicit debugging or interoperability option
 
-Additional persistence formats may be standardised in future revisions.
+Future protocol revisions may standardise persistence-format negotiation or portability requirements, but Version 1 should not assume that every implementation stores workspaces using the same physical encoding.
 
 ---
 
@@ -179,7 +179,7 @@ The following areas are intentionally outside the scope of Version 1. Some of th
 
 GRM is not intended to become another graph query language, nor a replacement for existing scripting languages.
 
-The standard intentionally avoids introducing new textual query syntaxes.
+The draft standard intentionally avoids introducing new textual query syntaxes.
 
 The directly stated intent is to make executable graph query languages unnecessary for most application development.
 
@@ -227,6 +227,34 @@ Capability is expected to become a first-class concept within the protocol, allo
 
 ---
 
+## Versioning Discipline
+
+The protocol is expected to evolve through protobuf-compatible versioning rules.
+
+Future revisions should prefer additive changes and avoid casually renaming,
+renumbering or deleting fields. Behavioural changes that affect existing
+clients should be represented through explicit versioning, feature negotiation
+or capability declarations.
+
+Compatibility rules are part of the protocol contract. They should be written
+down before external implementers are expected to build against GRM messages.
+
+---
+
+## Conformance
+
+An open protocol needs a conformance suite.
+
+Future GRM protocol work should define a TCK-style test suite that backend
+providers can run to validate their implementation of core operations,
+capability declarations and supported behaviour. The suite should distinguish
+required Version 1 behaviour from optional capability-gated features.
+
+Conformance tests should validate the operations contract, not internal storage
+architecture or backend-specific execution plans.
+
+---
+
 ## Future Areas of Standardisation
 
 The following areas are expected to evolve through future RFCs.
@@ -265,7 +293,7 @@ This is expected to become the primary semantic for communicating how data is pr
 * Isolation semantics
 * Atomicity guarantees
 
-As a database protocol standard, GRM should eventually provide common language for discussing durability, consistency, isolation and recovery behaviour.
+As a graph operation protocol, GRM should eventually provide common language for discussing durability, consistency, isolation and recovery behaviour.
 
 ### Multi-Writer Coordination
 
@@ -285,10 +313,10 @@ As a modern operational protocol, GRM should provide mechanisms through which cl
 
 GRM aims to provide a common operational language for graph systems in the same way that HTTP provides a common language for web systems.
 
-Applications should be able to interact with graph data through a portable, secure and explainable protocol without knowledge of backend implementation details.
+Applications should be able to interact with graph data through a portable, secure and explainable protocol without knowledge of backend implementation details, within the capabilities declared by a particular implementation.
 
 GRM seeks to become for graph operations what HTTP became for resource access: a common, implementation-neutral protocol capable of spanning local runtimes, databases, services, agent systems and future graph-native infrastructure.
 
-The long-term goal is to establish a foundation for graph-native applications, structured operational memory systems, agent runtimes and future distributed graph infrastructure while preserving strong security and interoperability guarantees.
+The long-term goal is to establish a foundation for graph-native applications, structured operational memory systems, agent runtimes and future distributed graph infrastructure while making security and interoperability guarantees explicit and testable.
 
 In doing so, GRM intentionally shifts focus away from query languages and toward operational contracts, capability negotiation, explainable execution and secure-by-default graph computing.
