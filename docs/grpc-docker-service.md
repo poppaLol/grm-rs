@@ -15,7 +15,8 @@ grm-local-workspace-server 0.0.0.0:50051 /workspaces
 mapped by the service to local autocommit workspace files under that root.
 Clients do not send server-local filesystem paths. New service-backed client
 usage defaults to binary workspace files; JSON can still be selected explicitly
-for debugging or interchange-friendly inspection.
+for debugging or interchange-friendly inspection. The exact local durability
+scope is documented in [Local Durability Target Class](local-durability-target.md).
 
 ## Supported Surface
 
@@ -95,7 +96,10 @@ document the full protobuf JSON surface.
 
 This demo uses local autocommit workspace files in the container volume. That is
 a tested local workflow, not a hosted durability claim. Treat the container as a
-single-writer local service process.
+single-writer local service process. `CreateWorkspace` writes an initial
+checkpoint, successful supported `ExecuteWorkspace` mutations append durable
+operation records, and `OpenWorkspace` replays complete records after the
+checkpoint. Binary workspace files are the default; JSON is explicit opt-in.
 
 Before using this shape beyond local development, GRM still needs explicit
 service lifecycle, TLS/auth, authorization, limits, audit, recovery, and

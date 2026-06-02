@@ -76,7 +76,9 @@ import/export remain local-only or unsupported in service CLI mode.
 you explicitly want JSON workspace files. The local Docker service stores these
 workspace files under its configured workspace root; this is checked local
 single-writer persistence behavior, not a hosted durability, auth/TLS, or
-multi-writer guarantee.
+multi-writer guarantee. See [Local Durability Target Class](local-durability-target.md)
+for the exact create/open/reopen, checkpoint, autocommit, and unsupported-case
+scope.
 
 ## Python Service Mode
 
@@ -136,3 +138,5 @@ docker compose down -v
   shell.
 - The Docker demo does not provide TLS, authentication, hosted durability, or
   multi-writer coordination.
+- The current service-backed durability target is single-writer local filesystem
+  behavior with binary workspace files by default; JSON is explicit opt-in.

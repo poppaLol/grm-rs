@@ -7,6 +7,10 @@ GRM-RS keeps local persistence separate from graph interchange.
 - `session.import` reads the same interchange document into a fresh session.
 - `.grm` scripts remain the human-authored format for setup, examples, demos, and tests.
 
+Service-backed local workspaces use binary persistence by default. JSON
+workspace persistence is an explicit opt-in; interchange JSON remains separate
+from workspace durability. See [Local Durability Target Class](local-durability-target.md).
+
 ## Export Command
 
 ```text

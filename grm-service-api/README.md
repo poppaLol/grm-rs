@@ -53,4 +53,7 @@ cargo run -p grm-service-api --example local_workspace_client -- http://127.0.0.
 
 The checked service-backed client path uses binary local autocommit workspace
 files by default. JSON remains available when a caller explicitly requests the
-JSON durability format.
+JSON durability format. The supported durability target is single-writer local
+filesystem behavior for service-managed workspaces, not hosted durability or
+multi-writer coordination; see
+[Local Durability Target Class](../docs/local-durability-target.md).
