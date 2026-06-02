@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use grm_rs::{
-    AdminRequest, CliSession, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat,
-    DurableOperation, EdgeCreateRequest, EdgeFindRequest, EdgeRequest, FieldSpec, FieldValueType,
-    NodeCreateRequest, NodeFindRequest, NodeRequest, RuntimeRequest, RuntimeResponse,
-    RuntimeSchemaOrigin, SchemaRequest, Workspace,
+    AdminRequest, BatchRequest, CliSession, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat,
+    DurableOperation, EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeRequest,
+    EdgeUpdateRequest, FieldSpec, FieldValueType, NodeCreateRequest, NodeDeleteRequest,
+    NodeFindRequest, NodeRequest, NodeUpdateRequest, RuntimeRequest, RuntimeResponse,
+    RuntimeSchemaOrigin, SchemaRequest, SessionBatchEdgeCreateParams, SessionBatchEndpoint,
+    SessionBatchNodeCreateParams, SessionBatchOp, SessionBatchResponse, Workspace,
 };
 use serde_json::{Value, json};
 use tempfile::tempdir;
@@ -215,6 +218,211 @@ async fn workspace_execute_runtime_autocommits_to_reopenable_workspace() {
 }
 
 #[tokio::test]
+async fn workspace_autocommit_checkpoints_after_interval_then_replays_later_log() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("autocommit-threshold-workspace.json");
+    let mut workspace = Workspace::new();
+
+    workspace
+        .enable_autocommit(DurabilityFormat::Json, &path)
+        .unwrap();
+    define_workspace_schema(&mut workspace).await; // 3 durable records.
+    create_workspace_data(&mut workspace).await; // 6 durable records total.
+    create_workspace_node(&mut workspace, "User", props([("name", json!("Bob"))])).await;
+    create_workspace_node(
+        &mut workspace,
+        "Post",
+        props([("title", json!("Threshold"))]),
+    )
+    .await;
+
+    assert!(
+        !log_path(&path).exists(),
+        "the eighth durable record should checkpoint and clear the append log"
+    );
+
+    let checkpointed = Workspace::open(DurabilityFormat::Json, &path).unwrap();
+    assert_workspace_counts(&checkpointed, 2, 2, 1).await;
+
+    let bob_id = find_one_node_id(&checkpointed, "User", "name", "Bob").await;
+    let threshold_post_id = find_one_node_id(&checkpointed, "Post", "title", "Threshold").await;
+    workspace
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
+            EdgeCreateRequest {
+                model: "Authored".to_string(),
+                from: bob_id,
+                to: threshold_post_id,
+                props: props([("year", json!(2027))]),
+            },
+        )))
+        .await
+        .unwrap();
+    assert!(
+        fs::metadata(log_path(&path)).unwrap().len() > 0,
+        "records after the checkpoint interval should start a new append log"
+    );
+
+    let recovered = Workspace::open(DurabilityFormat::Json, &path).unwrap();
+    assert_declared_schema_and_all_data_survived(
+        &recovered,
+        ["Alice", "Bob"],
+        ["Hello", "Threshold"],
+        [2026, 2027],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn workspace_reopen_ignores_truncated_final_autocommit_record() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("truncated-final-record.json");
+    let mut workspace = Workspace::new();
+
+    workspace
+        .enable_autocommit(DurabilityFormat::Json, &path)
+        .unwrap();
+    define_workspace_schema(&mut workspace).await;
+    create_workspace_data(&mut workspace).await;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(log_path(&path))
+        .unwrap()
+        .write_all(br#"{"UpsertNode":"#)
+        .unwrap();
+
+    let recovered = Workspace::open(DurabilityFormat::Json, &path).unwrap();
+    assert_declared_schema_and_data_survived(&recovered).await;
+}
+
+#[tokio::test]
+async fn workspace_reopen_rejects_malformed_complete_autocommit_record() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("malformed-complete-record.json");
+    let mut workspace = Workspace::new();
+
+    workspace
+        .enable_autocommit(DurabilityFormat::Json, &path)
+        .unwrap();
+    define_workspace_schema(&mut workspace).await;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(log_path(&path))
+        .unwrap()
+        .write_all(b"{bad json}\n")
+        .unwrap();
+
+    let err = match Workspace::open(DurabilityFormat::Json, &path) {
+        Ok(_) => panic!("malformed complete append-log record should abort workspace open"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string()
+            .contains("malformed durable append log record"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn workspace_replay_covers_schema_crud_edge_crud_and_grouped_batch_ops() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("crud-and-batch-replay.json");
+    let mut workspace = Workspace::new();
+
+    workspace
+        .enable_autocommit(DurabilityFormat::Json, &path)
+        .unwrap();
+    define_workspace_schema(&mut workspace).await;
+    let alice_ops = create_workspace_data(&mut workspace).await;
+    assert_eq!(alice_ops.len(), 3);
+    let bob_ops = create_workspace_data_named(&mut workspace, "Bob", "Draft", 2027).await;
+    assert_eq!(bob_ops.len(), 3);
+
+    let alice_id = find_one_node_id(&workspace, "User", "name", "Alice").await;
+    let draft_post_id = find_one_node_id(&workspace, "Post", "title", "Draft").await;
+    let alice_edge_id = find_one_edge_id(&workspace, 2026);
+    let bob_edge_id = find_one_edge_id(&workspace, 2027);
+
+    workspace
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Update(
+            NodeUpdateRequest {
+                model: "User".to_string(),
+                id: alice_id,
+                props: props([("name", json!("Ada"))]),
+            },
+        )))
+        .await
+        .unwrap();
+    workspace
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Update(
+            EdgeUpdateRequest {
+                model: "Authored".to_string(),
+                id: alice_edge_id,
+                props: props([("year", json!(2028))]),
+            },
+        )))
+        .await
+        .unwrap();
+    workspace
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Delete(
+            EdgeDeleteRequest {
+                model: "Authored".to_string(),
+                id: bob_edge_id,
+            },
+        )))
+        .await
+        .unwrap();
+    workspace
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Delete(
+            NodeDeleteRequest {
+                model: "Post".to_string(),
+                id: draft_post_id,
+            },
+        )))
+        .await
+        .unwrap();
+
+    let batch = workspace
+        .execute_runtime(RuntimeRequest::Batch(BatchRequest {
+            atomic: true,
+            allow_deletes: false,
+            response: SessionBatchResponse::Detailed,
+            ops: vec![
+                SessionBatchOp::NodeCreate(SessionBatchNodeCreateParams {
+                    model: "User".to_string(),
+                    props: props([("name", json!("Carol"))]),
+                    local_ref: Some("carol".to_string()),
+                }),
+                SessionBatchOp::NodeCreate(SessionBatchNodeCreateParams {
+                    model: "Post".to_string(),
+                    props: props([("title", json!("Batch"))]),
+                    local_ref: Some("batch_post".to_string()),
+                }),
+                SessionBatchOp::EdgeCreate(SessionBatchEdgeCreateParams {
+                    model: "Authored".to_string(),
+                    from: SessionBatchEndpoint::Ref("carol".to_string()),
+                    to: SessionBatchEndpoint::Ref("batch_post".to_string()),
+                    props: props([("year", json!(2029))]),
+                }),
+            ],
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        batch.durable_ops.as_slice(),
+        [DurableOperation::Batch { ops }] if ops.len() == 3
+    ));
+
+    let recovered = Workspace::open(DurabilityFormat::Json, &path).unwrap();
+    assert_declared_schema_and_all_data_survived(
+        &recovered,
+        ["Ada", "Bob", "Carol"],
+        ["Hello", "Batch"],
+        [2028, 2029],
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn cli_save_load_uses_workspace_schema_snapshot() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("cli-workspace.json");
@@ -251,6 +459,26 @@ async fn cli_save_load_uses_workspace_schema_snapshot() {
     assert!(output.contains("email: string (optional)"), "{output}");
     assert!(output.contains("role: string (optional)"), "{output}");
     assert!(output.contains("Alice"), "{output}");
+}
+
+async fn create_workspace_node(
+    workspace: &mut Workspace,
+    model: &'static str,
+    props: BTreeMap<String, Value>,
+) -> i64 {
+    let outcome = workspace
+        .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+            NodeCreateRequest {
+                model: model.to_string(),
+                props,
+            },
+        )))
+        .await
+        .unwrap();
+    let RuntimeResponse::Node(grm_rs::NodeResponse::Create(node)) = outcome.response else {
+        panic!("expected node create response");
+    };
+    node.id
 }
 
 async fn define_workspace_schema(workspace: &mut Workspace) -> Vec<DurableOperation> {
@@ -303,6 +531,82 @@ async fn define_workspace_schema(workspace: &mut Workspace) -> Vec<DurableOperat
             .durable_ops,
     );
     durable_ops
+}
+
+async fn assert_workspace_counts(
+    workspace: &Workspace,
+    expected_users: usize,
+    expected_posts: usize,
+    expected_edges: usize,
+) {
+    let users = workspace
+        .state()
+        .node_find_response(NodeFindRequest {
+            model: "User".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(users.nodes.len(), expected_users);
+
+    let posts = workspace
+        .state()
+        .node_find_response(NodeFindRequest {
+            model: "Post".to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(posts.nodes.len(), expected_posts);
+
+    let edges = workspace
+        .state()
+        .edge_find_response(EdgeFindRequest {
+            model: "Authored".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(edges.edges.len(), expected_edges);
+}
+
+async fn find_one_node_id(
+    workspace: &Workspace,
+    model: &'static str,
+    field: &'static str,
+    value: &'static str,
+) -> i64 {
+    let response = workspace
+        .state()
+        .node_find_response(NodeFindRequest {
+            model: model.to_string(),
+            predicates: vec![grm_rs::PropertyPredicate {
+                field: field.to_string(),
+                op: grm_rs::PredicateOp::Eq,
+                value: json!(value),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(response.nodes.len(), 1);
+    response.nodes[0].id
+}
+
+fn find_one_edge_id(workspace: &Workspace, year: i64) -> i64 {
+    let response = workspace
+        .state()
+        .edge_find_response(EdgeFindRequest {
+            model: "Authored".to_string(),
+            predicates: vec![grm_rs::PropertyPredicate {
+                field: "year".to_string(),
+                op: grm_rs::PredicateOp::Eq,
+                value: json!(year),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(response.edges.len(), 1);
+    response.edges[0].id
 }
 
 async fn create_workspace_data(workspace: &mut Workspace) -> Vec<DurableOperation> {
