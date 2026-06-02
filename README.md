@@ -206,7 +206,9 @@ Schema, node, edge, simple find, and batch operations should be sent through
 `ExecuteWorkspace`. Direct non-workspace RPC families in the proto are still
 explicitly unsupported by the local shell.
 Checked service-backed clients use binary local autocommit workspace files by
-default; JSON remains an explicit debug/interchange-friendly option.
+default; JSON remains an explicit debug/interchange-friendly option. The current
+durability target is single-writer local filesystem behavior, documented in
+[docs/local-durability-target.md](docs/local-durability-target.md).
 
 Try the checked Rust client example:
 
@@ -229,8 +231,9 @@ cargo run --bin grm -- session
 Use `GRM_SERVICE_WORKSPACE_MODE=open` to reopen an existing service-managed
 workspace.
 
-See [docs/grpc-docker-service.md](docs/grpc-docker-service.md) and
-[docs/grpc-quickstart.md](docs/grpc-quickstart.md).
+See [docs/grpc-docker-service.md](docs/grpc-docker-service.md),
+[docs/grpc-quickstart.md](docs/grpc-quickstart.md), and
+[docs/local-durability-target.md](docs/local-durability-target.md).
 
 ## Architecture
 

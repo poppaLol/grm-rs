@@ -26,6 +26,10 @@ workspace envelope that lets GRM reopen the same typed memory context with graph
 data, runtime schema, schema memory metadata, durable deltas, and recovery
 boundaries.
 
+For the currently supported service-backed local target class, including binary
+default persistence, JSON opt-in behavior, create/open/reopen expectations, and
+unsupported durability cases, see [Local Durability Target Class](local-durability-target.md).
+
 That means focusing on:
 
 - interrupted-write safety
