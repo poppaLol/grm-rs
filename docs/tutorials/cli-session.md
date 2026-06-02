@@ -34,11 +34,35 @@ session instead and routes the supported schema/CRUD/find subset through the
 gRPC workspace service. That includes traversal-capable `node.find` for
 node/root/end/edge results through `ExecuteWorkspace`. Configure it with
 `GRM_SERVICE_ENDPOINT`, `GRM_WORKSPACE_REF`, and optional
-`GRM_SERVICE_WORKSPACE_MODE=create|open`. Service workspace format defaults to
-binary; set `GRM_SERVICE_WORKSPACE_FORMAT=json` only when you explicitly want
-JSON files. Local file commands, transactions, explain/profile, free-form query
-parity, and import/export remain local-only or
-unsupported in service CLI mode.
+`GRM_SERVICE_WORKSPACE_MODE=create|open`; omitted mode means `open`. Service
+workspace format defaults to binary; set `GRM_SERVICE_WORKSPACE_FORMAT=json`
+only when you explicitly want JSON files. The service-backed CLI prints the
+endpoint, workspace ref, create/open mode, persistence format, and
+`ExecuteWorkspace` scope before the prompt appears.
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=tutorial-cli \
+GRM_SERVICE_WORKSPACE_MODE=create \
+cargo run --bin grm -- session
+```
+
+Reopen the same service-managed workspace with:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=tutorial-cli \
+GRM_SERVICE_WORKSPACE_MODE=open \
+cargo run --bin grm -- session
+```
+
+Local file commands, transactions, explain/profile, free-form query parity, and
+import/export remain local-only or unsupported in service CLI mode. The current
+local service path is GRM-owned memory/file backed workspace storage; it is not
+Neo4j-backed and does not claim hosted durability, auth/TLS, or multi-writer
+coordination.
 
 ## Define A Small Graph
 
