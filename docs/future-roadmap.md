@@ -168,6 +168,17 @@ Long-term direction:
 - keep unsupported surfaces explicit instead of filling gaps with textual query
   language or service-only behavior
 
+### 9. GraphAI Feasibility Direction
+
+GRM/SOML is also a natural substrate for GraphAI: a graph-based intermediate
+representation for traceable AI reasoning. The feasibility direction is to
+represent observations, interpretations, decisions, constraints, conflicts,
+provenance, and temporal validity as queryable graph memory so humans and agents
+can ask why a decision was made, what evidence supports it, and what conflicting
+information exists.
+
+See [GraphAI Feasibility Direction](soml/memory/graphai-feasibility.md).
+
 ## Product Directions Not Yet Fully Represented
 
 ### Schema Migration And Versioning
