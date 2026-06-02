@@ -39,6 +39,30 @@ impl Neo4jBackend {
     pub fn from_graph(graph: Graph) -> Self {
         Self { graph }
     }
+
+    pub async fn count_nodes_with_label(&self, label: &str) -> Result<usize> {
+        let text = format!("MATCH (n:{}) RETURN count(n) AS count", cypher_name(label));
+        let mut rows = self.graph.execute(query(&text)).await.map_err(neo4j_err)?;
+        let row =
+            rows.next().await.map_err(neo4j_err)?.ok_or_else(|| {
+                GrmError::Constraint("Neo4j node count query returned no row".into())
+            })?;
+        let count: i64 = row.get("count").map_err(neo4j_value_err)?;
+        Ok(count.max(0) as usize)
+    }
+
+    pub async fn count_relationships_with_type(&self, rel_type: &str) -> Result<usize> {
+        let text = format!(
+            "MATCH ()-[r:{}]->() RETURN count(r) AS count",
+            cypher_name(rel_type)
+        );
+        let mut rows = self.graph.execute(query(&text)).await.map_err(neo4j_err)?;
+        let row = rows.next().await.map_err(neo4j_err)?.ok_or_else(|| {
+            GrmError::Constraint("Neo4j relationship count query returned no row".into())
+        })?;
+        let count: i64 = row.get("count").map_err(neo4j_value_err)?;
+        Ok(count.max(0) as usize)
+    }
 }
 
 #[async_trait]
