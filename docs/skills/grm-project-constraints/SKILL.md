@@ -1,6 +1,6 @@
 ---
 name: grm-project-constraints
-description: Use when working on grm-rs planning, review, or code changes and you need to inspect GRM MCP project-memory constraints, policies, decisions, or testing rules before proposing or editing work.
+description: Use when working on grm-rs planning, review, code changes, RFC/standards docs, or project claims and you need to inspect GRM MCP project-memory constraints, policies, decisions, or testing rules before proposing or editing work.
 ---
 
 # GRM Project Constraints
@@ -86,6 +86,32 @@ Relevant graph models and edges may include:
 
 Do not treat adapter ergonomics as the future service contract unless the graph
 contains an explicit decision saying so.
+
+## Standards/RFC Documentation Checks
+
+For work on `docs/soml/foundations`, RFCs, protocol standards, or external-facing
+GRM/SOML standardization material, also look for graph memory about:
+
+- operations-contract standardization
+- draft/proposed protocol status
+- capability declarations
+- protobuf versioning discipline
+- conformance expectations
+- implementation truth boundaries
+
+Relevant current graph nodes include:
+
+- `Decision` with title `Frame GRM Protocol RFC as operations-contract standardization`
+- `Policy` with title `Standardization docs distinguish draft protocol from implemented service behavior`
+- `RoadmapItem` with title `Explore GRM/SOML storage protocol standardization`
+
+Treat RFC material as draft or proposed unless the graph and docs say it has
+been accepted. Do not claim auth/TLS, hosted durability, multi-writer
+coordination, universal backend portability, conformance, or final standard
+status before those are implemented, tested, and accepted.
+
+Keep the distinction clear: standardize the typed graph operations contract, not
+backend implementation, physical storage format, or a textual query language.
 
 ## Response Pattern
 
