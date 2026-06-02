@@ -375,13 +375,17 @@ The near-term service API proof has moved from design into code:
   create/open/execute/reopen behavior without passing server filesystem paths.
 - Generated-client parity coverage now targets the practical MCP-Neo4j subset
   through the workspace path: schema define/list, schema-aware node and edge
-  CRUD, simple find, batch, and reopen verification.
-- Unsupported runtime surfaces remain explicit: traversal query, explain,
-  profile, admin operations, and direct non-workspace RPCs are not silently
-  claimed as implemented.
+  CRUD, simple find, traversal-backed find result shapes, explain/profile for
+  typed find shapes through service-backed adapters, batch, and reopen
+  verification.
+- Unsupported runtime surfaces remain explicit: free-form query parity, admin
+  operations, and direct non-workspace RPCs are not silently claimed as
+  implemented.
 
 This is a service-hostable runtime contract proof with a thin local gRPC
 transport shell, not a hosted service. The next service-boundary work should
 avoid widening into daemon lifecycle, TLS, auth, authorization, hosted
 durability claims, or direct RPC implementations until request context,
 durability behavior, and unsupported semantics are clear enough to review.
+The current local durability target class is documented separately in
+[Local Durability Target Class](local-durability-target.md).
