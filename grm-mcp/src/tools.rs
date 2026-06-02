@@ -1882,7 +1882,7 @@ impl ServerHandler for GrmMcpServer {
         let instructions = if self.is_service() {
             "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node or edge results, edge_find, grm_explain, and grm_profile through ExecuteWorkspace. Direct service RPC families, import/export, and free-form query parity are not supported yet."
         } else if self.is_neo4j() {
-            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and simple node/edge find."
+            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status and grm://graph/summary; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, simple node/edge find, and graph summary counts for the current session-local runtime schema."
         } else {
             "Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible."
         };
@@ -1943,10 +1943,7 @@ impl ServerHandler for GrmMcpServer {
                 if let Some(err) = self.unsupported_in_service("grm://graph/summary") {
                     return Err(err);
                 }
-                if let Some(err) = self.unsupported_in_neo4j("grm://graph/summary") {
-                    return Err(err);
-                }
-                serde_json::to_string_pretty(&self.summary_json().await)
+                serde_json::to_string_pretty(&self.summary_json().await.map_err(to_mcp_error)?)
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?
             }
             "grm://backend/status" => {
