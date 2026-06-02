@@ -77,24 +77,28 @@ extending typed data. `grm_schema_list` is still the first schema inspection
 tool. Agents should also inspect `grm://backend/status`, which reports the
 backend mode, runtime schema model count, whether the runtime schema is empty,
 whether schema memory persistence is enabled, and whether schema memory was
-recovered from an existing file. If the schema is empty, ask whether to define a
-fresh schema or reconstruct one from project docs before writing. If an existing
-local schema memory file is invalid or inconsistent, startup fails loudly.
+recovered from an existing file. `grm://graph/summary` reports Neo4j node and
+relationship counts for the current session-local runtime schema models. If the
+schema is empty, ask whether to define a fresh schema or reconstruct one from
+project docs before writing. If an existing local schema memory file is invalid
+or inconsistent, startup fails loudly.
 
 Agent/tool flow after startup:
 
 1. Call `grm_schema_list`.
 2. Read `grm://backend/status`.
-3. If `schema_template_loaded` is `true`, the server recovered schema memory
+3. Read `grm://graph/summary` for schema-aware Neo4j counts when the runtime
+   schema has models.
+4. If `schema_template_loaded` is `true`, the server recovered schema memory
    from the local file; treat the models returned by `grm_schema_list` as the
    current runtime schema and verify the intended write matches those fields and
    endpoints.
-4. If `runtime_schema_empty` is `true`, define schema with
+5. If `runtime_schema_empty` is `true`, define schema with
    `grm_schema_define_node`, `grm_schema_define_edge`, or a `grm_batch`
    containing `schema_define_node`/`schema_define_edge` ops. If
    `schema_template_persistence_enabled` is `true`, those schema definitions are
    persisted to the configured local file.
-5. Only then write graph data with `grm_batch`, `grm_node_create`,
+6. Only then write graph data with `grm_batch`, `grm_node_create`,
    `grm_node_update`, `grm_node_delete`, `grm_edge_create`, `grm_edge_update`,
    or `grm_edge_delete`.
 
@@ -111,9 +115,10 @@ not write anything until the runtime schema contains the target models.
 ```
 
 Graph durability comes from Neo4j, not the GRM WAL/autocommit layer. Neo4j mode
-does not support snapshots, import/export, autocommit, explain/profile,
-or traversal/query parity yet. Unsupported tools and unsupported Neo4j batch
-operations return clear not-supported errors.
+supports `grm://graph/summary` for schema-aware counts, but does not support
+snapshots, import/export, autocommit, explain/profile, or traversal/query parity
+yet. Unsupported tools and unsupported Neo4j batch operations return clear
+not-supported errors.
 
 ## Startup Flags
 

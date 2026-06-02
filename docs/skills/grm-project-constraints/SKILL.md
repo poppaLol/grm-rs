@@ -12,7 +12,8 @@ GRM MCP graph when available.
 
 1. Call `grm_schema_list`.
 2. If Neo4j mode is active, read `grm://backend/status`.
-3. Do not use `grm://graph/summary` or `grm://graph/export` in Neo4j mode.
+3. In Neo4j mode, `grm://graph/summary` is supported for schema-aware node and
+   edge counts; `grm://graph/export` remains unsupported.
 
 If the schema lacks the models below, use the closest available equivalents and
 say what was missing.

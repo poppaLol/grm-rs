@@ -5,7 +5,7 @@ pub const AGENT_GUIDE: &str = r#"GRM is a runtime graph session exposed over MCP
 Recommended agent workflow:
 1. Call grm_help when first using this server in a session.
 2. Call grm_schema_list or read grm://schema before creating or querying data.
-3. If Neo4j mode is active, read grm://backend/status; if schema_template_loaded is true, call grm_schema_list and use the recovered models. If runtime schema is empty, define or reconstruct schema before typed reads or writes.
+3. If Neo4j mode is active, read grm://backend/status and grm://graph/summary; if schema_template_loaded is true, call grm_schema_list and use the recovered models. If runtime schema is empty, define or reconstruct schema before typed reads or writes.
 4. Before defining schema, decide the graph's richness vs sparseness.
 5. Prefer structured tools for schema, node, edge, introspection, import, export, and persistence operations.
 6. For more than 3 creates or updates, prefer grm_batch with ops as structured operation objects, not CLI strings or JSON-encoded strings.
@@ -18,8 +18,8 @@ Neo4j mode note:
 - Runtime schema metadata is session-local. Neo4j graph data may already exist even when grm_schema_list is empty.
 - GRM_SCHEMA_TEMPLATE is an optional server startup environment variable, not a tool call. When set by the operator, it points at a local GRM JSON session file used as durable schema memory while Neo4j stores graph data.
 - If the file is missing, startup creates a fresh schema memory file. If it exists, startup recovers runtime schema from it. Invalid files fail startup loudly.
-- On startup, call grm_schema_list and inspect grm://backend/status. If schema_template_loaded is true, verify the recovered models before writing. If schema is empty, ask whether to define a fresh schema or reconstruct one from project docs.
-- Neo4j mode supports grm_batch for schema_define_node, schema_define_edge, node_create, node_update, node_delete, edge_create, edge_update, and edge_delete. Snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
+- On startup, call grm_schema_list and inspect grm://backend/status and grm://graph/summary. If schema_template_loaded is true, verify the recovered models before writing. If schema is empty, ask whether to define a fresh schema or reconstruct one from project docs.
+- Neo4j mode supports grm_batch for schema_define_node, schema_define_edge, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and graph summary counts for the current session-local runtime schema. Snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
 
 Schema richness vs sparseness:
 - Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.
@@ -37,7 +37,7 @@ pub fn help_index() -> Value {
         "recommended_workflow": [
             "Call grm_help when first using this server in a session.",
             "Call grm_schema_list or read grm://schema before creating or querying data.",
-            "If Neo4j mode is active, read grm://backend/status; if schema_template_loaded is true, call grm_schema_list and use the recovered models. If runtime schema is empty, define or reconstruct schema before typed reads or writes.",
+            "If Neo4j mode is active, read grm://backend/status and grm://graph/summary; if schema_template_loaded is true, call grm_schema_list and use the recovered models. If runtime schema is empty, define or reconstruct schema before typed reads or writes.",
             "Before defining schema, decide the graph's richness vs sparseness.",
             "Prefer structured tools over grm_query except when exact CLI-compatible command text is required.",
             "Use grm_explain or grm_profile to inspect node.find and edge.find plans.",
