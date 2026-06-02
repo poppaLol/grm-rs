@@ -261,8 +261,68 @@ impl GrmMcpServer {
         self.state.lock().await.export_value()
     }
 
-    pub async fn summary_json(&self) -> Value {
-        self.state.lock().await.summary_value()
+    pub async fn summary_json(&self) -> GrmResult<Value> {
+        if self.is_neo4j() {
+            return self.neo4j_summary_json().await;
+        }
+        Ok(self.state.lock().await.summary_value())
+    }
+
+    async fn neo4j_summary_json(&self) -> GrmResult<Value> {
+        let (node_models, edge_models) = {
+            let state = self.state.lock().await;
+            (
+                state
+                    .catalog()
+                    .list_node_models()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                state
+                    .catalog()
+                    .list_rel_models()
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        let mut nodes_by_model = serde_json::Map::new();
+        let mut edges_by_model = serde_json::Map::new();
+        let mut node_total = 0usize;
+        let mut edge_total = 0usize;
+        let backend = self.neo4j_client()?.backend();
+
+        for model in &node_models {
+            let count = backend.count_nodes_with_label(&model.label).await?;
+            node_total += count;
+            nodes_by_model.insert(model.name.clone(), json!(count));
+        }
+
+        for model in &edge_models {
+            let count = backend
+                .count_relationships_with_type(&model.rel_type)
+                .await?;
+            edge_total += count;
+            edges_by_model.insert(model.name.clone(), json!(count));
+        }
+
+        Ok(json!({
+            "backend": {
+                "mode": "neo4j",
+                "connected": true,
+                "scope": "session-local runtime schema models",
+                "note": "Summary counts Neo4j nodes and relationships matching the current session-local runtime schema; it is not graph export, traversal, query, import/export, explain/profile, or full store introspection parity."
+            },
+            "nodes": {
+                "total": node_total,
+                "by_model": Value::Object(nodes_by_model)
+            },
+            "edges": {
+                "total": edge_total,
+                "by_model": Value::Object(edges_by_model)
+            }
+        }))
     }
 
     pub(crate) async fn persist_autocommit(&self, state: &SessionState) -> GrmResult<()> {
@@ -382,7 +442,8 @@ fn neo4j_backend_status_value(
                 "explain/profile",
                 "traversal/query parity"
             ],
-            "future_orientation_tools": ["grm_backend_status", "grm_store_summary", "grm_schema_introspect"]
+            "supported_orientation_resources": ["grm://backend/status", "grm://graph/summary"],
+            "future_orientation_tools": ["grm_schema_introspect"]
         },
         "recommended_startup_flow": [
             "Call grm_schema_list.",

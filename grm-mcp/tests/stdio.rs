@@ -1,7 +1,7 @@
 use grm_rs::{DurabilityFormat, GraphBackend, Neo4jBackend, Neo4jConfig, SessionState};
 use grm_service_api::GrpcWorkspaceService;
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, JsonObject};
+use rmcp::model::{CallToolRequestParams, JsonObject, ReadResourceRequestParams, ResourceContents};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use std::env;
@@ -649,6 +649,28 @@ async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
     )
     .await;
     assert_eq!(found_edges["edges"].as_array().unwrap().len(), 1);
+
+    let summary_resource = client
+        .read_resource(ReadResourceRequestParams::new("grm://graph/summary"))
+        .await
+        .expect("read Neo4j graph summary resource");
+    let [ResourceContents::TextResourceContents { text, .. }] =
+        summary_resource.contents.as_slice()
+    else {
+        panic!("expected one text graph summary resource");
+    };
+    let summary: Value = serde_json::from_str(text).expect("parse Neo4j summary resource JSON");
+    assert_eq!(summary["backend"]["mode"], json!("neo4j"));
+    assert_eq!(
+        summary["backend"]["scope"],
+        json!("session-local runtime schema models")
+    );
+    assert_eq!(summary["nodes"]["by_model"]["GrmMcpSmokeUser"], json!(2));
+    assert_eq!(summary["nodes"]["by_model"]["GrmMcpSmokePost"], json!(1));
+    assert_eq!(
+        summary["edges"]["by_model"]["GRM_MCP_SMOKE_AUTHORED"],
+        json!(1)
+    );
 
     let paged_edges = call(
         &client,
