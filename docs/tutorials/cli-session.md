@@ -58,7 +58,8 @@ GRM_SERVICE_WORKSPACE_MODE=open \
 cargo run --bin grm -- session
 ```
 
-Local file commands, transactions, explain/profile, free-form query parity, and
+Typed `session.explain/profile node.find|edge.find` runs through the service
+workspace path. Local file commands, transactions, free-form query parity, and
 import/export remain local-only or unsupported in service CLI mode. The current
 local service path is GRM-owned memory/file backed workspace storage; it is not
 Neo4j-backed and does not claim hosted durability, auth/TLS, or multi-writer

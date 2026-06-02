@@ -368,9 +368,9 @@ async fn service_shaped_node_and_edge_requests_execute_through_runtime_dispatche
 async fn service_shaped_unsupported_request_returns_explicit_runtime_error() {
     let mut state = SessionState::new();
 
-    let err = svc::ServiceRequest::Explain(svc::ExplainRequest {
-        query: svc::QueryRequest {
-            query: svc::Query::NodeFind(svc::NodeFindShape {
+    let err = svc::ServiceRequest::Query(svc::QueryRequest {
+        query: svc::Query::Traversal(svc::TraversalRequest {
+            root: svc::NodeFindShape {
                 model: "User".into(),
                 predicates: Vec::new(),
                 end_predicates: Vec::new(),
@@ -381,15 +381,15 @@ async fn service_shaped_unsupported_request_returns_explicit_runtime_error() {
                 offset: None,
                 id: None,
                 return_mode: None,
-            }),
-        },
+            },
+        }),
     })
     .execute(&mut state)
     .await
     .unwrap_err();
 
     assert!(matches!(err, grm_rs::GrmError::NotSupported(_)));
-    assert!(err.to_string().contains("explain requests yet"));
+    assert!(err.to_string().contains("traversal query requests yet"));
 }
 
 #[tokio::test]
@@ -993,6 +993,69 @@ async fn ergonomic_workspace_client_routes_supported_operations_through_execute_
     assert_eq!(traversed.nodes[0].id, post.id);
     assert_eq!(traversed.nodes[0].props["title"], json!("Traversal"));
 
+    let traversal_request = grm_rs::NodeFindRequest {
+        model: "User".into(),
+        predicates: vec![grm_rs::PropertyPredicate {
+            field: "name".into(),
+            op: grm_rs::PredicateOp::Eq,
+            value: json!("Ada"),
+        }],
+        traversals: vec![grm_rs::TraversalStepRequest {
+            direction: grm_rs::TraversalDirection::Out,
+            edge_model: Some("Authored".into()),
+            end_model: "Post".into(),
+        }],
+        end_predicates: vec![grm_rs::PropertyPredicate {
+            field: "title".into(),
+            op: grm_rs::PredicateOp::Eq,
+            value: json!("Traversal"),
+        }],
+        return_mode: Some(grm_rs::TraversalReturn::End),
+        ..Default::default()
+    };
+    let explain = client
+        .explain(grm_rs::ExplainRequest {
+            query: grm_rs::QueryRequest::NodeFind(traversal_request.clone()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(explain.plan_kind, "node.find");
+    assert!(explain.steps.iter().any(|step| step.contains("ExpandOut")));
+    assert!(
+        explain
+            .indexes
+            .iter()
+            .any(|index| index == "system.edge.outgoing_adjacency")
+    );
+
+    let profile = client
+        .profile(grm_rs::ProfileRequest {
+            query: grm_rs::QueryRequest::NodeFind(traversal_request),
+        })
+        .await
+        .unwrap();
+    assert_eq!(profile.plan.as_ref().unwrap().plan_kind, "node.find");
+    assert_eq!(profile.row_count, 1);
+    assert!(profile.elapsed_micros > 0);
+
+    let edge_explain = client
+        .explain(grm_rs::ExplainRequest {
+            query: grm_rs::QueryRequest::EdgeFind(grm_rs::EdgeFindRequest {
+                model: "Authored".into(),
+                from: Some(created.id),
+                ..Default::default()
+            }),
+        })
+        .await
+        .unwrap();
+    assert_eq!(edge_explain.plan_kind, "edge.find");
+    assert!(
+        edge_explain
+            .steps
+            .iter()
+            .any(|step| step.contains("RelationshipEndpointSeek"))
+    );
+
     let edge_return = client
         .find_node_results(grm_rs::NodeFindRequest {
             model: "User".into(),
@@ -1263,6 +1326,69 @@ async fn generated_grpc_client_reopens_binary_autocommitted_workspace_without_ma
     )
     .await;
     assert_eq!(edge_int_props(found, "year"), vec![2027]);
+
+    let traversal_shape = proto::NodeFindShape {
+        model: "User".into(),
+        predicates: vec![proto_predicate(
+            "name",
+            proto::property_value::Kind::StringValue("Ada Lovelace".into()),
+        )],
+        end_predicates: vec![proto_predicate(
+            "title",
+            proto::property_value::Kind::StringValue("Parity notes".into()),
+        )],
+        edge_predicates: vec![proto_predicate(
+            "year",
+            proto::property_value::Kind::IntValue(2027),
+        )],
+        traversals: vec![proto::TraversalStep {
+            direction: proto::TraversalDirection::Out as i32,
+            edge_model: Some("Authored".into()),
+            end_model: "Post".into(),
+        }],
+        order: Vec::new(),
+        limit: None,
+        offset: None,
+        id: None,
+        return_mode: Some(proto::TraversalReturn::End as i32),
+    };
+    let explain = execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        proto::runtime_request::Request::Explain(proto::ExplainRequest {
+            query: Some(proto::QueryRequest {
+                query: Some(proto::query_request::Query::NodeFind(
+                    traversal_shape.clone(),
+                )),
+            }),
+        }),
+    )
+    .await;
+    let Some(proto::runtime_response::Response::Explain(explain)) =
+        explain.response.and_then(|response| response.response)
+    else {
+        panic!("expected workspace explain response");
+    };
+    assert_eq!(explain.plan_kind, "node.find");
+    assert!(explain.steps.iter().any(|step| step.contains("ExpandOut")));
+
+    let profile = execute_workspace_proto(
+        &mut client,
+        &opened_handle,
+        proto::runtime_request::Request::Profile(proto::ProfileRequest {
+            query: Some(proto::QueryRequest {
+                query: Some(proto::query_request::Query::NodeFind(traversal_shape)),
+            }),
+        }),
+    )
+    .await;
+    let Some(proto::runtime_response::Response::Profile(profile)) =
+        profile.response.and_then(|response| response.response)
+    else {
+        panic!("expected workspace profile response");
+    };
+    assert_eq!(profile.plan.as_ref().unwrap().plan_kind, "node.find");
+    assert_eq!(profile.row_count, 1);
 
     let temporary_user = created_node_id(
         execute_workspace_proto(
@@ -1654,6 +1780,14 @@ fn find_edges_by_id_proto(model: &str, id: i64) -> proto::EdgeFindRequest {
         id: Some(id),
         from: None,
         to: None,
+    }
+}
+
+fn proto_predicate(field: &str, value: proto::property_value::Kind) -> proto::PropertyPredicate {
+    proto::PropertyPredicate {
+        field: field.into(),
+        op: proto::PredicateOp::Eq as i32,
+        value: Some(proto::PropertyValue { kind: Some(value) }),
     }
 }
 

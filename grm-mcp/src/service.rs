@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use grm_rs::{
-    EdgeFindRequest, GrmError, NodeFindRequest, OrderDirection, PredicateOp, Result as GrmResult,
-    SessionBatchEndpoint, SessionBatchOp, SessionBatchParams, SessionBatchResponse,
-    TraversalDirection, TraversalReturn,
+    EdgeFindRequest, GrmError, NodeFindRequest, OrderDirection, PredicateOp, QueryTerm,
+    Result as GrmResult, SessionBatchEndpoint, SessionBatchOp, SessionBatchParams,
+    SessionBatchResponse, TraversalDirection, TraversalReturn,
 };
 use grm_service_api::proto;
 use serde_json::{Map, Value, json};
@@ -144,13 +144,14 @@ impl ServiceMcpBackend {
                     "grm_edge_update",
                     "grm_edge_delete",
                     "grm_node_find",
-                    "grm_edge_find"
+                    "grm_edge_find",
+                    "grm_explain",
+                    "grm_profile"
                 ],
                 "unsupported_surfaces": [
                     "snapshots",
                     "import/export",
                     "direct service RPC families",
-                    "explain/profile",
                     "free-form query parity"
                 ]
             },
@@ -158,7 +159,7 @@ impl ServiceMcpBackend {
                 "Start the gRPC workspace service with a configured local workspace root.",
                 "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files.",
                 "Call grm_schema_list to verify the workspace schema before writing.",
-                "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results."
+                "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results. grm_explain and grm_profile support typed node.find and edge.find commands through ExecuteWorkspace."
             ]
         })
     }
@@ -297,6 +298,96 @@ impl ServiceMcpBackend {
         .await
     }
 
+    pub(crate) async fn explain_node_find_terms(
+        &self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> GrmResult<Value> {
+        reject_introspection_format_terms(terms)?;
+        let request = NodeFindRequest::from_adapter_query_terms(model_name, terms.iter().cloned())?;
+        let response = self
+            .execute_value(proto::runtime_request::Request::Explain(
+                proto::ExplainRequest {
+                    query: Some(proto::QueryRequest {
+                        query: Some(proto::query_request::Query::NodeFind(
+                            proto_node_find_shape(request)?,
+                        )),
+                    }),
+                },
+            ))
+            .await?;
+        Ok(explain_response_value("node.find", model_name, response))
+    }
+
+    pub(crate) async fn profile_node_find_terms(
+        &self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> GrmResult<Value> {
+        reject_introspection_format_terms(terms)?;
+        let request = NodeFindRequest::from_adapter_query_terms(model_name, terms.iter().cloned())?;
+        let response = self
+            .execute_value(proto::runtime_request::Request::Profile(
+                proto::ProfileRequest {
+                    query: Some(proto::QueryRequest {
+                        query: Some(proto::query_request::Query::NodeFind(
+                            proto_node_find_shape(request)?,
+                        )),
+                    }),
+                },
+            ))
+            .await?;
+        profile_response_value("node.find", model_name, response)
+    }
+
+    pub(crate) async fn explain_edge_find_terms(
+        &self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> GrmResult<Value> {
+        reject_introspection_format_terms(terms)?;
+        let request = EdgeFindRequest::from_adapter_filter_values(
+            model_name,
+            collect_query_term_values(terms),
+        )?;
+        let response = self
+            .execute_value(proto::runtime_request::Request::Explain(
+                proto::ExplainRequest {
+                    query: Some(proto::QueryRequest {
+                        query: Some(proto::query_request::Query::EdgeFind(
+                            proto_edge_find_shape(request)?,
+                        )),
+                    }),
+                },
+            ))
+            .await?;
+        Ok(explain_response_value("edge.find", model_name, response))
+    }
+
+    pub(crate) async fn profile_edge_find_terms(
+        &self,
+        model_name: &str,
+        terms: &[QueryTerm],
+    ) -> GrmResult<Value> {
+        reject_introspection_format_terms(terms)?;
+        let request = EdgeFindRequest::from_adapter_filter_values(
+            model_name,
+            collect_query_term_values(terms),
+        )?;
+        let response = self
+            .execute_value(proto::runtime_request::Request::Profile(
+                proto::ProfileRequest {
+                    query: Some(proto::QueryRequest {
+                        query: Some(proto::query_request::Query::EdgeFind(
+                            proto_edge_find_shape(request)?,
+                        )),
+                    }),
+                },
+            ))
+            .await?;
+        profile_response_value("edge.find", model_name, response)
+    }
+
     async fn execute_value(&self, request: proto::runtime_request::Request) -> GrmResult<Value> {
         let response = self.execute(request).await?;
         let runtime = response
@@ -364,9 +455,11 @@ fn runtime_response_value(response: proto::runtime_response::Response) -> GrmRes
             "edges": response.edges.into_iter().map(stored_edge_value).collect::<GrmResult<Vec<_>>>()?,
         })),
         Response::ApplyBatch(response) => batch_response_value(response),
-        Response::Query(_) | Response::Explain(_) | Response::Profile(_) => Err(
-            GrmError::NotSupported("gRPC MCP mode does not support query/explain/profile yet"),
-        ),
+        Response::Explain(response) => Ok(explain_proto_value(response)),
+        Response::Profile(response) => Ok(profile_proto_value(response)?),
+        Response::Query(_) => Err(GrmError::NotSupported(
+            "gRPC MCP mode does not support free-form query parity yet",
+        )),
         Response::IndexList(_) | Response::Summary(_) => Err(GrmError::NotSupported(
             "gRPC MCP mode does not support index/summary responses yet",
         )),
@@ -402,6 +495,50 @@ fn batch_response_value(response: proto::BatchResponse) -> GrmResult<Value> {
                 "ref": id.local_ref,
             })
         }).collect::<Vec<_>>(),
+    }))
+}
+
+fn explain_response_value(command: &str, target: &str, response: Value) -> Value {
+    json!({
+        "command": command,
+        "target": target,
+        "plan": response["plan"].clone(),
+    })
+}
+
+fn profile_response_value(command: &str, target: &str, response: Value) -> GrmResult<Value> {
+    Ok(json!({
+        "command": command,
+        "target": target,
+        "plan": response["plan"].clone(),
+        "result_rows": response["result_rows"].clone(),
+        "elapsed": response["elapsed"].clone(),
+        "per_step_metrics": Value::Null,
+    }))
+}
+
+fn explain_proto_value(response: proto::ExplainResponse) -> Value {
+    json!({
+        "plan": {
+            "kind": response.plan_kind,
+            "steps": response.steps,
+            "text": response.steps.join("\n"),
+            "indexes": response.indexes,
+        }
+    })
+}
+
+fn profile_proto_value(response: proto::ProfileResponse) -> GrmResult<Value> {
+    let plan = response
+        .plan
+        .ok_or_else(|| missing_service_field("ProfileResponse.plan"))?;
+    Ok(json!({
+        "plan": explain_proto_value(plan)["plan"].clone(),
+        "result_rows": response.row_count,
+        "elapsed": {
+            "micros": response.elapsed_micros,
+            "display": format!("{}us", response.elapsed_micros),
+        }
     }))
 }
 
@@ -570,7 +707,23 @@ fn proto_batch_endpoint(endpoint: SessionBatchEndpoint) -> proto::BatchEndpoint 
 }
 
 fn proto_node_find(request: NodeFindRequest) -> GrmResult<proto::NodeFindRequest> {
+    let shape = proto_node_find_shape(request)?;
     Ok(proto::NodeFindRequest {
+        model: shape.model,
+        predicates: shape.predicates,
+        end_predicates: shape.end_predicates,
+        edge_predicates: shape.edge_predicates,
+        traversals: shape.traversals,
+        order: shape.order,
+        limit: shape.limit,
+        offset: shape.offset,
+        id: shape.id,
+        return_mode: shape.return_mode,
+    })
+}
+
+fn proto_node_find_shape(request: NodeFindRequest) -> GrmResult<proto::NodeFindShape> {
+    Ok(proto::NodeFindShape {
         model: request.model,
         predicates: request
             .predicates
@@ -605,7 +758,21 @@ fn proto_node_find(request: NodeFindRequest) -> GrmResult<proto::NodeFindRequest
 }
 
 fn proto_edge_find(request: EdgeFindRequest) -> GrmResult<proto::EdgeFindRequest> {
+    let shape = proto_edge_find_shape(request)?;
     Ok(proto::EdgeFindRequest {
+        model: shape.model,
+        predicates: shape.predicates,
+        order: shape.order,
+        limit: shape.limit,
+        offset: shape.offset,
+        id: shape.id,
+        from: shape.from,
+        to: shape.to,
+    })
+}
+
+fn proto_edge_find_shape(request: EdgeFindRequest) -> GrmResult<proto::EdgeFindShape> {
+    Ok(proto::EdgeFindShape {
         model: request.model,
         predicates: request
             .predicates
@@ -619,6 +786,22 @@ fn proto_edge_find(request: EdgeFindRequest) -> GrmResult<proto::EdgeFindRequest
         from: request.from,
         to: request.to,
     })
+}
+
+fn collect_query_term_values(terms: &[QueryTerm]) -> BTreeMap<String, Value> {
+    terms
+        .iter()
+        .map(|term| (term.key.clone(), json!(term.value)))
+        .collect()
+}
+
+fn reject_introspection_format_terms(terms: &[QueryTerm]) -> GrmResult<()> {
+    if terms.iter().any(|term| term.key == "format") {
+        return Err(GrmError::NotSupported(
+            "format= is not supported with session.explain or session.profile",
+        ));
+    }
+    Ok(())
 }
 
 fn proto_predicate(predicate: grm_rs::PropertyPredicate) -> GrmResult<proto::PropertyPredicate> {
