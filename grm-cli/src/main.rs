@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use grm_rs::runtime::{KeyValueArg, SessionCommand, parse_command_line};
 use grm_rs::{
     CliSession, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
-    EdgeFindRequest, EdgeUpdateRequest, FieldSpec, FieldValueType, NodeCreateRequest,
-    NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, RuntimeNodeModel, RuntimeRelModel,
-    StoredNode, StoredRel,
+    EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, FieldSpec, FieldValueType,
+    NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, ProfileRequest,
+    QueryRequest, RuntimeNodeModel, RuntimeRelModel, StoredNode, StoredRel,
 };
-use grm_service_api::{DurabilityFormat, GrpcWorkspaceClient, GrpcWorkspaceMode};
+use grm_service_api::{DurabilityFormat, GrpcWorkspaceClient, GrpcWorkspaceMode, proto};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,6 +519,72 @@ impl<'a> ServiceCliSession<'a> {
                     .map_err(service_error)?;
                 writeln!(writer, "Deleted edge {} id={}", deleted.model, deleted.id)?;
             }
+            SessionCommand::SessionExplainNodeFind {
+                model_name,
+                terms,
+                verbose: _,
+            } => {
+                let request = NodeFindRequest::from_adapter_query_terms(model_name, terms)?;
+                let explain = self
+                    .client
+                    .explain(ExplainRequest {
+                        query: QueryRequest::NodeFind(request),
+                    })
+                    .await
+                    .map_err(service_error)?;
+                write_service_explain(writer, &explain)?;
+            }
+            SessionCommand::SessionProfileNodeFind {
+                model_name,
+                terms,
+                verbose: _,
+            } => {
+                let request = NodeFindRequest::from_adapter_query_terms(model_name, terms)?;
+                let profile = self
+                    .client
+                    .profile(ProfileRequest {
+                        query: QueryRequest::NodeFind(request),
+                    })
+                    .await
+                    .map_err(service_error)?;
+                write_service_profile(writer, &profile)?;
+            }
+            SessionCommand::SessionExplainEdgeFind {
+                model_name,
+                terms,
+                verbose: _,
+            } => {
+                let request = EdgeFindRequest::from_adapter_filter_values(
+                    model_name,
+                    terms_to_json_filters(terms, &self.bindings, true)?,
+                )?;
+                let explain = self
+                    .client
+                    .explain(ExplainRequest {
+                        query: QueryRequest::EdgeFind(request),
+                    })
+                    .await
+                    .map_err(service_error)?;
+                write_service_explain(writer, &explain)?;
+            }
+            SessionCommand::SessionProfileEdgeFind {
+                model_name,
+                terms,
+                verbose: _,
+            } => {
+                let request = EdgeFindRequest::from_adapter_filter_values(
+                    model_name,
+                    terms_to_json_filters(terms, &self.bindings, true)?,
+                )?;
+                let profile = self
+                    .client
+                    .profile(ProfileRequest {
+                        query: QueryRequest::EdgeFind(request),
+                    })
+                    .await
+                    .map_err(service_error)?;
+                write_service_profile(writer, &profile)?;
+            }
             SessionCommand::Unknown { .. } => writeln!(writer, "Unknown command: {line}")?,
             SessionCommand::SessionSave { args: _ }
             | SessionCommand::SessionLoad { args: _ }
@@ -530,11 +596,7 @@ impl<'a> ServiceCliSession<'a> {
             | SessionCommand::TxBegin
             | SessionCommand::TxCommit
             | SessionCommand::ModelShow { .. }
-            | SessionCommand::LinkShow { .. }
-            | SessionCommand::SessionExplainNodeFind { .. }
-            | SessionCommand::SessionProfileNodeFind { .. }
-            | SessionCommand::SessionExplainEdgeFind { .. }
-            | SessionCommand::SessionProfileEdgeFind { .. } => {
+            | SessionCommand::LinkShow { .. } => {
                 writeln!(
                     writer,
                     "Command is local-only or not supported in gRPC service CLI mode yet"
@@ -657,7 +719,7 @@ impl<'a> ServiceCliSession<'a> {
         if verbose {
             writeln!(
                 writer,
-                "Supported traversal subset: node.find via/end/edge filters with return=root|end|edge. Unsupported in gRPC CLI mode: local session save/load/import/export, transactions, explain/profile, free-form query parity, and session.indexes"
+                "Supported traversal subset: node.find via/end/edge filters with return=root|end|edge, plus session.explain/profile for node.find and edge.find. Unsupported in gRPC CLI mode: local session save/load/import/export, transactions, free-form query parity, and session.indexes"
             )?;
         }
         Ok(())
@@ -752,7 +814,7 @@ fn write_service_help<W: Write>(writer: &mut W, colors: &CliColors) -> grm_rs::R
     writeln!(writer)?;
     writeln!(
         writer,
-        "Local-only or unsupported in gRPC service mode: session.save/load/import/export, session.autocommit, session.compact, tx.begin/commit, session.explain, session.profile, free-form query parity, session.indexes, model.show, and link.show."
+        "Local-only or unsupported in gRPC service mode: session.save/load/import/export, session.autocommit, session.compact, tx.begin/commit, free-form query parity, session.indexes, model.show, and link.show."
     )?;
     Ok(())
 }
@@ -833,6 +895,37 @@ fn write_edge<W: Write>(
         edge.to,
         props_display(&edge.props, colors)
     )?;
+    Ok(())
+}
+
+fn write_service_explain<W: Write>(
+    writer: &mut W,
+    explain: &proto::ExplainResponse,
+) -> grm_rs::Result<()> {
+    writeln!(writer, "Current logical plan for {}", explain.plan_kind)?;
+    write_service_plan_steps(writer, &explain.steps)?;
+    Ok(())
+}
+
+fn write_service_profile<W: Write>(
+    writer: &mut W,
+    profile: &proto::ProfileResponse,
+) -> grm_rs::Result<()> {
+    let plan = profile.plan.as_ref().ok_or_else(|| {
+        grm_rs::GrmError::Constraint("service profile response is missing plan".into())
+    })?;
+    writeln!(writer, "Profile for {}", plan.plan_kind)?;
+    write_service_plan_steps(writer, &plan.steps)?;
+    writeln!(writer, "Result rows: {}", profile.row_count)?;
+    writeln!(writer, "Elapsed: {}us", profile.elapsed_micros)?;
+    Ok(())
+}
+
+fn write_service_plan_steps<W: Write>(writer: &mut W, steps: &[String]) -> grm_rs::Result<()> {
+    writeln!(writer, "Plan steps:")?;
+    for (index, step) in steps.iter().enumerate() {
+        writeln!(writer, "  {}. {}", index + 1, step)?;
+    }
     Ok(())
 }
 

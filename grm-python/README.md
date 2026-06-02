@@ -173,7 +173,9 @@ assert len(reopened.node_find("User", {"name": "Ada"})) == 1
 ```
 
 Service workspaces use binary persistence by default. Pass
-`workspace_format="json"` explicitly when you need JSON workspace files. Direct
-unscoped service RPCs, free-form query parity, explain/profile, import/export,
+`workspace_format="json"` explicitly when you need JSON workspace files. The
+Python service path supports typed traversal-capable `node_find`,
+`explain_node_find`, and `profile_node_find` through workspace-scoped service
+requests. Direct unscoped service RPCs, free-form query parity, import/export,
 hosted durability, auth/TLS, and multi-writer coordination are not provided by
 this Python service path.

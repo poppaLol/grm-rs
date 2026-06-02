@@ -29,6 +29,8 @@ pub enum RuntimeResponse {
     Schema(SchemaResponse),
     Node(NodeResponse),
     Edge(EdgeResponse),
+    Explain(Value),
+    Profile(Value),
     Batch(RuntimeBatchResponse),
 }
 
