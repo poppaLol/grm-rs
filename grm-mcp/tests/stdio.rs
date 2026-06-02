@@ -325,6 +325,37 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     assert_eq!(traversed["nodes"].as_array().unwrap().len(), 1);
     assert_eq!(traversed["nodes"][0]["id"], json!(post_id));
 
+    let explain = call(
+        &client,
+        "grm_explain",
+        json!({
+            "command": "session.explain node.find GrpcMcpUser name=\"Alice Updated\" via=out:GRPC_MCP_AUTHORED:GrpcMcpPost end.title=\"MCP over gRPC\""
+        }),
+    )
+    .await;
+    assert_eq!(explain["command"], json!("node.find"));
+    assert_eq!(explain["target"], json!("GrpcMcpUser"));
+    assert!(
+        explain["plan"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step.as_str().is_some_and(|step| step.contains("ExpandOut")))
+    );
+
+    let profile = call(
+        &client,
+        "grm_profile",
+        json!({
+            "command": "session.profile node.find GrpcMcpUser name=\"Alice Updated\" via=out:GRPC_MCP_AUTHORED:GrpcMcpPost end.title=\"MCP over gRPC\""
+        }),
+    )
+    .await;
+    assert_eq!(profile["command"], json!("node.find"));
+    assert_eq!(profile["target"], json!("GrpcMcpUser"));
+    assert_eq!(profile["result_rows"], json!(1));
+    assert!(profile["elapsed"]["micros"].as_u64().is_some());
+
     let edge_return = call(
         &client,
         "grm_node_find",
@@ -355,6 +386,27 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     )
     .await;
     assert_eq!(found_edges["edges"].as_array().unwrap().len(), 1);
+
+    let edge_profile = call(
+        &client,
+        "grm_profile",
+        json!({
+            "command": format!("session.profile edge.find GRPC_MCP_AUTHORED from={user_id}")
+        }),
+    )
+    .await;
+    assert_eq!(edge_profile["command"], json!("edge.find"));
+    assert_eq!(edge_profile["target"], json!("GRPC_MCP_AUTHORED"));
+    assert_eq!(edge_profile["result_rows"], json!(1));
+    assert!(
+        edge_profile["plan"]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step
+                .as_str()
+                .is_some_and(|step| step.contains("RelationshipEndpointSeek")))
+    );
 
     let unsupported_query = call_error(
         &client,

@@ -67,11 +67,11 @@ cargo run --bin grm -- session
 If `GRM_SERVICE_WORKSPACE_MODE` is omitted, the CLI uses `open`.
 
 In this mode, `model.define`, `link.define`, node/edge CRUD, simple find,
-traversal-capable `node.find` for node/root/end/edge results, `model.list`,
-`link.list`, and `session.describe` use `ExecuteWorkspace`.
-Local session file commands, transactions, explain/profile, free-form query
-parity, and import/export remain local-only or
-unsupported in service CLI mode.
+traversal-capable `node.find` for node/root/end/edge results, typed
+`session.explain/profile node.find|edge.find`, `model.list`, `link.list`, and
+`session.describe` use `ExecuteWorkspace`.
+Local session file commands, transactions, free-form query parity, and
+import/export remain local-only or unsupported in service CLI mode.
 `GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; set it to `json` only when
 you explicitly want JSON workspace files. The local Docker service stores these
 workspace files under its configured workspace root; this is checked local

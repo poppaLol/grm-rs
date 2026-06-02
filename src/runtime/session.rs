@@ -363,12 +363,14 @@ impl SessionState {
             RuntimeRequest::Node(request) => self.execute_node_request(request).await,
             RuntimeRequest::Edge(request) => self.execute_edge_request(request).await,
             RuntimeRequest::Query(request) => self.execute_query_request(request).await,
-            RuntimeRequest::Explain(_) => Err(crate::GrmError::NotSupported(
-                "runtime dispatcher does not support explain requests yet",
-            )),
-            RuntimeRequest::Profile(_) => Err(crate::GrmError::NotSupported(
-                "runtime dispatcher does not support profile requests yet",
-            )),
+            RuntimeRequest::Explain(request) => Ok(RuntimeDispatchOutcome {
+                response: RuntimeResponse::Explain(self.explain(request)?),
+                durable_ops: Vec::new(),
+            }),
+            RuntimeRequest::Profile(request) => Ok(RuntimeDispatchOutcome {
+                response: RuntimeResponse::Profile(self.profile(request).await?),
+                durable_ops: Vec::new(),
+            }),
             RuntimeRequest::Batch(request) => self.execute_batch_request(request).await,
             RuntimeRequest::Admin(_) => Err(crate::GrmError::NotSupported(
                 "runtime dispatcher does not support admin requests",

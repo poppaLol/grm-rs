@@ -538,8 +538,27 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if let Some(err) = self.unsupported_in_service("grm_explain") {
-            return Err(err);
+        if self.is_service() {
+            let value = match parse_introspection_command("session.explain", &params.command)? {
+                SessionCommand::SessionExplainNodeFind {
+                    model_name, terms, ..
+                } => self
+                    .service_backend()
+                    .map_err(to_mcp_error)?
+                    .explain_node_find_terms(&model_name, &terms)
+                    .await
+                    .map_err(to_mcp_error)?,
+                SessionCommand::SessionExplainEdgeFind {
+                    model_name, terms, ..
+                } => self
+                    .service_backend()
+                    .map_err(to_mcp_error)?
+                    .explain_edge_find_terms(&model_name, &terms)
+                    .await
+                    .map_err(to_mcp_error)?,
+                _ => unreachable!("parse_introspection_command returns explain commands only"),
+            };
+            return Ok(Json(to_object(value)?));
         }
         if let Some(err) = self.unsupported_in_neo4j("grm_explain") {
             return Err(err);
@@ -568,8 +587,27 @@ impl GrmMcpServer {
         &self,
         Parameters(params): Parameters<QueryParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if let Some(err) = self.unsupported_in_service("grm_profile") {
-            return Err(err);
+        if self.is_service() {
+            let value = match parse_introspection_command("session.profile", &params.command)? {
+                SessionCommand::SessionProfileNodeFind {
+                    model_name, terms, ..
+                } => self
+                    .service_backend()
+                    .map_err(to_mcp_error)?
+                    .profile_node_find_terms(&model_name, &terms)
+                    .await
+                    .map_err(to_mcp_error)?,
+                SessionCommand::SessionProfileEdgeFind {
+                    model_name, terms, ..
+                } => self
+                    .service_backend()
+                    .map_err(to_mcp_error)?
+                    .profile_edge_find_terms(&model_name, &terms)
+                    .await
+                    .map_err(to_mcp_error)?,
+                _ => unreachable!("parse_introspection_command returns profile commands only"),
+            };
+            return Ok(Json(to_object(value)?));
         }
         if let Some(err) = self.unsupported_in_neo4j("grm_profile") {
             return Err(err);
@@ -1842,7 +1880,7 @@ fn cypher_name(name: &str) -> String {
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.is_service() {
-            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node or edge results, and edge_find through ExecuteWorkspace. Direct service RPC families, import/export, explain/profile, and free-form query parity are not supported yet."
+            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node or edge results, edge_find, grm_explain, and grm_profile through ExecuteWorkspace. Direct service RPC families, import/export, and free-form query parity are not supported yet."
         } else if self.is_neo4j() {
             "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and simple node/edge find."
         } else {

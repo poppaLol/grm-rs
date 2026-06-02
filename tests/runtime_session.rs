@@ -2164,27 +2164,120 @@ async fn runtime_dispatcher_executes_batch_request_through_existing_batch_path()
 }
 
 #[tokio::test]
+async fn runtime_dispatcher_executes_explain_and_profile_requests() {
+    let mut state = SessionState::new();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "User".to_string(),
+                id_field: "userId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineNode(
+            DefineNodeRequest {
+                name: "Post".to_string(),
+                id_field: "postId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+    state
+        .execute_runtime(RuntimeRequest::Schema(SchemaRequest::DefineEdge(
+            DefineEdgeRequest {
+                name: "Authored".to_string(),
+                from_model: "User".to_string(),
+                to_model: "Post".to_string(),
+                id_field: "authoredId".to_string(),
+                fields: vec![],
+            },
+        )))
+        .await
+        .unwrap();
+
+    let user_id = created_node_id_with_matching_durable(
+        state
+            .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+                grm_rs::NodeCreateRequest {
+                    model: "User".to_string(),
+                    props: BTreeMap::new(),
+                },
+            )))
+            .await
+            .unwrap(),
+    );
+    let post_id = created_node_id_with_matching_durable(
+        state
+            .execute_runtime(RuntimeRequest::Node(NodeRequest::Create(
+                grm_rs::NodeCreateRequest {
+                    model: "Post".to_string(),
+                    props: BTreeMap::new(),
+                },
+            )))
+            .await
+            .unwrap(),
+    );
+    state
+        .execute_runtime(RuntimeRequest::Edge(EdgeRequest::Create(
+            grm_rs::EdgeCreateRequest {
+                model: "Authored".to_string(),
+                from: user_id,
+                to: post_id,
+                props: BTreeMap::new(),
+            },
+        )))
+        .await
+        .unwrap();
+
+    let query = QueryRequest::NodeFind(NodeFindRequest {
+        model: "User".to_string(),
+        traversals: vec![TraversalStepRequest {
+            direction: TraversalDirection::Out,
+            edge_model: Some("Authored".to_string()),
+            end_model: "Post".to_string(),
+        }],
+        return_mode: Some(TraversalReturn::End),
+        ..Default::default()
+    });
+
+    let explain = state
+        .execute_runtime(RuntimeRequest::Explain(ExplainRequest {
+            query: query.clone(),
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        explain.response,
+        RuntimeResponse::Explain(value)
+            if value["command"] == json!("node.find")
+                && value["plan"]["details"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|step| step["kind"] == json!("ExpandOut"))
+    ));
+    assert!(explain.durable_ops.is_empty());
+
+    let profile = state
+        .execute_runtime(RuntimeRequest::Profile(ProfileRequest { query }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        profile.response,
+        RuntimeResponse::Profile(value)
+            if value["command"] == json!("node.find") && value["result_rows"] == json!(1)
+    ));
+    assert!(profile.durable_ops.is_empty());
+}
+
+#[tokio::test]
 async fn runtime_dispatcher_returns_clear_unsupported_errors_for_excluded_variants() {
     let mut state = SessionState::new();
     let unsupported = vec![
-        (
-            RuntimeRequest::Explain(ExplainRequest {
-                query: QueryRequest::NodeFind(NodeFindRequest {
-                    model: "User".to_string(),
-                    ..Default::default()
-                }),
-            }),
-            "explain requests yet",
-        ),
-        (
-            RuntimeRequest::Profile(ProfileRequest {
-                query: QueryRequest::NodeFind(NodeFindRequest {
-                    model: "User".to_string(),
-                    ..Default::default()
-                }),
-            }),
-            "profile requests yet",
-        ),
         (
             RuntimeRequest::Query(QueryRequest::Traversal(grm_rs::TraversalRequest {
                 root: NodeFindRequest {

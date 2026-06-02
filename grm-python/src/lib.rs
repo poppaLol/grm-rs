@@ -22,7 +22,7 @@ use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyModule};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 create_exception!(_grm_rs, PyGrmError, pyo3::exceptions::PyException);
 
@@ -817,6 +817,88 @@ impl PyServiceSession {
         Ok(items.into())
     }
 
+    #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 method signature mirrors the Python API keyword arguments"
+    )]
+    fn explain_node_find(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+        via: Option<&Bound<'_, PyAny>>,
+        end_filters: Option<&Bound<'_, PyDict>>,
+        edge_filters: Option<&Bound<'_, PyDict>>,
+        return_: Option<&str>,
+        order: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let request = build_node_find_request(
+            model_name,
+            filters,
+            via,
+            end_filters,
+            edge_filters,
+            return_,
+            order,
+            limit,
+            offset,
+        )?;
+        let response = self
+            .runtime
+            .block_on(self.client.explain(ExplainRequest {
+                query: QueryRequest::NodeFind(request),
+            }))
+            .map_err(service_err)?;
+        json_value_to_py(
+            py,
+            &service_explain_value("node.find", model_name, response),
+        )
+    }
+
+    #[pyo3(signature = (model_name, filters=None, *, via=None, end_filters=None, edge_filters=None, return_=None, order=None, limit=None, offset=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 method signature mirrors the Python API keyword arguments"
+    )]
+    fn profile_node_find(
+        &mut self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+        via: Option<&Bound<'_, PyAny>>,
+        end_filters: Option<&Bound<'_, PyDict>>,
+        edge_filters: Option<&Bound<'_, PyDict>>,
+        return_: Option<&str>,
+        order: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> PyResult<PyObject> {
+        let request = build_node_find_request(
+            model_name,
+            filters,
+            via,
+            end_filters,
+            edge_filters,
+            return_,
+            order,
+            limit,
+            offset,
+        )?;
+        let response = self
+            .runtime
+            .block_on(self.client.profile(ProfileRequest {
+                query: QueryRequest::NodeFind(request),
+            }))
+            .map_err(service_err)?;
+        json_value_to_py(
+            py,
+            &service_profile_value("node.find", model_name, response)?,
+        )
+    }
+
     #[pyo3(signature = (model_name, from_id, to_id, values=None))]
     fn edge_create(
         &mut self,
@@ -1167,6 +1249,44 @@ where
 
 fn service_err(err: grm_service_api::GrpcWorkspaceClientError) -> PyErr {
     PyGrmError::new_err(err.to_string())
+}
+
+fn service_explain_value(
+    command: &str,
+    target: &str,
+    response: grm_service_api::proto::ExplainResponse,
+) -> Value {
+    json!({
+        "command": command,
+        "target": target,
+        "plan": {
+            "kind": response.plan_kind,
+            "steps": response.steps,
+            "text": response.steps.join("\n"),
+            "indexes": response.indexes,
+        },
+    })
+}
+
+fn service_profile_value(
+    command: &str,
+    target: &str,
+    response: grm_service_api::proto::ProfileResponse,
+) -> PyResult<Value> {
+    let plan = response
+        .plan
+        .ok_or_else(|| PyRuntimeError::new_err("service profile response is missing plan"))?;
+    Ok(json!({
+        "command": command,
+        "target": target,
+        "plan": service_explain_value(command, target, plan)["plan"].clone(),
+        "result_rows": response.row_count,
+        "elapsed": {
+            "micros": response.elapsed_micros,
+            "display": format!("{}us", response.elapsed_micros),
+        },
+        "per_step_metrics": Value::Null,
+    }))
 }
 
 impl PyServiceWorkspaceFormat {

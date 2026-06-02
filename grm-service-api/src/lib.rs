@@ -422,6 +422,32 @@ impl GrpcWorkspaceClient {
         runtime_edge_find_from_proto(response)
     }
 
+    pub async fn explain(
+        &mut self,
+        request: grm_rs::ExplainRequest,
+    ) -> GrpcWorkspaceClientResult<proto::ExplainResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::Explain(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::Explain(response)) = response.response else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("Explain"));
+        };
+        Ok(response)
+    }
+
+    pub async fn profile(
+        &mut self,
+        request: grm_rs::ProfileRequest,
+    ) -> GrpcWorkspaceClientResult<proto::ProfileResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::Profile(request.try_into()?))
+            .await?;
+        let Some(proto::runtime_response::Response::Profile(response)) = response.response else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("Profile"));
+        };
+        Ok(response)
+    }
+
     pub async fn apply_batch(
         &mut self,
         request: grm_rs::SessionBatchParams,
@@ -2117,6 +2143,69 @@ pub struct TraversalRequest {
     pub root: NodeFindShape,
 }
 
+impl TryFrom<grm_rs::QueryRequest> for QueryRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::QueryRequest) -> grm_rs::Result<Self> {
+        let query = match request {
+            grm_rs::QueryRequest::NodeFind(request) => {
+                Query::NodeFind(node_find_shape_from_runtime(request)?)
+            }
+            grm_rs::QueryRequest::EdgeFind(request) => {
+                Query::EdgeFind(edge_find_shape_from_runtime(request)?)
+            }
+            grm_rs::QueryRequest::Traversal(request) => Query::Traversal(TraversalRequest {
+                root: node_find_shape_from_runtime(request.root)?,
+            }),
+        };
+        Ok(Self { query })
+    }
+}
+
+fn node_find_shape_from_runtime(request: grm_rs::NodeFindRequest) -> grm_rs::Result<NodeFindShape> {
+    Ok(NodeFindShape {
+        model: request.model,
+        predicates: request
+            .predicates
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        end_predicates: request
+            .end_predicates
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        edge_predicates: request
+            .edge_predicates
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        traversals: request.traversals.into_iter().map(Into::into).collect(),
+        order: request.order.into_iter().map(Into::into).collect(),
+        limit: request.limit.map(usize_to_u64).transpose()?,
+        offset: request.offset.map(usize_to_u64).transpose()?,
+        id: request.id,
+        return_mode: request.return_mode.map(Into::into),
+    })
+}
+
+fn edge_find_shape_from_runtime(request: grm_rs::EdgeFindRequest) -> grm_rs::Result<EdgeFindShape> {
+    Ok(EdgeFindShape {
+        model: request.model,
+        predicates: request
+            .predicates
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<grm_rs::Result<Vec<_>>>()?,
+        order: request.order.into_iter().map(Into::into).collect(),
+        limit: request.limit.map(usize_to_u64).transpose()?,
+        offset: request.offset.map(usize_to_u64).transpose()?,
+        id: request.id,
+        from: request.from,
+        to: request.to,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExplainRequest {
     pub query: QueryRequest,
@@ -2132,6 +2221,16 @@ impl TryFrom<ExplainRequest> for grm_rs::ExplainRequest {
     }
 }
 
+impl TryFrom<grm_rs::ExplainRequest> for ExplainRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::ExplainRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            query: request.query.try_into()?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProfileRequest {
     pub query: QueryRequest,
@@ -2141,6 +2240,16 @@ impl TryFrom<ProfileRequest> for grm_rs::ProfileRequest {
     type Error = grm_rs::GrmError;
 
     fn try_from(request: ProfileRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            query: request.query.try_into()?,
+        })
+    }
+}
+
+impl TryFrom<grm_rs::ProfileRequest> for ProfileRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: grm_rs::ProfileRequest) -> grm_rs::Result<Self> {
         Ok(Self {
             query: request.query.try_into()?,
         })
@@ -2934,6 +3043,21 @@ impl TryFrom<proto::QueryRequest> for QueryRequest {
     }
 }
 
+impl TryFrom<QueryRequest> for proto::QueryRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: QueryRequest) -> grm_rs::Result<Self> {
+        use proto::query_request::Query as ProtoQuery;
+
+        let query = match request.query {
+            Query::NodeFind(shape) => ProtoQuery::NodeFind(shape.try_into()?),
+            Query::EdgeFind(shape) => ProtoQuery::EdgeFind(shape.try_into()?),
+            Query::Traversal(request) => ProtoQuery::Traversal(request.try_into()?),
+        };
+        Ok(Self { query: Some(query) })
+    }
+}
+
 impl TryFrom<proto::NodeFindShape> for NodeFindShape {
     type Error = grm_rs::GrmError;
 
@@ -2953,6 +3077,37 @@ impl TryFrom<proto::NodeFindShape> for NodeFindShape {
     }
 }
 
+impl TryFrom<NodeFindShape> for proto::NodeFindShape {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(shape: NodeFindShape) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: shape.model,
+            predicates: shape
+                .predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            end_predicates: shape
+                .end_predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            edge_predicates: shape
+                .edge_predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            traversals: shape.traversals.into_iter().map(Into::into).collect(),
+            order: shape.order.into_iter().map(Into::into).collect(),
+            limit: shape.limit,
+            offset: shape.offset,
+            id: shape.id,
+            return_mode: shape.return_mode.map(proto_traversal_return_from_service),
+        })
+    }
+}
+
 impl TryFrom<proto::EdgeFindShape> for EdgeFindShape {
     type Error = grm_rs::GrmError;
 
@@ -2961,6 +3116,27 @@ impl TryFrom<proto::EdgeFindShape> for EdgeFindShape {
             model: shape.model,
             predicates: convert_proto_vec(shape.predicates)?,
             order: convert_proto_vec(shape.order)?,
+            limit: shape.limit,
+            offset: shape.offset,
+            id: shape.id,
+            from: shape.from,
+            to: shape.to,
+        })
+    }
+}
+
+impl TryFrom<EdgeFindShape> for proto::EdgeFindShape {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(shape: EdgeFindShape) -> grm_rs::Result<Self> {
+        Ok(Self {
+            model: shape.model,
+            predicates: shape
+                .predicates
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<grm_rs::Result<Vec<_>>>()?,
+            order: shape.order.into_iter().map(Into::into).collect(),
             limit: shape.limit,
             offset: shape.offset,
             id: shape.id,
@@ -2983,6 +3159,16 @@ impl TryFrom<proto::TraversalRequest> for TraversalRequest {
     }
 }
 
+impl TryFrom<TraversalRequest> for proto::TraversalRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: TraversalRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            root: Some(request.root.try_into()?),
+        })
+    }
+}
+
 impl TryFrom<proto::ExplainRequest> for ExplainRequest {
     type Error = grm_rs::GrmError;
 
@@ -2996,6 +3182,16 @@ impl TryFrom<proto::ExplainRequest> for ExplainRequest {
     }
 }
 
+impl TryFrom<ExplainRequest> for proto::ExplainRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: ExplainRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            query: Some(request.query.try_into()?),
+        })
+    }
+}
+
 impl TryFrom<proto::ProfileRequest> for ProfileRequest {
     type Error = grm_rs::GrmError;
 
@@ -3005,6 +3201,16 @@ impl TryFrom<proto::ProfileRequest> for ProfileRequest {
                 .query
                 .ok_or_else(|| missing_proto_field("ProfileRequest.query"))?
                 .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<ProfileRequest> for proto::ProfileRequest {
+    type Error = grm_rs::GrmError;
+
+    fn try_from(request: ProfileRequest) -> grm_rs::Result<Self> {
+        Ok(Self {
+            query: Some(request.query.try_into()?),
         })
     }
 }
@@ -3273,10 +3479,10 @@ fn proto_runtime_request_from_service_request(
         ServiceRequest::UpdateEdge(request) => ProtoRequest::UpdateEdge(request.try_into()?),
         ServiceRequest::DeleteEdge(request) => ProtoRequest::DeleteEdge(request.into()),
         ServiceRequest::FindEdges(request) => ProtoRequest::FindEdges(request.try_into()?),
+        ServiceRequest::Explain(request) => ProtoRequest::Explain(request.try_into()?),
+        ServiceRequest::Profile(request) => ProtoRequest::Profile(request.try_into()?),
         ServiceRequest::ApplyBatch(request) => ProtoRequest::ApplyBatch(request.try_into()?),
         ServiceRequest::Query(_)
-        | ServiceRequest::Explain(_)
-        | ServiceRequest::Profile(_)
         | ServiceRequest::Save(_)
         | ServiceRequest::Load(_)
         | ServiceRequest::Export(_)
@@ -3284,7 +3490,7 @@ fn proto_runtime_request_from_service_request(
         | ServiceRequest::IndexList(_)
         | ServiceRequest::Summary(_) => {
             return Err(grm_rs::GrmError::NotSupported(
-                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/find/batch through ExecuteWorkspace",
+                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/find/explain/profile/batch through ExecuteWorkspace",
             ));
         }
     })
@@ -3384,6 +3590,12 @@ fn proto_runtime_response(
                     .map(proto_stored_edge)
                     .collect::<grm_rs::Result<Vec<_>>>()?,
             })
+        }
+        grm_rs::RuntimeResponse::Explain(explain) => {
+            ProtoResponse::Explain(proto_explain_response(&explain)?)
+        }
+        grm_rs::RuntimeResponse::Profile(profile) => {
+            ProtoResponse::Profile(proto_profile_response(&profile)?)
         }
         grm_rs::RuntimeResponse::Batch(batch) => {
             ProtoResponse::ApplyBatch(proto_batch_response(batch, durable_ops)?)
@@ -3663,6 +3875,80 @@ fn json_u32(value: &Value, field: &str) -> grm_rs::Result<u32> {
         .unwrap_or_default()
         .try_into()
         .map_err(|_| grm_rs::GrmError::Constraint(format!("{field} is too large")))
+}
+
+fn proto_explain_response(value: &Value) -> grm_rs::Result<proto::ExplainResponse> {
+    let plan = value
+        .get("plan")
+        .ok_or_else(|| grm_rs::GrmError::Constraint("explain response is missing plan".into()))?;
+    Ok(proto::ExplainResponse {
+        plan_kind: value
+            .get("command")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| json_string(plan, "kind")),
+        steps: json_string_array(plan, "steps")?,
+        indexes: plan_indexes(plan)?,
+    })
+}
+
+fn proto_profile_response(value: &Value) -> grm_rs::Result<proto::ProfileResponse> {
+    Ok(proto::ProfileResponse {
+        plan: Some(proto_explain_response(value)?),
+        row_count: required_json_u64(value, "result_rows")?,
+        elapsed_micros: required_json_u64(
+            value.get("elapsed").ok_or_else(|| {
+                grm_rs::GrmError::Constraint("profile response is missing elapsed".into())
+            })?,
+            "micros",
+        )?,
+    })
+}
+
+fn required_json_u64(value: &Value, field: &str) -> grm_rs::Result<u64> {
+    value.get(field).and_then(Value::as_u64).ok_or_else(|| {
+        grm_rs::GrmError::Constraint(format!(
+            "profile response field '{field}' must be an unsigned integer"
+        ))
+    })
+}
+
+fn json_string_array(value: &Value, field: &str) -> grm_rs::Result<Vec<String>> {
+    let Some(values) = value.get(field) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = values.as_array() else {
+        return Err(grm_rs::GrmError::Constraint(format!(
+            "{field} must be an array"
+        )));
+    };
+    values
+        .iter()
+        .map(|value| {
+            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                grm_rs::GrmError::Constraint(format!("{field} must contain only strings"))
+            })
+        })
+        .collect()
+}
+
+fn plan_indexes(plan: &Value) -> grm_rs::Result<Vec<String>> {
+    let mut indexes = Vec::new();
+    for detail in json_array(plan, "details") {
+        if let Some(index) = detail.get("index").and_then(Value::as_str) {
+            push_unique(&mut indexes, index);
+        }
+        for index in json_string_array(detail, "indexes")? {
+            push_unique(&mut indexes, &index);
+        }
+    }
+    Ok(indexes)
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
 }
 
 fn proto_property_map_or_empty(map: Option<proto::PropertyMap>) -> grm_rs::Result<PropertyMap> {
