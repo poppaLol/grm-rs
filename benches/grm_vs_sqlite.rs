@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use grm_rs::{
@@ -10,7 +10,7 @@ use grm_rs::{
     typed_id,
 };
 use rusqlite::{Connection, params};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 const MAX_ROWS_FOR_SINGLE_INSERT_BENCHES: usize = 1_000;
@@ -705,6 +705,354 @@ fn bench_tx_overlay_reads(c: &mut Criterion) {
     }
 }
 
+fn bench_embedded_baseline_ops(c: &mut Criterion) {
+    if std::env::var_os("GRM_BENCH_PROFILE_GRM_INSERT_ONLY").is_some() {
+        return;
+    }
+
+    let rt = Runtime::new().unwrap();
+    for rows in [1_000, 10_000] {
+        let data = dataset(rows);
+        let lookup_name = format!("user-{:06}", rows / 2);
+        let lookup_title = format!("post-{:06}", rows / 2);
+        let user_id = rows as i64 / 2 + 1;
+        let post_id = user_id + rows as i64;
+        let authored_id = user_id;
+        let traversal_request = traversal_node_find_request(lookup_name.clone(), lookup_title);
+        let edge_find_request = grm_rs::EdgeFindRequest {
+            model: "Authored".into(),
+            from: Some(user_id),
+            ..Default::default()
+        };
+        let group_name = format!("baseline_embedded_{}", size_label(rows));
+        let mut group = c.benchmark_group(group_name);
+        group.sample_size(10);
+        group.warm_up_time(Duration::from_secs(1));
+        group.measurement_time(Duration::from_secs(3));
+
+        group.bench_function("grm_embedded_in_memory_create_node", |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    let mut state = populate_grm_bulk(&rt, &data);
+                    let started = Instant::now();
+                    let outcome = rt
+                        .block_on(async {
+                            state
+                                .execute_runtime(grm_rs::RuntimeRequest::Node(
+                                    grm_rs::NodeRequest::Create(grm_rs::NodeCreateRequest {
+                                        model: "User".into(),
+                                        props: [
+                                            ("name".into(), json!(format!("created-{rows}"))),
+                                            ("age".into(), json!(42)),
+                                        ]
+                                        .into_iter()
+                                        .collect(),
+                                    }),
+                                ))
+                                .await
+                        })
+                        .unwrap();
+                    elapsed += started.elapsed();
+                    black_box(outcome);
+                }
+                elapsed
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_update_node", |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    let mut state = populate_grm_bulk(&rt, &data);
+                    let started = Instant::now();
+                    let outcome = rt
+                        .block_on(async {
+                            state
+                                .execute_runtime(grm_rs::RuntimeRequest::Node(
+                                    grm_rs::NodeRequest::Update(grm_rs::NodeUpdateRequest {
+                                        model: "User".into(),
+                                        id: user_id,
+                                        props: [("age".into(), json!(43))].into_iter().collect(),
+                                    }),
+                                ))
+                                .await
+                        })
+                        .unwrap();
+                    elapsed += started.elapsed();
+                    black_box(outcome);
+                }
+                elapsed
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_create_edge", |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    let mut state = populate_grm_bulk(&rt, &data);
+                    let started = Instant::now();
+                    let outcome = rt
+                        .block_on(async {
+                            state
+                                .execute_runtime(grm_rs::RuntimeRequest::Edge(
+                                    grm_rs::EdgeRequest::Create(grm_rs::EdgeCreateRequest {
+                                        model: "Authored".into(),
+                                        from: user_id,
+                                        to: post_id,
+                                        props: [("year".into(), json!(2026))].into_iter().collect(),
+                                    }),
+                                ))
+                                .await
+                        })
+                        .unwrap();
+                    elapsed += started.elapsed();
+                    black_box(outcome);
+                }
+                elapsed
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_update_edge", |b| {
+            b.iter_custom(|iters| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iters {
+                    let mut state = populate_grm_bulk(&rt, &data);
+                    let started = Instant::now();
+                    let outcome = rt
+                        .block_on(async {
+                            state
+                                .execute_runtime(grm_rs::RuntimeRequest::Edge(
+                                    grm_rs::EdgeRequest::Update(grm_rs::EdgeUpdateRequest {
+                                        model: "Authored".into(),
+                                        id: authored_id,
+                                        props: [("year".into(), json!(2027))].into_iter().collect(),
+                                    }),
+                                ))
+                                .await
+                        })
+                        .unwrap();
+                    elapsed += started.elapsed();
+                    black_box(outcome);
+                }
+                elapsed
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_node_find_name_eq", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                black_box(
+                    grm.find_nodes(
+                        "User",
+                        &BTreeMap::from([("name".to_string(), lookup_name.clone())]),
+                    )
+                    .unwrap(),
+                )
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_edge_find_from", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                black_box(
+                    grm.find_relationships(
+                        "Authored",
+                        &BTreeMap::from([("from".to_string(), user_id.to_string())]),
+                    )
+                    .unwrap(),
+                )
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_traversal_selective", |b| {
+            let mut grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    let outcome = grm
+                        .execute_runtime(grm_rs::RuntimeRequest::Query(
+                            grm_rs::QueryRequest::NodeFind(traversal_request.clone()),
+                        ))
+                        .await
+                        .unwrap();
+                    black_box(outcome)
+                })
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_explain_node_find", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                black_box(
+                    grm.explain(grm_rs::ExplainRequest {
+                        query: grm_rs::QueryRequest::NodeFind(traversal_request.clone()),
+                    })
+                    .unwrap(),
+                )
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_profile_node_find", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    black_box(
+                        grm.profile(grm_rs::ProfileRequest {
+                            query: grm_rs::QueryRequest::NodeFind(traversal_request.clone()),
+                        })
+                        .await
+                        .unwrap(),
+                    )
+                })
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_explain_edge_find", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                black_box(
+                    grm.explain(grm_rs::ExplainRequest {
+                        query: grm_rs::QueryRequest::EdgeFind(edge_find_request.clone()),
+                    })
+                    .unwrap(),
+                )
+            });
+        });
+
+        group.bench_function("grm_embedded_in_memory_profile_edge_find", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    black_box(
+                        grm.profile(grm_rs::ProfileRequest {
+                            query: grm_rs::QueryRequest::EdgeFind(edge_find_request.clone()),
+                        })
+                        .await
+                        .unwrap(),
+                    )
+                })
+            });
+        });
+
+        group.bench_function("sqlite_local_update_user", |b| {
+            b.iter_batched(
+                || populate_sqlite(&data),
+                |conn| {
+                    black_box(
+                        conn.execute(
+                            "UPDATE users SET age = ?1 WHERE id = ?2",
+                            params![43, user_id],
+                        )
+                        .unwrap(),
+                    )
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("sqlite_local_create_user_row", |b| {
+            b.iter_batched(
+                || populate_sqlite(&data),
+                |conn| {
+                    black_box(
+                        conn.execute(
+                            "INSERT INTO users (name, age) VALUES (?1, ?2)",
+                            params![format!("created-{rows}"), 42],
+                        )
+                        .unwrap(),
+                    )
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.bench_function("sqlite_local_create_edge", |b| {
+            b.iter_batched(
+                || populate_sqlite(&data),
+                |conn| {
+                    black_box(
+                        conn.execute(
+                            "INSERT INTO authored (from_user, to_post, year) VALUES (?1, ?2, ?3)",
+                            params![user_id, post_id - rows as i64, 2026],
+                        )
+                        .unwrap(),
+                    )
+                },
+                BatchSize::SmallInput,
+            );
+        });
+
+        group.bench_function("sqlite_local_user_find_name_eq", |b| {
+            let sqlite = populate_sqlite(&data);
+            b.iter(|| {
+                let mut stmt = sqlite
+                    .prepare("SELECT id, name, age FROM users WHERE name = ?1")
+                    .unwrap();
+                let rows = stmt
+                    .query_map(params![lookup_name], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                black_box(rows)
+            });
+        });
+
+        group.bench_function("sqlite_local_edge_find_from", |b| {
+            let sqlite = populate_sqlite(&data);
+            b.iter(|| {
+                let mut stmt = sqlite
+                    .prepare(
+                        "SELECT id, from_user, to_post, year FROM authored WHERE from_user = ?1",
+                    )
+                    .unwrap();
+                let rows = stmt
+                    .query_map(params![authored_id], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                black_box(rows)
+            });
+        });
+
+        group.finish();
+    }
+}
+
+fn traversal_node_find_request(name: String, title: String) -> grm_rs::NodeFindRequest {
+    grm_rs::NodeFindRequest {
+        model: "User".into(),
+        predicates: vec![predicate("name", json!(name))],
+        traversals: vec![grm_rs::TraversalStepRequest {
+            direction: grm_rs::TraversalDirection::Out,
+            edge_model: Some("Authored".into()),
+            end_model: "Post".into(),
+        }],
+        end_predicates: vec![predicate("title", json!(title))],
+        return_mode: Some(grm_rs::TraversalReturn::End),
+        ..Default::default()
+    }
+}
+
+fn predicate(field: &str, value: Value) -> grm_rs::PropertyPredicate {
+    grm_rs::PropertyPredicate {
+        field: field.into(),
+        op: grm_rs::PredicateOp::Eq,
+        value,
+    }
+}
+
 fn authored_post_query(name: String) -> GraphQuery {
     let root = VarId(0);
     let rel = VarId(1);
@@ -767,6 +1115,7 @@ criterion_group!(
     bench_inserts,
     bench_property_lookup,
     bench_one_hop,
-    bench_tx_overlay_reads
+    bench_tx_overlay_reads,
+    bench_embedded_baseline_ops
 );
 criterion_main!(benches);
