@@ -40,8 +40,50 @@ Compare:
 
 Compare:
 
-- GRM runtime query commands/API
+- GRM embedded in-memory runtime query commands/API
 - SQLite indexed selects and joins
+
+### Baseline Runtime Operations
+
+- create and update nodes
+- create and update edges
+- node property lookup
+- edge endpoint lookup
+- selective one-hop traversal
+- `session.explain` and `session.profile` for `node.find` and `edge.find`
+
+Compare:
+
+- GRM embedded in-memory
+- SQLite local, for modest embedded comparator lines where the operation intent
+  is close enough to be useful, including user-row create and indexed name lookup
+
+The embedded GRM create/update baseline rows use custom timing. Each measured
+iteration populates the target in-memory dataset outside the returned Criterion
+duration, then records only the mutation duration against that populated state.
+These rows are operation-over-populated-state microbenchmarks, not end-to-end
+fixture setup benchmarks.
+
+### Local Insecure gRPC Workspace
+
+- create and update nodes through `GrpcWorkspaceClient`
+- create and update edges through `GrpcWorkspaceClient`
+- node property lookup
+- edge endpoint lookup
+- selective traversal
+- explain/profile over `ExecuteWorkspace` for `node.find` and `edge.find`
+
+The local gRPC benchmark starts an insecure server on `127.0.0.1:0` and uses a
+Criterion/tempfile-created workspace root. It is only a local transport overhead
+and workspace demo line. It is not a credible deployable service baseline and
+must not be used for public service/database comparison claims before TLS exists.
+
+The local gRPC create/update benchmarks use custom timing. Each measured
+iteration creates a temp workspace, defines schema, and populates the target
+dataset outside the returned Criterion duration, then records only the mutation
+RPC duration against that populated workspace. `close_workspace` also runs
+outside the recorded duration. These rows are operation-over-populated-workspace
+microbenchmarks, not end-to-end workspace setup benchmarks.
 
 ### Persistence Cost
 
@@ -49,6 +91,9 @@ Compare:
 - GRM `save_to_binary`
 - GRM `load_from_json`
 - GRM `load_from_binary`
+- GRM binary workspace checkpoint
+- GRM binary workspace reopen
+- GRM binary workspace reopen with 7 autocommit replay entries after checkpoint
 - GRM autocommit log append
 - GRM compact/checkpoint
 
@@ -57,6 +102,11 @@ Track:
 - elapsed time
 - output file size
 - log file size when applicable
+
+The current replay benchmark is
+`grm_embedded_in_memory_replay_autocommit_binary_7_entries`. It intentionally
+keeps the append log below workspace checkpoint rollover, so treat it as a
+small-log replay baseline rather than a general replay-cost claim.
 
 ## Dataset Sizes
 
@@ -153,6 +203,7 @@ at roughly `2.9x` the GRM throughput.
 scripts/benchmarks.sh all
 scripts/benchmarks.sh grm-vs-sqlite
 scripts/benchmarks.sh persistence
+scripts/benchmarks.sh local-grpc-workspace
 scripts/benchmarks.sh quick
 scripts/benchmarks.sh scaled
 scripts/benchmarks.sh stress
