@@ -732,6 +732,7 @@ dependencies = [
 name = "grm-service-api"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "grm-rs",
  "prost",
  "prost-build",

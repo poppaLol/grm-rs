@@ -2,8 +2,10 @@ use std::collections::BTreeMap;
 
 use criterion::{BatchSize, Criterion, black_box, criterion_group, criterion_main};
 use grm_rs::{
-    CliSession, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionState,
+    CliSession, DurabilityFormat, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest,
+    RuntimeValueType, SessionState, Workspace,
 };
+use serde_json::json;
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
 
@@ -205,5 +207,92 @@ fn bench_compact(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_save, bench_load, bench_compact);
+fn bench_binary_workspace_persistence(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let state = populated_state(&rt);
+    let workspace = Workspace::from_state(state);
+    let dir = tempdir().unwrap();
+    let checkpoint_path = dir.path().join("workspace.bin");
+    workspace
+        .checkpoint(DurabilityFormat::Binary, &checkpoint_path)
+        .unwrap();
+
+    let mut group = c.benchmark_group("persistence_binary_workspace_1k");
+
+    group.bench_function("grm_embedded_in_memory_checkpoint_binary", |b| {
+        b.iter_batched(
+            tempdir,
+            |dir| {
+                let dir = dir.unwrap();
+                let path = dir.path().join("workspace.bin");
+                workspace
+                    .checkpoint(DurabilityFormat::Binary, &path)
+                    .unwrap();
+                black_box(std::fs::metadata(path).unwrap().len())
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("grm_embedded_in_memory_reopen_binary", |b| {
+        b.iter(|| {
+            let reopened = Workspace::open(DurabilityFormat::Binary, &checkpoint_path).unwrap();
+            black_box(reopened)
+        });
+    });
+
+    group.bench_function(
+        "grm_embedded_in_memory_replay_autocommit_binary_7_entries",
+        |b| {
+            b.iter_batched(
+                || {
+                    let dir = tempdir().unwrap();
+                    let path = dir.path().join("workspace.bin");
+                    let mut workspace = Workspace::from_state(state_with_schema());
+                    workspace
+                        .enable_autocommit(DurabilityFormat::Binary, &path)
+                        .unwrap();
+                    rt.block_on(async {
+                        for index in 0..7 {
+                            workspace
+                                .execute_runtime(RuntimeRequest::Node(grm_rs::NodeRequest::Create(
+                                    grm_rs::NodeCreateRequest {
+                                        model: "User".into(),
+                                        props: [
+                                            (
+                                                "name".into(),
+                                                json!(format!("replay-user-{index:06}")),
+                                            ),
+                                            ("age".into(), json!(18 + index % 70)),
+                                        ]
+                                        .into_iter()
+                                        .collect(),
+                                    },
+                                )))
+                                .await
+                                .unwrap();
+                        }
+                    });
+                    (dir, path)
+                },
+                |(_dir, path)| {
+                    let reopened =
+                        Workspace::open_autocommit(DurabilityFormat::Binary, &path).unwrap();
+                    black_box(reopened)
+                },
+                BatchSize::SmallInput,
+            );
+        },
+    );
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_save,
+    bench_load,
+    bench_compact,
+    bench_binary_workspace_persistence
+);
 criterion_main!(benches);
