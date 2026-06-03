@@ -18,6 +18,29 @@ GRM MCP graph when available.
 If the schema lacks the models below, use the closest available equivalents and
 say what was missing.
 
+## Paramount Live Database Safety
+
+Treat any live database that may contain GRM project memory as protected SOML:
+it is shared working memory between the user and agents.
+
+Before destructive, wipe-like, or large benchmark setup/cleanup operations
+against a live database, identify whether the target could be shared project
+memory. This includes Neo4j, Postgres, Mongo, GRM service workspaces, local
+workspace files, mounted Docker volumes, and any configured benchmark database.
+
+Pause for explicit user confirmation before running operations such as:
+
+- `DROP`, `DETACH DELETE`, `DELETE` without narrow filters, `TRUNCATE`, or
+  collection/database drops
+- fixture reinitialization that overwrites live data
+- benchmark cleanup that removes all nodes, relationships, documents, rows, or
+  workspace files
+- restore/import/load commands that replace existing project memory
+- Docker volume deletion or workspace-root cleanup
+
+If there is any doubt whether the database is project memory, stop and ask. A
+backup existing is not permission to make restoration necessary.
+
 ## Constraint Lookup
 
 Start with these node models:
