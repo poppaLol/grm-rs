@@ -4,6 +4,10 @@ This directory is for repeatable performance benchmarks. Keep correctness tests 
 `tests/`; use `benches/` for workloads that should be run explicitly with
 `cargo bench`.
 
+For benchmark sequencing, comparator fairness, and when service results are
+appropriate for public claims, see
+[Performance Benchmark Methodology](../docs/performance-benchmark-methodology.md).
+
 ## Goals
 
 - Measure GRM-RS performance as data volume grows.
