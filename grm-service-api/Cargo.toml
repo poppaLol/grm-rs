@@ -22,8 +22,13 @@ protoc-bin-vendored = "3"
 tonic-build = "0.12"
 
 [dev-dependencies]
+criterion = "0.5"
 prost-build = "0.13"
 protoc-bin-vendored = "3"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+
+[[bench]]
+name = "local_grpc_workspace"
+harness = false
