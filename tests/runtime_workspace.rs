@@ -64,6 +64,30 @@ async fn workspace_load_replays_durable_log_entries() {
 }
 
 #[tokio::test]
+async fn workspace_binary_load_replays_durable_log_entries() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("workspace-with-log.bin");
+    let mut workspace = Workspace::new();
+    workspace.save(DurabilityFormat::Binary, &path).unwrap();
+
+    let mut durable_ops = define_workspace_schema(&mut workspace).await;
+    durable_ops.extend(create_workspace_data(&mut workspace).await);
+    for op in durable_ops {
+        workspace
+            .state()
+            .append_durable_operation(&path, &op)
+            .unwrap();
+    }
+    assert!(
+        fs::metadata(log_path(&path)).unwrap().len() > 0,
+        "binary checkpoint replay should use the same durable append log"
+    );
+
+    let reopened = Workspace::load(DurabilityFormat::Binary, &path).unwrap();
+    assert_declared_schema_and_data_survived(&reopened).await;
+}
+
+#[tokio::test]
 async fn workspace_repeated_closed_loop_reload_preserves_schema_and_data() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("repeated-workspace.json");
