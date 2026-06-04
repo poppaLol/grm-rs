@@ -1323,6 +1323,19 @@ async fn typed_node_find_traversal_matches_cli_terms_and_supports_introspection(
         .unwrap();
     assert_eq!(profile["command"], "node.find");
     assert_eq!(profile["result_rows"], 1);
+    let phase_timings = profile["phase_timings"].as_object().unwrap();
+    for phase in [
+        "explain",
+        "anchor_metric",
+        "execute_node_query",
+        "metric_push",
+        "profile_value",
+    ] {
+        assert!(
+            phase_timings[phase].as_u64().is_some(),
+            "profile phase {phase} should report micros"
+        );
+    }
 }
 
 #[tokio::test]

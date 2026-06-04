@@ -64,6 +64,22 @@ duration, then records only the mutation duration against that populated state.
 These rows are operation-over-populated-state microbenchmarks, not end-to-end
 fixture setup benchmarks.
 
+### Embedded Traversal Breakdown
+
+`embedded_traversal_breakdown_*` isolates selective traversal and
+`node.find` profile costs for the embedded in-memory line. It compares
+explain/planning, raw `GraphQuery` execution, direct root/adjacency index
+snapshots, traversal with and without end filters, and profile overhead over the
+1,000 and 10,000 row graph shapes.
+
+Use it when investigating whether traversal scaling comes from planner choice,
+index access, traversal execution, end-filter handling, result materialization,
+or profile instrumentation:
+
+```bash
+cargo bench --bench grm_vs_sqlite embedded_traversal_breakdown -- --noplot
+```
+
 ### Local Insecure gRPC Workspace
 
 - create and update nodes through `GrpcWorkspaceClient`
