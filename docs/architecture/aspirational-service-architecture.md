@@ -168,15 +168,21 @@ GRM is currently converging on a service-hostable runtime core:
   refs mapped to server-local files under a configured root. This proves the
   service-backed workspace path can reopen schema/data after typed mutations
   without exposing server filesystem paths or claiming hosted durability.
-- The next service proof is the practical MCP-Neo4j CRUD parity subset through
-  `ExecuteWorkspace`: schema define/list, schema-aware node and edge CRUD,
-  simple find, batch, and reopen verification, while direct unscoped RPC
-  families remain unsupported.
-- Explain/profile and index catalog work make query behavior visible enough to
-  demo and eventually sell.
-- WAL/checkpoint work has established local durability foundations for a future
-  durable workspace envelope, but claims must remain grounded in tested
-  single-writer local filesystem behavior.
+- Service-backed workspace operation coverage has moved beyond the original
+  MCP-Neo4j CRUD subset: Rust, Python, CLI, and MCP can route supported
+  schema/CRUD/batch/find behavior through workspace-scoped `ExecuteWorkspace`
+  where configured, including traversal-shaped `node.find`, `return=edge`,
+  typed `edge.find`, and explain/profile coverage for typed find shapes.
+- Binary is the default local service-backed workspace persistence format, with
+  JSON retained as explicit debug/interchange-friendly opt-in.
+- Local durability work has established target-class documentation plus focused
+  transaction-delta WAL/replay evidence, but claims must remain grounded in
+  tested single-writer local filesystem behavior.
+- The active near-term proof has shifted from service-backed workspace parity
+  to benchmark-driven engine capability: establish trustworthy embedded and
+  local insecure gRPC baselines, add a narrow TLS service line before public
+  service/database comparisons, and choose derived acceleration targets from
+  profile and benchmark evidence.
 - Neo4j MCP mode is useful for dogfooding graph memory and visualization, but
   it is not full in-memory backend parity.
 - `grm-service-api` is a split-ready protobuf contract crate, not a daemon or
@@ -359,23 +365,26 @@ Progress to avoid:
 
 ## Near-Term Sequence
 
-1. Finish adapter routing through typed runtime paths where safe, and shrink
-   adapter-owned backend execution logic when it can move behind runtime/backend
-   boundaries.
-2. Add a design note for the minimum SOML service additions: session context,
-   delta outcome, projection request, and attestation evidence.
-3. Tighten durability language and tests around operational deltas, replay, and
-   recovery evidence before widening product claims.
-4. Use the thin local gRPC workspace shell as a demo and integration proof while
-   durability work catches up.
-5. Add a minimal daemon only after production transport, security posture,
-   durability claims, and authorization boundaries are clear enough to review.
+1. Use the completed service-backed workspace path as a measurement surface:
+   benchmark embedded GRM and local insecure gRPC separately across create,
+   update, find, traversal, explain/profile, persistence, checkpoint, and replay
+   shapes.
+2. Investigate the measured traversal/profile and persistence pain points before
+   committing to property indexes, adjacency/projection caches, disk-saved
+   derived indexes, or GraphBLAS-style execution.
+3. Add a narrow TLS-capable service path before public service/database
+   comparison claims; keep auth/RBAC, certificate lifecycle, hosted durability,
+   and multi-writer coordination as separate future concerns.
+4. Make any selected acceleration derived, rebuildable, and visible through
+   explain/profile or backend-status style orientation.
+5. Continue adapter/runtime cleanup where it reduces drift, but avoid using
+   cleanup to introduce new service-only semantics.
 
-The daemon is not the next architectural proof. The current proof is that the
-typed workspace contract can be hosted locally over gRPC without depending on a
-textual language or duplicating behavior. The next SOML proof is that those
-typed semantics can carry durable workspace recovery behavior end to end without
-renaming unsupported behavior into existence.
+The daemon is not the next architectural proof. The service-backed workspace
+contract is now proven enough to measure and harden; the next architectural
+proof is that GRM can make performance and acceleration visible without
+overstating security, durability, backend parity, or SOML capabilities that are
+not implemented and tested.
 
 ## Future Graph Representation
 

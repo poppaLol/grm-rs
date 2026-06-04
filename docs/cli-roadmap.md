@@ -16,14 +16,24 @@ Guiding question:
 
 ## Current Priorities
 
-1. Continue Python and MCP surface parity, especially remaining schema/CRUD
-   polish and shared error behavior.
-2. Improve local in-memory backend durability, including safer autocommit,
-   recovery behavior, and WAL evaluation.
-3. Prepare session-core and runtime-schema cleanup so the CLI shell becomes
-   thinner and more behavior moves into shared library paths.
-4. Build demo scenarios that show equivalent CLI, Rust, Python, and MCP
-   workflows over the same graph-shaped model.
+The broader project has just completed the major service-backed workspace phase:
+CLI, Python, Rust, and MCP can use the local gRPC workspace storage path where
+configured, binary persistence is the default for service-backed workspace
+storage, traversal-shaped find/result parity is in place, explain/profile parity
+exists for typed find shapes, and local transaction-delta WAL/replay evidence is
+available under the documented single-writer local durability target.
+
+Current CLI-facing priorities are therefore:
+
+1. Keep service-backed CLI behavior honest and ergonomic while preserving local
+   embedded `grm session` as the default lightweight workflow.
+2. Support benchmark-driven performance work by making create/update/find,
+   traversal, explain/profile, persistence, and replay behavior visible and
+   stable enough to measure.
+3. Continue session-core and runtime-schema cleanup where it helps shared
+   runtime behavior across CLI, Python, MCP, Rust, and service-backed clients.
+4. Build demo scenarios that show equivalent CLI, Rust, Python, MCP, and
+   service-backed workflows over the same graph-shaped model.
 
 ## Near-Term Direction
 
@@ -34,7 +44,8 @@ thin wrappers over CLI text.
 
 Near-term work:
 
-- align remaining schema and CRUD operations across CLI, Python, and MCP
+- align remaining schema, CRUD, traversal, explain/profile, and error behavior
+  gaps across CLI, Python, MCP, and service-backed workspace sessions
 - keep shared batch operations as the preferred multi-entity write path
 - normalize error shapes and recovery hints across integration surfaces
 - make agent-facing help steer repeated writes toward batch or graph patch tools
@@ -52,9 +63,12 @@ can stay simple, but the implementation needs clearer durability boundaries.
 
 Near-term work:
 
-- define the target durability class for local file-backed sessions
-- reduce full snapshot rewrites in autocommit paths where practical
-- evaluate a compact operation-delta WAL based on transaction deltas
+- preserve the documented single-writer local durability target class
+- investigate measured reopen/checkpoint costs before deciding whether saved
+  derived indexes, faster rebuilds, or other workspace-load optimizations are
+  justified
+- keep transaction-delta WAL/replay evidence narrow and avoid hosted or
+  multi-writer durability claims
 - preserve clear recovery behavior for damaged snapshots and replay logs
 - benchmark save, load, compact, replay, and file-size growth separately
 
@@ -98,13 +112,16 @@ Good demo scenarios should show:
 
 ## Next
 
-1. Concurrency and session coordination
-2. Import/export design and bulk interchange surface across CLI, Python, and MCP
-3. Explicit bulk-update design for matched query results
-4. Richer traversal result controls and graph presentation polish
-5. Backend-neutral identity support beyond the current mostly-`i64` shape
-6. Grow the live Neo4j backend from prototype toward a fuller Cypher-compliant backend
-7. Resilient Redis-like local backend behavior: append-friendly durability, recovery, compaction, and operational tooling
+1. Benchmark-driven traversal/profile and persistence investigations that keep
+   CLI behavior measurable alongside embedded and service-backed paths.
+2. Narrow TLS-capable service path before any public service/database benchmark
+   comparison claims.
+3. Import/export design and bulk interchange surface across CLI, Python, and MCP.
+4. Explicit bulk-update design for matched query results.
+5. Richer traversal result controls and graph presentation polish.
+6. Backend-neutral identity support beyond the current mostly-`i64` shape.
+7. Resilient local workspace behavior: append-friendly durability, recovery,
+   compaction, repair, and operational tooling.
 
 ## Later
 
@@ -161,6 +178,8 @@ single-writer assumptions, and interrupted-write behavior.
 - What exact durability class should local sessions promise?
 - Should file-backed sessions remain strictly single-writer?
 - What transaction model should a future service-style backend expose?
+- What CLI-visible status should distinguish embedded, local insecure gRPC, and
+  future TLS service-backed workspace modes during benchmark and demo work?
 - How should UUID or non-integer backend IDs appear in CLI commands and saved
   sessions?
 - How much of the current dotted command surface should be treated as stable?
