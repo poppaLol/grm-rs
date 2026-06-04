@@ -24,6 +24,10 @@ target
 .devcontainer
 .claude
 .codex
+.mcp.json
+
+# local MCP configs may contain service credentials
+.mcp.local.json
 
 # Python virtual environments
 .venv/
