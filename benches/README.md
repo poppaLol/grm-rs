@@ -6,7 +6,7 @@ This directory is for repeatable performance benchmarks. Keep correctness tests 
 
 For benchmark sequencing, comparator fairness, and when service results are
 appropriate for public claims, see
-[Performance Benchmark Methodology](../docs/performance-benchmark-methodology.md).
+[Performance Benchmark Methodology](../docs/perf/performance-benchmark-methodology.md).
 
 ## Goals
 
@@ -242,7 +242,7 @@ do not require a system SQLite installation.
 ## Next Optimization Phase
 
 The next performance phase is tracked in
-[docs/query-persistence-optimization.md](../docs/query-persistence-optimization.md).
+[docs/perf/query-persistence-optimization.md](../docs/perf/query-persistence-optimization.md).
 That note captures how to interpret the SQLite comparison, where query planning
 and profiling should go next, and which persistence benchmarks should be added
 as the in-memory backend moves toward append-friendly durability.
