@@ -327,5 +327,5 @@ scripted graph loaded.
 - Use [query language design](../query-language-design.md) for the current query
   grammar and planned query controls.
 - Use [import/export](../import-export.md) for interchange format details.
-- Use [query and persistence optimization](../query-persistence-optimization.md)
+- Use [query and persistence optimization](../perf/query-persistence-optimization.md)
   for explain/profile, planning, and durability direction.

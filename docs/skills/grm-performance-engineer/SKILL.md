@@ -25,9 +25,9 @@ claims inside what has actually been implemented and tested.
    - benchmark/TLS/public-comparison decisions and risks
    - acceleration constraints about derived/rebuildable state and explain/profile
 4. Read the current docs that matter for the task:
-   - `docs/performance-benchmark-methodology.md`
+   - `docs/perf/performance-benchmark-methodology.md`
    - `benches/README.md`
-   - `docs/query-persistence-optimization.md`
+   - `docs/perf/query-persistence-optimization.md`
 5. Inspect existing benchmark code before inventing new harnesses:
    - `benches/grm_vs_sqlite.rs`
    - `benches/persistence.rs`

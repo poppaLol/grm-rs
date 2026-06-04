@@ -61,7 +61,7 @@ Near-term work:
 Related notes:
 
 - [Durability testing](durability-testing.md)
-- [Query and persistence optimization](query-persistence-optimization.md)
+- [Query and persistence optimization](perf/query-persistence-optimization.md)
 
 ### Session-Core Cleanup
 
@@ -171,7 +171,7 @@ single-writer assumptions, and interrupted-write behavior.
 ## Related Documents
 
 - [Query language design](query-language-design.md)
-- [Query and persistence optimization](query-persistence-optimization.md)
+- [Query and persistence optimization](perf/query-persistence-optimization.md)
 - [Durability testing](durability-testing.md)
 - [Import/export](import-export.md)
 - [MCP batch and graph patch requirements](mcp-batch-graph-patch-requirements.md)
