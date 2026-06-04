@@ -258,6 +258,21 @@ struct SessionProfileResult {
     result: SessionQueryResult,
     elapsed: Duration,
     metrics: Vec<ProfileStepMetrics>,
+    phase_timings: Option<ProfilePhaseTimings>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct ProfilePhaseTimings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    explain: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchor_metric: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execute_node_query: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metric_push: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile_value: Option<u128>,
 }
 
 struct RenderProfile<'a> {
@@ -1317,15 +1332,21 @@ impl SessionState {
     ) -> Result<Value> {
         reject_introspection_format_terms(terms)?;
         let query = self.parse_node_find_terms(model_name, terms)?;
+        let explain_started = Instant::now();
         let plan = self.explain_node_find_query(model_name, &query)?;
-        let profile = self.profile_node_query(model_name, &query, &plan).await?;
-        Ok(profile_value(
+        let explain_elapsed = explain_started.elapsed();
+        let mut profile = self.profile_node_query(model_name, &query, &plan).await?;
+        if let Some(phase_timings) = profile.phase_timings.as_mut() {
+            phase_timings.explain = Some(explain_elapsed.as_micros());
+        }
+        Ok(profile_value_with_phase_timing(
             "node.find",
             model_name,
             &plan,
             profile.result.row_count(),
             profile.elapsed,
             Some(&profile.metrics),
+            profile.phase_timings.take(),
         ))
     }
 
@@ -1384,17 +1405,23 @@ impl SessionState {
         match request.query {
             QueryRequest::NodeFind(node_request) => {
                 let query = self.node_find_query_from_request(&node_request)?;
+                let explain_started = Instant::now();
                 let plan = self.explain_node_find_query(&node_request.model, &query)?;
-                let profile = self
+                let explain_elapsed = explain_started.elapsed();
+                let mut profile = self
                     .profile_node_query(&node_request.model, &query, &plan)
                     .await?;
-                Ok(profile_value(
+                if let Some(phase_timings) = profile.phase_timings.as_mut() {
+                    phase_timings.explain = Some(explain_elapsed.as_micros());
+                }
+                Ok(profile_value_with_phase_timing(
                     "node.find",
                     &node_request.model,
                     &plan,
                     profile.result.row_count(),
                     profile.elapsed,
                     Some(&profile.metrics),
+                    profile.phase_timings.take(),
                 ))
             }
             QueryRequest::EdgeFind(edge_request) => {
@@ -1402,29 +1429,36 @@ impl SessionState {
                 let plan = self.explain_edge_find_query(&edge_request.model, &query)?;
                 let (rels, elapsed, metrics) =
                     self.profile_edge_query(&edge_request.model, &query, &plan)?;
-                Ok(profile_value(
+                Ok(profile_value_with_phase_timing(
                     "edge.find",
                     &edge_request.model,
                     &plan,
                     rels.len(),
                     elapsed,
                     Some(&metrics),
+                    None,
                 ))
             }
             QueryRequest::Traversal(traversal_request) => {
                 let node_request = traversal_request.root;
                 let query = self.node_find_query_from_request(&node_request)?;
+                let explain_started = Instant::now();
                 let plan = self.explain_node_find_query(&node_request.model, &query)?;
-                let profile = self
+                let explain_elapsed = explain_started.elapsed();
+                let mut profile = self
                     .profile_node_query(&node_request.model, &query, &plan)
                     .await?;
-                Ok(profile_value(
+                if let Some(phase_timings) = profile.phase_timings.as_mut() {
+                    phase_timings.explain = Some(explain_elapsed.as_micros());
+                }
+                Ok(profile_value_with_phase_timing(
                     "node.find",
                     &node_request.model,
                     &plan,
                     profile.result.row_count(),
                     profile.elapsed,
                     Some(&profile.metrics),
+                    profile.phase_timings.take(),
                 ))
             }
         }
@@ -1484,16 +1518,20 @@ impl SessionState {
         plan: &ExecutionPlan,
     ) -> Result<SessionProfileResult> {
         let total_started = Instant::now();
-        let (result, metrics) = if query.traversals.is_empty() {
-            self.profile_flat_node_query(model_name, query, plan)?
+        let (result, metrics, phase_timings) = if query.traversals.is_empty() {
+            let (result, metrics) = self.profile_flat_node_query(model_name, query, plan)?;
+            (result, metrics, None)
         } else {
-            self.profile_traversal_query(model_name, query, plan)
-                .await?
+            let (result, metrics, phase_timings) = self
+                .profile_traversal_query(model_name, query, plan)
+                .await?;
+            (result, metrics, Some(phase_timings))
         };
         Ok(SessionProfileResult {
             result,
             elapsed: total_started.elapsed(),
             metrics,
+            phase_timings,
         })
     }
 
@@ -1573,7 +1611,11 @@ impl SessionState {
         model_name: &str,
         query: &NodeFindQuery,
         plan: &ExecutionPlan,
-    ) -> Result<(SessionQueryResult, Vec<ProfileStepMetrics>)> {
+    ) -> Result<(
+        SessionQueryResult,
+        Vec<ProfileStepMetrics>,
+        ProfilePhaseTimings,
+    )> {
         let root_model = self
             .catalog
             .get_node_model(model_name)
@@ -1592,18 +1634,23 @@ impl SessionState {
             query.id_filter,
             indexed_property,
         );
+        let anchor_metric_elapsed = anchor_started.elapsed();
+        let mut metric_push_elapsed = Duration::ZERO;
+
+        let metric_push_started = Instant::now();
         push_step_metric(
             &mut metrics,
             plan,
             0,
             Some(0),
             Some(root_candidates.len()),
-            Some(anchor_started.elapsed()),
+            Some(anchor_metric_elapsed),
         );
+        metric_push_elapsed += metric_push_started.elapsed();
 
         let execute_started = Instant::now();
         let result = self.execute_node_query(model_name, query).await?;
-        let _execute_elapsed = execute_started.elapsed();
+        let execute_elapsed = execute_started.elapsed();
         let result_rows = result.row_count();
         for (index, step) in plan.steps.iter().enumerate() {
             if matches!(
@@ -1612,7 +1659,9 @@ impl SessionState {
                     | PlanStepKind::ExpandIn { .. }
                     | PlanStepKind::ExpandBoth { .. }
             ) {
+                let metric_push_started = Instant::now();
                 push_step_metric(&mut metrics, plan, index, None, None, None);
+                metric_push_elapsed += metric_push_started.elapsed();
             }
         }
         for (index, step) in plan.steps.iter().enumerate() {
@@ -1620,10 +1669,13 @@ impl SessionState {
                 step.kind,
                 PlanStepKind::NodeFilter { .. } | PlanStepKind::RelationshipFilter { .. }
             ) {
+                let metric_push_started = Instant::now();
                 push_step_metric(&mut metrics, plan, index, None, None, None);
+                metric_push_elapsed += metric_push_started.elapsed();
             }
         }
         let return_index = plan.steps.len().saturating_sub(1);
+        let metric_push_started = Instant::now();
         push_step_metric(
             &mut metrics,
             plan,
@@ -1632,8 +1684,18 @@ impl SessionState {
             Some(result_rows),
             None,
         );
+        metric_push_elapsed += metric_push_started.elapsed();
 
-        Ok((result, metrics))
+        Ok((
+            result,
+            metrics,
+            ProfilePhaseTimings {
+                anchor_metric: Some(anchor_metric_elapsed.as_micros()),
+                execute_node_query: Some(execute_elapsed.as_micros()),
+                metric_push: Some(metric_push_elapsed.as_micros()),
+                ..Default::default()
+            },
+        ))
     }
 
     async fn execute_node_traversal_query(
@@ -6588,6 +6650,32 @@ fn profile_value(
             .map(|metrics| serde_json::to_value(metrics).unwrap_or(Value::Null))
             .unwrap_or(Value::Null),
     })
+}
+
+fn profile_value_with_phase_timing(
+    command: &str,
+    target: &str,
+    plan: &ExecutionPlan,
+    row_count: usize,
+    elapsed: Duration,
+    metrics: Option<&[ProfileStepMetrics]>,
+    phase_timings: Option<ProfilePhaseTimings>,
+) -> Value {
+    let started = Instant::now();
+    let mut value = profile_value(command, target, plan, row_count, elapsed, metrics);
+    let profile_value_elapsed = started.elapsed().as_micros();
+
+    if let Some(mut phase_timings) = phase_timings {
+        phase_timings.profile_value = Some(profile_value_elapsed);
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "phase_timings".to_string(),
+                serde_json::to_value(phase_timings).unwrap_or(Value::Null),
+            );
+        }
+    }
+
+    value
 }
 
 fn plan_value(plan: &ExecutionPlan) -> Value {
