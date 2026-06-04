@@ -23,7 +23,7 @@ Configure an MCP client to run the compiled binary over stdio:
 {
   "mcpServers": {
     "grm": {
-      "command": "/workspaces/grm-rs/target/debug/grm-mcp",
+      "command": "./target/debug/grm-mcp",
       "args": [
         "--autocommit-json",
         "test-dbs/mcp-chemistry-session.json",

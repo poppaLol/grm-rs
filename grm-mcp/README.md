@@ -17,7 +17,7 @@ For an MCP client such as Ollmcp, run the compiled binary over stdio:
 {
   "mcpServers": {
     "grm": {
-      "command": "/workspaces/grm-rs/target/debug/grm-mcp",
+      "command": "./target/debug/grm-mcp",
       "args": [
         "--import-json",
         "/path/to/graph.export.json"

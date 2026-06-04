@@ -85,7 +85,7 @@ We also want scale-oriented test data that is still understandable and hand-cura
 
 Current useful starting point:
 
-- [isms-experiment.grm](/workspaces/grm-rs/isms-experiment.grm)
+- `isms-experiment.grm`, when available locally
 
 That file is a good seed for broader scale-data testing because it already reflects a more realistic domain shape than the smallest demo scripts.
 
