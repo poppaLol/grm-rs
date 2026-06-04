@@ -354,7 +354,7 @@ License
 
 Copyright 2026 Laurie Ibbs
 
-Licensed under the Apache License, Version 2.0. See LICENSE.md for details.
+Licensed under the Apache License, Version 2.0. See LICENSE for details.
 
 Project Identity
 
