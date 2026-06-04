@@ -76,12 +76,16 @@ fn base_node_candidate_ids(
         }
     } else {
         for label in labels {
-            keep_smallest(&mut best, store.node_ids_by_label(label));
             for filter in &eq_filters {
                 keep_smallest(
                     &mut best,
                     store.node_ids_by_label_property(label, filter.key, &filter.value),
                 );
+            }
+        }
+        if best.is_none() {
+            for label in labels {
+                keep_smallest(&mut best, store.node_ids_by_label(label));
             }
         }
     }
