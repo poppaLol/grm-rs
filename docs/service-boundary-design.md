@@ -384,8 +384,12 @@ The near-term service API proof has moved from design into code:
 
 This is a service-hostable runtime contract proof with a thin local gRPC
 transport shell, not a hosted service. The next service-boundary work should
-avoid widening into daemon lifecycle, TLS, auth, authorization, hosted
-durability claims, or direct RPC implementations until request context,
-durability behavior, and unsupported semantics are clear enough to review.
+avoid widening into daemon lifecycle, auth, authorization, hosted durability
+claims, multi-writer coordination, or direct RPC implementations until request
+context, durability behavior, and unsupported semantics are clear enough to
+review. A narrow TLS-capable service path is expected before public
+service/database benchmark comparisons, but that TLS slice should stay scoped
+to credible transport measurement and should not imply auth/RBAC, certificate
+lifecycle, hosted durability, or production service readiness.
 The current local durability target class is documented separately in
 [Local Durability Target Class](local-durability-target.md).
