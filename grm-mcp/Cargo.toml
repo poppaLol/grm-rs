@@ -3,7 +3,7 @@ name = "grm-mcp"
 version = "0.1.0"
 edition = "2024"
 description = "Model Context Protocol server for grm-rs runtime graph sessions."
-license-file = "../LICENSE"
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
