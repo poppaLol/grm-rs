@@ -11,8 +11,9 @@ It is intentionally broader than the near-term CLI roadmap. The aim here is to d
 - a typed Rust graph-relational model library
 - an interactive graph session CLI
 - a runtime schema playground for local graph work
-- a first-pass Python integration surface
+- a Python integration surface
 - an MCP server surface for agent workflows
+- a service-backed workspace storage mode over a typed gRPC/protobuf boundary
 
 The long-term opportunity is not just "more commands". It is a coherent graph workbench that supports:
 
@@ -44,19 +45,24 @@ This matters more than adding many language integrations early. Other surfaces,
 such as a C# LINQ provider, can stay future possibilities until there is a clear
 workflow that justifies them.
 
-### 2. Real Backend Support
+### 2. Backend And Service Storage Modes
 
-The completed Cypher translator spike validated the first backend portability
-path. The next product-level step is a real backend, not only string generation.
+The completed service-backed workspace phase changed the backend story. The
+primary persisted GRM-owned path is now a workspace service over typed
+gRPC/protobuf operations, while embedded local sessions remain useful and Neo4j
+remains an optional backend, inspection, and interoperability substrate.
 
 Long-term direction:
 
-- a live Neo4j backend that executes translated `GraphQuery` values
-- shared query and repository tests across in-memory and Cypher backends
-- a backend contract that makes rows, errors, transactions, IDs, and capability
-  reporting explicit
-- enough Cypher compliance to support serious graph workloads rather than only
-  smoke tests
+- keep service-backed workspace storage, embedded local sessions, and optional
+  external graph backends as distinct deployment/storage lines
+- preserve shared typed workspace/runtime semantics across CLI, Python, MCP,
+  Rust clients, and generated SDKs where practical
+- make rows, errors, transactions, IDs, durability class, transport security,
+  and capability reporting explicit per backend/storage mode
+- treat Neo4j as an optional graph-data backend and inspection path, not as the
+  default persisted SOML layer or the backing store for the GRM workspace
+  service
 
 ### 3. Durable Local Operational Workspace
 
@@ -150,19 +156,29 @@ Current progress:
   runtime requests and executed in-process through `SessionState::execute_runtime`.
 - Runtime dispatcher batch execution reuses the existing batch implementation
   and preserves grouped durable operation metadata.
-- A minimal local gRPC workspace shell now exposes create/open/execute/close
-  workspace RPCs over managed handles and delegates to the in-process workspace
-  service. This is a demoable transport proof, not a production daemon.
+- A local gRPC workspace shell exposes create/open/execute/close workspace RPCs
+  over managed handles and delegates to the in-process workspace service.
+- Rust, Python, CLI, and MCP can route supported service-backed workspace
+  operations through the workspace-scoped `ExecuteWorkspace` path where
+  configured.
+- Service-backed workspace support now includes traversal-capable `node.find`,
+  `return=edge` parity, typed `edge.find`, explain/profile coverage for typed
+  find shapes, binary-by-default local persistence, and local
+  transaction-delta WAL/replay test evidence.
+- This remains a local service-backed workspace/storage proof, not a production
+  daemon, hosted durability claim, auth/RBAC implementation, TLS service line,
+  or multi-writer service.
 
 Long-term direction:
 
 - keep service DTOs mapped to shared runtime behavior rather than adapter or
   backend-specific shortcuts
-- use the workspace RPC path to prove service-hostable behavior before filling
-  in direct schema/node/edge/query RPCs
-- add service context, authorization, limits, audit, and transport only after
-  the typed runtime boundary is stable enough to review; the current local gRPC
-  shell deliberately does not settle those production concerns
+- keep direct schema/node/edge/query RPC families explicitly unsupported unless
+  a later design maps them as workspace-scoped aliases over the same runtime
+  path
+- add a narrow TLS-capable service path before public service/database
+  comparison claims, while keeping auth/RBAC/certificate lifecycle and hosted
+  durability out of scope until separate slices make them reviewable
 - introduce SOML concepts such as session context, durable deltas, projections,
   and attestations only when the runtime can make and test those claims
 - keep unsupported surfaces explicit instead of filling gaps with textual query
@@ -416,12 +432,16 @@ This keeps `.grm` useful for authored workflows while allowing import/export to 
 
 ### Nearer Long-Term
 
-- Python and MCP parity over schema, CRUD, traversal, import/export, and batch operations
-- service API DTO mapping over shared runtime behavior, then minimum SOML
-  service additions for session context, durable deltas, projections, and
-  attestation evidence
-- minimal live Neo4j backend, then broader Cypher-compliant backend support
-- indexed transaction overlay/read-view for the local backend
+- benchmark-driven engine acceleration: establish embedded and local insecure
+  service baselines, add a narrow TLS service line, then choose derived
+  indexing/projection/algorithm targets from evidence
+- repeatable performance provenance, including machine shape, toolchain,
+  commit, benchmark line, TLS mode, persistence format, and disposable target
+  status before public comparator claims
+- local workspace persistence investigation around reopen/checkpoint cost,
+  replay behavior, compaction, repair, and durability tooling
+- service-backed Python/MCP/CLI/Rust parity polish where gaps remain, keeping
+  gRPC a storage/backend mode rather than a user surface
 - demo scenarios covering typed Rust, query-style usage, Python, and MCP
 - runtime schema refactor
 - backend-neutral identity model
