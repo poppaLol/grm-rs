@@ -296,7 +296,7 @@ Additional reference docs:
 - [Python quickstart](docs/python-quickstart.md)
 - [Query language design](docs/query-language-design.md)
 - [Import/export](docs/import-export.md)
-- [Query and persistence optimization](docs/query-persistence-optimization.md)
+- [Query and persistence optimization](docs/perf/query-persistence-optimization.md)
 - [MCP batch and graph patch requirements](docs/mcp-batch-graph-patch-requirements.md)
 
 Planned tutorials:
