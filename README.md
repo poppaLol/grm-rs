@@ -349,3 +349,19 @@ cargo bench --bench grm_vs_sqlite
 
 Some benchmark and Neo4j workflows are opt-in; see the relevant docs and test
 files for environment variables.
+
+License
+
+Copyright 2026 Laurie Ibbs
+
+Licensed under the Apache License, Version 2.0. See LICENSE.md for details.
+
+Project Identity
+
+SOML, Structured Operational Memory Layer, GRM, and GRM-RS are project identifiers associated with this repository and related software.
+
+The Apache License grants rights to use, modify, and distribute the source code. It does not grant rights to use project names, logos, branding, or other identifying marks in a way that implies official endorsement, sponsorship, affiliation, or authorship.
+
+For additional information, see NOTICE.md and TRADEMARKS.md.
+
+Project website: https://soml.io
