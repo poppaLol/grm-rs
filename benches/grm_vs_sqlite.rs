@@ -1030,6 +1030,152 @@ fn bench_embedded_baseline_ops(c: &mut Criterion) {
     }
 }
 
+fn bench_embedded_traversal_breakdown(c: &mut Criterion) {
+    if std::env::var_os("GRM_BENCH_PROFILE_GRM_INSERT_ONLY").is_some() {
+        return;
+    }
+
+    let rt = Runtime::new().unwrap();
+    for rows in [1_000, 10_000] {
+        let data = dataset(rows);
+        let lookup_name = format!("user-{:06}", rows / 2);
+        let lookup_title = format!("post-{:06}", rows / 2);
+        let traversal_request =
+            traversal_node_find_request(lookup_name.clone(), lookup_title.clone());
+        let traversal_without_end_filter = traversal_node_find_without_end_filter(lookup_name);
+        let graph_query = authored_post_query(format!("user-{:06}", rows / 2));
+        let group_name = format!("embedded_traversal_breakdown_{}", size_label(rows));
+        let mut group = c.benchmark_group(group_name);
+        group.sample_size(10);
+        group.warm_up_time(Duration::from_secs(1));
+        group.measurement_time(Duration::from_secs(3));
+
+        group.bench_function("explain_traversal_node_find", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                black_box(
+                    grm.explain(grm_rs::ExplainRequest {
+                        query: grm_rs::QueryRequest::NodeFind(traversal_request.clone()),
+                    })
+                    .unwrap(),
+                )
+            });
+        });
+
+        group.bench_function("execute_graph_raw_authored_post", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut tx = grm.client().transaction().await.unwrap();
+                    let rows = tx.tx_mut().unwrap().execute_graph(&graph_query).await;
+                    tx.rollback().await.unwrap();
+                    black_box(rows.unwrap())
+                })
+            });
+        });
+
+        group.bench_function("transaction_open_rollback", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    let tx = grm.client().transaction().await.unwrap();
+                    tx.rollback().await.unwrap();
+                })
+            });
+        });
+
+        group.bench_function("direct_root_snapshot_name_eq", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            let lookup_value = json!(format!("user-{:06}", rows / 2));
+            let _ = grm.client().backend().snapshot_nodes_filtered(
+                "User",
+                None,
+                Some(("name", &lookup_value)),
+            );
+            b.iter(|| {
+                black_box(grm.client().backend().snapshot_nodes_filtered(
+                    "User",
+                    None,
+                    Some(("name", &lookup_value)),
+                ))
+            });
+        });
+
+        group.bench_function("direct_outgoing_snapshot", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            let user_id = rows as i64 / 2 + 1;
+            b.iter(|| {
+                black_box(grm.client().backend().snapshot_relationships_filtered(
+                    "Authored",
+                    None,
+                    Some(user_id),
+                    None,
+                ))
+            });
+        });
+
+        group.bench_function("execute_graph_raw_return_root", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            let root_query = authored_post_root_query(format!("user-{:06}", rows / 2));
+            b.iter(|| {
+                rt.block_on(async {
+                    let mut tx = grm.client().transaction().await.unwrap();
+                    let rows = tx.tx_mut().unwrap().execute_graph(&root_query).await;
+                    tx.rollback().await.unwrap();
+                    black_box(rows.unwrap())
+                })
+            });
+        });
+
+        group.bench_function("node_find_traversal_no_end_filter", |b| {
+            let mut grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    let outcome = grm
+                        .execute_runtime(grm_rs::RuntimeRequest::Query(
+                            grm_rs::QueryRequest::NodeFind(traversal_without_end_filter.clone()),
+                        ))
+                        .await
+                        .unwrap();
+                    black_box(outcome)
+                })
+            });
+        });
+
+        group.bench_function("node_find_traversal_with_end_filter", |b| {
+            let mut grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    let outcome = grm
+                        .execute_runtime(grm_rs::RuntimeRequest::Query(
+                            grm_rs::QueryRequest::NodeFind(traversal_request.clone()),
+                        ))
+                        .await
+                        .unwrap();
+                    black_box(outcome)
+                })
+            });
+        });
+
+        group.bench_function("profile_traversal_node_find", |b| {
+            let grm = populate_grm_bulk(&rt, &data);
+            b.iter(|| {
+                rt.block_on(async {
+                    black_box(
+                        grm.profile(grm_rs::ProfileRequest {
+                            query: grm_rs::QueryRequest::NodeFind(traversal_request.clone()),
+                        })
+                        .await
+                        .unwrap(),
+                    )
+                })
+            });
+        });
+
+        group.finish();
+    }
+}
+
 fn traversal_node_find_request(name: String, title: String) -> grm_rs::NodeFindRequest {
     grm_rs::NodeFindRequest {
         model: "User".into(),
@@ -1040,6 +1186,20 @@ fn traversal_node_find_request(name: String, title: String) -> grm_rs::NodeFindR
             end_model: "Post".into(),
         }],
         end_predicates: vec![predicate("title", json!(title))],
+        return_mode: Some(grm_rs::TraversalReturn::End),
+        ..Default::default()
+    }
+}
+
+fn traversal_node_find_without_end_filter(name: String) -> grm_rs::NodeFindRequest {
+    grm_rs::NodeFindRequest {
+        model: "User".into(),
+        predicates: vec![predicate("name", json!(name))],
+        traversals: vec![grm_rs::TraversalStepRequest {
+            direction: grm_rs::TraversalDirection::Out,
+            edge_model: Some("Authored".into()),
+            end_model: "Post".into(),
+        }],
         return_mode: Some(grm_rs::TraversalReturn::End),
         ..Default::default()
     }
@@ -1086,6 +1246,39 @@ fn authored_post_query(name: String) -> GraphQuery {
     }
 }
 
+fn authored_post_root_query(name: String) -> GraphQuery {
+    let root = VarId(0);
+    let rel = VarId(1);
+    let end = VarId(2);
+
+    GraphQuery {
+        matches: vec![
+            MatchClause::Node(NodeMatch {
+                var: root,
+                labels: &["User"],
+                id_filter: None,
+                property_filters: vec![grm_rs::PropertyFilter {
+                    key: "name",
+                    op: CompareOp::Eq,
+                    value: json!(name),
+                }],
+            }),
+            MatchClause::Hop(HopMatch {
+                start: root,
+                rel_type: Some("Authored"),
+                rel_var: rel,
+                dir: Direction::Out,
+                end,
+                end_labels: &["Post"],
+            }),
+        ],
+        where_: vec![],
+        ret: Return::Node(root),
+        limit: None,
+        offset: None,
+    }
+}
+
 fn size_label(rows: usize) -> String {
     if rows >= 1_000 {
         format!("{}k", rows / 1_000)
@@ -1116,6 +1309,7 @@ criterion_group!(
     bench_property_lookup,
     bench_one_hop,
     bench_tx_overlay_reads,
-    bench_embedded_baseline_ops
+    bench_embedded_baseline_ops,
+    bench_embedded_traversal_breakdown
 );
 criterion_main!(benches);
