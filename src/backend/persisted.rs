@@ -92,7 +92,7 @@ impl GraphStore {
             outgoing_any: BTreeMap::new(),
             incoming_any: BTreeMap::new(),
         };
-        store.rebuild_indexes();
+        store.rebuild_load_indexes();
         store
     }
 
@@ -185,7 +185,7 @@ impl GraphStore {
             outgoing_any: BTreeMap::new(),
             incoming_any: BTreeMap::new(),
         };
-        store.rebuild_indexes();
+        store.rebuild_load_indexes();
         Ok(store)
     }
 
