@@ -118,6 +118,25 @@ impl GraphStore {
         self.node_props_dirty = false;
     }
 
+    pub(crate) fn rebuild_load_indexes(&mut self) {
+        self.nodes_by_label.clear();
+        self.node_props.clear();
+        self.node_props_any.clear();
+        self.rels_by_type.clear();
+        self.outgoing.clear();
+        self.incoming.clear();
+        self.outgoing_any.clear();
+        self.incoming_any.clear();
+
+        for node in self.nodes.values().cloned().collect::<Vec<_>>() {
+            self.index_node_labels(&node);
+        }
+        for rel in self.rels.values().cloned().collect::<Vec<_>>() {
+            self.index_relationship(&rel);
+        }
+        self.node_props_dirty = !self.nodes.is_empty();
+    }
+
     pub fn insert_node(&mut self, id: i64, node: StoredNode) -> Option<StoredNode> {
         let previous = self.nodes.insert(id, node.clone());
         if let Some(previous) = &previous {
