@@ -8,12 +8,15 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::Mutex;
-use tonic::transport::Channel;
+use tonic::transport::{
+    Certificate, Channel, ClientTlsConfig, Endpoint, Identity, ServerTlsConfig,
+};
 use tonic::{Request, Response, Status};
 
 #[allow(warnings)]
@@ -37,6 +40,254 @@ pub const PROTO_FILES: &[&str] = &[
     "grm/service/v1/workspace.proto",
     "grm/service/v1/service.proto",
 ];
+
+pub const GRM_SERVICE_TLS_CA_CERT_ENV: &str = "GRM_SERVICE_TLS_CA_CERT";
+pub const GRM_SERVICE_TLS_DOMAIN_NAME_ENV: &str = "GRM_SERVICE_TLS_DOMAIN_NAME";
+pub const GRM_SERVICE_TLS_CLIENT_CERT_ENV: &str = "GRM_SERVICE_TLS_CLIENT_CERT";
+pub const GRM_SERVICE_TLS_CLIENT_KEY_ENV: &str = "GRM_SERVICE_TLS_CLIENT_KEY";
+pub const GRM_SERVICE_TLS_SERVER_CERT_ENV: &str = "GRM_SERVICE_TLS_SERVER_CERT";
+pub const GRM_SERVICE_TLS_SERVER_KEY_ENV: &str = "GRM_SERVICE_TLS_SERVER_KEY";
+pub const GRM_SERVICE_TLS_CLIENT_CA_CERT_ENV: &str = "GRM_SERVICE_TLS_CLIENT_CA_CERT";
+
+#[derive(Debug)]
+pub enum GrpcTlsConfigError {
+    MissingPair {
+        cert_env: &'static str,
+        key_env: &'static str,
+    },
+    MissingRequired {
+        env: &'static str,
+        required_by: &'static str,
+    },
+    ReadFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Transport(tonic::transport::Error),
+}
+
+impl fmt::Display for GrpcTlsConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingPair { cert_env, key_env } => write!(
+                f,
+                "{cert_env} and {key_env} must both be set when either is configured"
+            ),
+            Self::MissingRequired { env, required_by } => {
+                write!(f, "{env} is required when {required_by} is configured")
+            }
+            Self::ReadFile { path, source } => {
+                write!(f, "failed to read TLS file '{}': {source}", path.display())
+            }
+            Self::Transport(error) => write!(f, "invalid gRPC TLS configuration: {error}"),
+        }
+    }
+}
+
+impl Error for GrpcTlsConfigError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::ReadFile { source, .. } => Some(source),
+            Self::Transport(error) => Some(error),
+            Self::MissingPair { .. } | Self::MissingRequired { .. } => None,
+        }
+    }
+}
+
+impl From<GrpcTlsConfigError> for grm_rs::GrmError {
+    fn from(error: GrpcTlsConfigError) -> Self {
+        Self::Backend(error.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrpcClientTlsOptions {
+    pub ca_certificate_path: PathBuf,
+    pub domain_name: String,
+    pub identity_certificate_path: Option<PathBuf>,
+    pub identity_private_key_path: Option<PathBuf>,
+}
+
+impl GrpcClientTlsOptions {
+    pub fn new(ca_certificate_path: impl Into<PathBuf>) -> Self {
+        Self {
+            ca_certificate_path: ca_certificate_path.into(),
+            domain_name: "localhost".into(),
+            identity_certificate_path: None,
+            identity_private_key_path: None,
+        }
+    }
+
+    pub fn with_domain_name(mut self, domain_name: impl Into<String>) -> Self {
+        self.domain_name = domain_name.into();
+        self
+    }
+
+    pub fn with_identity(
+        mut self,
+        certificate_path: impl Into<PathBuf>,
+        private_key_path: impl Into<PathBuf>,
+    ) -> Self {
+        self.identity_certificate_path = Some(certificate_path.into());
+        self.identity_private_key_path = Some(private_key_path.into());
+        self
+    }
+
+    pub fn has_identity(&self) -> bool {
+        self.identity_certificate_path.is_some()
+    }
+
+    pub fn from_env() -> Result<Option<Self>, GrpcTlsConfigError> {
+        let ca_certificate_path = std::env::var_os(GRM_SERVICE_TLS_CA_CERT_ENV);
+        let identity = optional_path_pair(
+            GRM_SERVICE_TLS_CLIENT_CERT_ENV,
+            GRM_SERVICE_TLS_CLIENT_KEY_ENV,
+        )?;
+        let Some(ca_certificate_path) = ca_certificate_path else {
+            if identity.is_some() {
+                return Err(GrpcTlsConfigError::MissingRequired {
+                    env: GRM_SERVICE_TLS_CA_CERT_ENV,
+                    required_by: GRM_SERVICE_TLS_CLIENT_CERT_ENV,
+                });
+            }
+            return Ok(None);
+        };
+        let domain_name =
+            std::env::var(GRM_SERVICE_TLS_DOMAIN_NAME_ENV).unwrap_or_else(|_| "localhost".into());
+        let (identity_certificate_path, identity_private_key_path) = identity
+            .map(|(cert, key)| (Some(cert), Some(key)))
+            .unwrap_or((None, None));
+        Ok(Some(Self {
+            ca_certificate_path: PathBuf::from(ca_certificate_path),
+            domain_name,
+            identity_certificate_path,
+            identity_private_key_path,
+        }))
+    }
+
+    fn client_tls_config(&self) -> Result<ClientTlsConfig, GrpcTlsConfigError> {
+        let ca = read_tls_file(&self.ca_certificate_path)?;
+        let mut config = ClientTlsConfig::new()
+            .ca_certificate(Certificate::from_pem(ca))
+            .domain_name(self.domain_name.clone());
+        match (
+            &self.identity_certificate_path,
+            &self.identity_private_key_path,
+        ) {
+            (Some(cert), Some(key)) => {
+                config = config.identity(Identity::from_pem(
+                    read_tls_file(cert)?,
+                    read_tls_file(key)?,
+                ));
+            }
+            (None, None) => {}
+            _ => {
+                return Err(GrpcTlsConfigError::MissingPair {
+                    cert_env: GRM_SERVICE_TLS_CLIENT_CERT_ENV,
+                    key_env: GRM_SERVICE_TLS_CLIENT_KEY_ENV,
+                });
+            }
+        }
+        Ok(config)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrpcServerTlsOptions {
+    pub certificate_path: PathBuf,
+    pub private_key_path: PathBuf,
+    pub client_ca_certificate_path: Option<PathBuf>,
+}
+
+impl GrpcServerTlsOptions {
+    pub fn new(certificate_path: impl Into<PathBuf>, private_key_path: impl Into<PathBuf>) -> Self {
+        Self {
+            certificate_path: certificate_path.into(),
+            private_key_path: private_key_path.into(),
+            client_ca_certificate_path: None,
+        }
+    }
+
+    pub fn with_client_ca(mut self, client_ca_certificate_path: impl Into<PathBuf>) -> Self {
+        self.client_ca_certificate_path = Some(client_ca_certificate_path.into());
+        self
+    }
+
+    pub fn requires_client_authentication(&self) -> bool {
+        self.client_ca_certificate_path.is_some()
+    }
+
+    pub fn from_env() -> Result<Option<Self>, GrpcTlsConfigError> {
+        let cert = std::env::var_os(GRM_SERVICE_TLS_SERVER_CERT_ENV);
+        let key = std::env::var_os(GRM_SERVICE_TLS_SERVER_KEY_ENV);
+        let client_ca = std::env::var_os(GRM_SERVICE_TLS_CLIENT_CA_CERT_ENV);
+        match (cert, key) {
+            (None, None) if client_ca.is_none() => Ok(None),
+            (None, None) => Err(GrpcTlsConfigError::MissingRequired {
+                env: GRM_SERVICE_TLS_SERVER_CERT_ENV,
+                required_by: GRM_SERVICE_TLS_CLIENT_CA_CERT_ENV,
+            }),
+            (Some(certificate_path), Some(private_key_path)) => Ok(Some(Self {
+                certificate_path: PathBuf::from(certificate_path),
+                private_key_path: PathBuf::from(private_key_path),
+                client_ca_certificate_path: client_ca.map(PathBuf::from),
+            })),
+            _ => Err(GrpcTlsConfigError::MissingPair {
+                cert_env: GRM_SERVICE_TLS_SERVER_CERT_ENV,
+                key_env: GRM_SERVICE_TLS_SERVER_KEY_ENV,
+            }),
+        }
+    }
+
+    pub fn server_tls_config(&self) -> Result<ServerTlsConfig, GrpcTlsConfigError> {
+        let cert = read_tls_file(&self.certificate_path)?;
+        let key = read_tls_file(&self.private_key_path)?;
+        let mut config = ServerTlsConfig::new().identity(Identity::from_pem(cert, key));
+        if let Some(client_ca) = &self.client_ca_certificate_path {
+            config = config.client_ca_root(Certificate::from_pem(read_tls_file(client_ca)?));
+        }
+        Ok(config)
+    }
+}
+
+pub async fn grpc_channel(
+    endpoint: impl Into<String>,
+    tls: Option<&GrpcClientTlsOptions>,
+) -> GrpcWorkspaceClientResult<Channel> {
+    let endpoint = endpoint.into();
+    let mut builder =
+        Endpoint::from_shared(endpoint).map_err(GrpcWorkspaceClientError::Transport)?;
+    if let Some(tls) = tls {
+        builder = builder
+            .tls_config(
+                tls.client_tls_config()
+                    .map_err(GrpcWorkspaceClientError::TlsConfig)?,
+            )
+            .map_err(GrpcWorkspaceClientError::Transport)?;
+    }
+    builder
+        .connect()
+        .await
+        .map_err(GrpcWorkspaceClientError::Transport)
+}
+
+fn read_tls_file(path: &Path) -> Result<Vec<u8>, GrpcTlsConfigError> {
+    fs::read(path).map_err(|source| GrpcTlsConfigError::ReadFile {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn optional_path_pair(
+    cert_env: &'static str,
+    key_env: &'static str,
+) -> Result<Option<(PathBuf, PathBuf)>, GrpcTlsConfigError> {
+    match (std::env::var_os(cert_env), std::env::var_os(key_env)) {
+        (None, None) => Ok(None),
+        (Some(cert), Some(key)) => Ok(Some((PathBuf::from(cert), PathBuf::from(key)))),
+        _ => Err(GrpcTlsConfigError::MissingPair { cert_env, key_env }),
+    }
+}
 
 #[derive(Debug)]
 pub enum WorkspaceServiceError {
@@ -85,6 +336,7 @@ pub type WorkspaceServiceResult<T> = std::result::Result<T, WorkspaceServiceErro
 #[derive(Debug)]
 pub enum GrpcWorkspaceClientError {
     Transport(tonic::transport::Error),
+    TlsConfig(GrpcTlsConfigError),
     Status(Box<tonic::Status>),
     MissingField(&'static str),
     Runtime(grm_rs::GrmError),
@@ -95,6 +347,7 @@ impl fmt::Display for GrpcWorkspaceClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transport(error) => write!(f, "gRPC transport error: {error}"),
+            Self::TlsConfig(error) => write!(f, "{error}"),
             Self::Status(status) => write!(f, "gRPC service error: {status}"),
             Self::MissingField(field) => write!(f, "gRPC response missing required field {field}"),
             Self::Runtime(error) => write!(f, "{error}"),
@@ -109,6 +362,7 @@ impl Error for GrpcWorkspaceClientError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Transport(error) => Some(error),
+            Self::TlsConfig(error) => Some(error),
             Self::Status(status) => Some(status),
             Self::Runtime(error) => Some(error),
             Self::MissingField(_) => None,
@@ -166,13 +420,22 @@ impl GrpcWorkspaceClient {
         mode: GrpcWorkspaceMode,
         format: DurabilityFormat,
     ) -> GrpcWorkspaceClientResult<Self> {
+        Self::connect_with_format_and_tls(endpoint, workspace_id, mode, format, None).await
+    }
+
+    pub async fn connect_with_format_and_tls(
+        endpoint: impl Into<String>,
+        workspace_id: impl Into<String>,
+        mode: GrpcWorkspaceMode,
+        format: DurabilityFormat,
+        tls: Option<GrpcClientTlsOptions>,
+    ) -> GrpcWorkspaceClientResult<Self> {
         let endpoint = endpoint.into();
         let workspace = proto::WorkspaceRef {
             id: workspace_id.into(),
         };
-        let mut client = proto::grm_service_client::GrmServiceClient::connect(endpoint.clone())
-            .await
-            .map_err(GrpcWorkspaceClientError::Transport)?;
+        let channel = grpc_channel(endpoint.clone(), tls.as_ref()).await?;
+        let mut client = proto::grm_service_client::GrmServiceClient::new(channel);
         let format = proto_durability_format_code(format);
         let handle = match mode {
             GrpcWorkspaceMode::Create => client

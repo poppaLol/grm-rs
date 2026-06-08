@@ -2,7 +2,7 @@
 
 This is an insecure Docker-hostable demo for the local GRM gRPC workspace shell.
 It is intended for local development, examples, and adapter integration tests.
-It is not a production daemon and does not provide TLS, authentication,
+It is not the TLS-capable benchmark line and does not provide authentication,
 authorization, hosted durability, or multi-writer coordination.
 
 The container runs the `grm-service-api` `local_workspace_server` example:
@@ -35,7 +35,7 @@ the current local shell and return explicit unsupported errors.
 Current non-goals:
 
 - production daemon lifecycle
-- TLS/mTLS or authentication
+- TLS/mTLS in the Docker Compose demo, or authentication
 - authorization, quotas, request limits, and audit
 - hosted durability or multi-writer guarantees
 - direct RPC-family parity outside `ExecuteWorkspace`
@@ -76,6 +76,28 @@ The example creates or opens the `docker-demo` workspace through the gRPC
 service, defines schema, creates nodes and edges, performs finds and batch
 operations, closes the workspace, reopens it, and verifies data is still present.
 
+## TLS-Capable Local Service
+
+The `local_workspace_server` example can run with local TLS certificate files
+outside the Docker Compose demo:
+
+```bash
+GRM_SERVICE_TLS_SERVER_CERT=/tmp/grm-tls/server.crt \
+GRM_SERVICE_TLS_SERVER_KEY=/tmp/grm-tls/server.key \
+GRM_SERVICE_TLS_CLIENT_CA_CERT=/tmp/grm-tls/ca.crt \
+cargo run -p grm-service-api --example local_workspace_server -- \
+  127.0.0.1:50051 /tmp/grm-service-workspaces
+```
+
+Rust, CLI, Python, and MCP clients trust the local CA certificate with
+`GRM_SERVICE_TLS_CA_CERT=/tmp/grm-tls/ca.crt` and
+`GRM_SERVICE_TLS_DOMAIN_NAME=localhost`, and authenticate with
+`GRM_SERVICE_TLS_CLIENT_CERT` plus `GRM_SERVICE_TLS_CLIENT_KEY`. Python can pass
+the corresponding `tls_ca_cert=`, `tls_domain_name=`, `tls_client_cert=`, and
+`tls_client_key=` parameters to `ServiceSession`. This proves local
+certificate-based transport authentication only; it is not RBAC, production
+certificate lifecycle, hosted durability, or multi-writer coordination.
+
 ## Optional grpcurl Smoke Scripts
 
 The branch includes two checked smoke scripts that run `grpcurl` through the
@@ -102,5 +124,5 @@ operation records, and `OpenWorkspace` replays complete records after the
 checkpoint. Binary workspace files are the default; JSON is explicit opt-in.
 
 Before using this shape beyond local development, GRM still needs explicit
-service lifecycle, TLS/auth, authorization, limits, audit, recovery, and
-coordination design.
+service lifecycle, auth, authorization, limits, audit, recovery, production
+certificate lifecycle, and coordination design.

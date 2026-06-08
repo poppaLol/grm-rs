@@ -92,7 +92,22 @@ cargo bench --bench grm_vs_sqlite embedded_traversal_breakdown -- --noplot
 The local gRPC benchmark starts an insecure server on `127.0.0.1:0` and uses a
 Criterion/tempfile-created workspace root. It is only a local transport overhead
 and workspace demo line. It is not a credible deployable service baseline and
-must not be used for public service/database comparison claims before TLS exists.
+must not be used for public service/database comparison claims.
+
+### Local TLS gRPC Workspace
+
+The service API supports a TLS-capable local workspace path using server
+certificate/key files and a client CA certificate plus expected domain name:
+
+- server: `GRM_SERVICE_TLS_SERVER_CERT`, `GRM_SERVICE_TLS_SERVER_KEY`
+- server client trust: `GRM_SERVICE_TLS_CLIENT_CA_CERT`
+- clients: `GRM_SERVICE_TLS_CA_CERT`, `GRM_SERVICE_TLS_DOMAIN_NAME`,
+  `GRM_SERVICE_TLS_CLIENT_CERT`, `GRM_SERVICE_TLS_CLIENT_KEY`
+
+Tests generate throwaway localhost certificate material in tempdirs. Do not
+commit private keys or long-lived local CA material to the repository. The
+credible secured service line uses mutual TLS so both server and client are
+authenticated. Insecure gRPC remains local transport-overhead evidence only.
 
 The local gRPC create/update benchmarks use custom timing. Each measured
 iteration creates a temp workspace, defines schema, and populates the target

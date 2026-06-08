@@ -17,7 +17,7 @@ use grm_rs::{
     RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState,
     StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
 };
-use grm_service_api::{GrpcWorkspaceClient, GrpcWorkspaceMode};
+use grm_service_api::{GrpcClientTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceMode};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
@@ -620,26 +620,64 @@ impl PySession {
 #[pymethods]
 impl PyServiceSession {
     #[new]
-    #[pyo3(signature = (*, endpoint, workspace_ref, mode="open", workspace_format="binary"))]
+    #[pyo3(signature = (*, endpoint, workspace_ref, mode="open", workspace_format="binary", tls_ca_cert=None, tls_domain_name=None, tls_client_cert=None, tls_client_key=None))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "PyO3 exposes the explicit keyword-only service and TLS configuration surface"
+    )]
     fn new(
         _py: Python<'_>,
         endpoint: &str,
         workspace_ref: &str,
         mode: &str,
         workspace_format: &str,
+        tls_ca_cert: Option<&str>,
+        tls_domain_name: Option<&str>,
+        tls_client_cert: Option<&str>,
+        tls_client_key: Option<&str>,
     ) -> PyResult<Self> {
         let mode = parse_service_mode(mode)?;
         let format = PyServiceWorkspaceFormat::parse(workspace_format)?;
+        let tls = match tls_ca_cert {
+            Some(path) => {
+                let mut options = GrpcClientTlsOptions::new(path);
+                if let Some(domain_name) = tls_domain_name {
+                    options = options.with_domain_name(domain_name);
+                }
+                match (tls_client_cert, tls_client_key) {
+                    (Some(cert), Some(key)) => {
+                        options = options.with_identity(cert, key);
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err(PyTypeError::new_err(
+                            "tls_client_cert and tls_client_key must both be provided",
+                        ));
+                    }
+                }
+                Some(options)
+            }
+            None if tls_domain_name.is_some()
+                || tls_client_cert.is_some()
+                || tls_client_key.is_some() =>
+            {
+                return Err(PyTypeError::new_err(
+                    "tls_ca_cert is required when explicit TLS options are provided",
+                ));
+            }
+            None => GrpcClientTlsOptions::from_env().map_err(|err| grm_err(err.into()))?,
+        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
         let client = runtime
-            .block_on(GrpcWorkspaceClient::connect_with_format(
+            .block_on(GrpcWorkspaceClient::connect_with_format_and_tls(
                 endpoint.to_string(),
                 workspace_ref.to_string(),
                 mode,
                 format.into(),
+                tls,
             ))
             .map_err(service_err)?;
         Ok(Self { runtime, client })
@@ -1878,6 +1916,10 @@ mod tests {
                 "python-service-smoke",
                 "create",
                 "binary",
+                None,
+                None,
+                None,
+                None,
             )
             .unwrap();
             let field = PyDict::new_bound(py);

@@ -139,7 +139,9 @@ impl GrmMcpServer {
                 ));
             }
         };
-        let service = ServiceMcpBackend::connect(endpoint, workspace_ref, mode, format).await?;
+        let tls = grm_service_api::GrpcClientTlsOptions::from_env().map_err(GrmError::from)?;
+        let service =
+            ServiceMcpBackend::connect(endpoint, workspace_ref, mode, format, tls).await?;
         Ok(Self {
             state: Arc::new(Mutex::new(SessionState::new())),
             neo4j: None,

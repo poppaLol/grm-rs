@@ -37,7 +37,13 @@ that exists today.
 
 The third stage should not be treated as public evidence until GRM has a
 TLS-capable service line. Insecure gRPC measurements remain useful, but only as
-local/demo transport overhead measurements.
+local/demo transport overhead measurements. The local TLS line uses generated
+or externally supplied certificate material through `GRM_SERVICE_TLS_SERVER_CERT`
+and `GRM_SERVICE_TLS_SERVER_KEY` on the server, with
+`GRM_SERVICE_TLS_CLIENT_CA_CERT` requiring client authentication. Clients use
+`GRM_SERVICE_TLS_CA_CERT`, `GRM_SERVICE_TLS_DOMAIN_NAME`,
+`GRM_SERVICE_TLS_CLIENT_CERT`, and `GRM_SERVICE_TLS_CLIENT_KEY`. Tests must
+generate short-lived private keys outside the repository.
 
 ## Benchmark Lines
 
@@ -47,7 +53,7 @@ Use separate benchmark lines so results do not blur different deployment shapes.
 | --- | --- | --- |
 | GRM embedded in-memory | Engine floor and local runtime baseline | Useful for engine claims, not service deployment claims |
 | GRM local gRPC insecure | Local transport overhead and demo behavior | Useful for development notes only |
-| GRM local gRPC TLS | Credible GRM service baseline | Required before public client/server database comparisons |
+| GRM local gRPC mutual TLS | Credible secured GRM service baseline | Required before public client/server database comparisons |
 | SQLite local | Embedded SQL baseline | Fair embedded/local comparison |
 | Postgres Docker | SQL client/server baseline | Fair only against GRM TLS service line |
 | Mongo Docker | Document client/server baseline | Fair only against GRM TLS service line |
