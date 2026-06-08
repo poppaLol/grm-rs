@@ -168,10 +168,10 @@ import/export remain local-only or unsupported in service CLI mode.
 `GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; set it to `json` only when
 you explicitly want JSON workspace files. The local Docker service stores these
 workspace files under its configured workspace root; this is checked local
-single-writer persistence behavior, not a hosted durability, auth/TLS, or
-multi-writer guarantee. See [Local Durability Target Class](local-durability-target.md)
-for the exact create/open/reopen, checkpoint, autocommit, and unsupported-case
-scope.
+single-writer persistence behavior, not a hosted durability, RBAC/authorization,
+production certificate-lifecycle, or multi-writer guarantee. See
+[Local Durability Target Class](local-durability-target.md) for the exact
+create/open/reopen, checkpoint, autocommit, and unsupported-case scope.
 
 ## Python Service Mode
 

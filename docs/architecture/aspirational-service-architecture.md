@@ -178,11 +178,15 @@ GRM is currently converging on a service-hostable runtime core:
 - Local durability work has established target-class documentation plus focused
   transaction-delta WAL/replay evidence, but claims must remain grounded in
   tested single-writer local filesystem behavior.
+- The local service path supports server-authenticated TLS and optional mutual
+  TLS across Rust, CLI, Python, and MCP. Shared service-boundary tests cover
+  trusted-client success and missing or untrusted client-certificate rejection;
+  RBAC and production certificate lifecycle remain separate concerns.
 - The active near-term proof has shifted from service-backed workspace parity
-  to benchmark-driven engine capability: establish trustworthy embedded and
-  local insecure gRPC baselines, add a narrow TLS service line before public
-  service/database comparisons, and choose derived acceleration targets from
-  profile and benchmark evidence.
+  to benchmark-driven engine capability: extend the established embedded and
+  local insecure gRPC baselines with a distinct TLS/mTLS service measurement,
+  establish repeatable provenance, and choose derived acceleration targets from
+  larger-dataset profile and benchmark evidence.
 - Neo4j MCP mode is useful for dogfooding graph memory and visualization, but
   it is not full in-memory backend parity.
 - `grm-service-api` is a split-ready protobuf contract crate, not a daemon or
@@ -365,16 +369,15 @@ Progress to avoid:
 
 ## Near-Term Sequence
 
-1. Use the completed service-backed workspace path as a measurement surface:
-   benchmark embedded GRM and local insecure gRPC separately across create,
-   update, find, traversal, explain/profile, persistence, checkpoint, and replay
-   shapes.
-2. Investigate the measured traversal/profile and persistence pain points before
-   committing to property indexes, adjacency/projection caches, disk-saved
-   derived indexes, or GraphBLAS-style execution.
-3. Add a narrow TLS-capable service path before public service/database
-   comparison claims; keep auth/RBAC, certificate lifecycle, hosted durability,
-   and multi-writer coordination as separate future concerns.
+1. Measure the completed TLS/mTLS service path as a distinct benchmark line and
+   record machine, toolchain, commit, dataset, persistence, and target-isolation
+   provenance.
+2. Resume evidence-led write-scaling, bulk-insert, and transport-overhead
+   investigations; revisit persistence only if larger datasets justify it.
+3. Run public service/database comparators only against the secured GRM line in
+   repeatable isolated environments; keep RBAC/authorization, production
+   certificate lifecycle, hosted durability, and multi-writer coordination as
+   separate future concerns.
 4. Make any selected acceleration derived, rebuildable, and visible through
    explain/profile or backend-status style orientation.
 5. Continue adapter/runtime cleanup where it reduces drift, but avoid using

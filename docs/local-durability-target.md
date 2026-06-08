@@ -124,8 +124,8 @@ overstated as broader product guarantees:
 The current local durability target does not include:
 
 - hosted or cloud durability
-- TLS, authentication, authorization, quotas, audit, or service lifecycle
-  management
+- RBAC or per-operation authorization, quotas, audit, production certificate
+  lifecycle, or service lifecycle management
 - multi-writer coordination
 - cross-process file locking or leases
 - distributed consensus, replication, failover, or clustering

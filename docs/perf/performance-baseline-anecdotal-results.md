@@ -119,35 +119,36 @@ The artifacts cover current local Criterion benchmark groups for:
   read groups
 
 Local insecure gRPC remains a local transport-overhead and demo line only. It is
-not a credible deployable service baseline until a TLS-capable GRM service line
-exists.
+not a credible deployable service baseline. The implemented TLS/mTLS path still
+needs its own repeatable, provenance-backed measurement.
 
 ## Observed Pain Points
 
 | Priority | Area | Anecdotal signal | Interpretation |
 | --- | --- | --- | --- |
 | Done | Selective traversal and `node.find` profile scaling | Initial artifacts showed embedded selective traversal moving from about `13 us` at 1k to about `84 us` at 10k, and embedded `profile_node_find` from about `63 us` at 1k to about `171 us` at 10k. WorkSlice 226 diagnostics now show warmed raw graph execution at about `3.07 us` for 1k and `3.22 us` for 10k after the candidate-selection fix. | Cause identified and narrow fix applied: candidate selection was materializing label candidates before the selective label+property index path. Profile overhead is mostly fixed introspection/reporting. Traversal acceleration should wait. |
-| Partially done | Binary workspace reopen/checkpoint | Binary reopen was about `7.6 ms`; binary checkpoint was about `4.3 ms`; 7-entry autocommit replay was about `111 us`. WorkSlice 227 diagnostics now show post-change AC-power binary reopen at about `4.61 ms`, full binary checkpoint at about `5.60 ms`, and 7-entry replay at about `84 us`. | Reopen cause was narrowed to in-memory deserialize/decode plus rebuildable derived index work; eager property-index rebuild was deferred safely. Filesystem read and workspace setup are not dominant for the local cached 1k shape. Checkpoint remains partly open: source snapshot/projection plus atomic write/sync/backup behavior dominate. Disk-saved derived indexes are not justified yet. |
-| 3 | Embedded write operation scaling | Populated-state create/update node and edge operations grew from roughly `12-19 us` at 1k to roughly `29-38 us` at 10k. | This suggests possible size-sensitive work, perhaps index invalidation, validation, lookup, or derived structure maintenance. Investigate after persistence unless the product sequence switches to TLS first. |
+| Done for current evidence | Binary workspace reopen/checkpoint | Binary reopen was about `7.6 ms`; binary checkpoint was about `4.3 ms`; 7-entry autocommit replay was about `111 us`. WorkSlice 227 diagnostics now show post-change AC-power binary reopen at about `4.61 ms`, full binary checkpoint at about `5.60 ms`, and 7-entry replay at about `84 us`. | Reopen cause was narrowed to in-memory deserialize/decode plus rebuildable derived index work; eager property-index rebuild was deferred safely. Filesystem read and workspace setup are not dominant for the local cached 1k shape. Checkpoint optimization is parked: source snapshot/projection plus atomic write/sync/backup behavior dominate. Disk-saved derived indexes are not justified by this evidence. |
+| 3 | Embedded write operation scaling | Populated-state create/update node and edge operations grew from roughly `12-19 us` at 1k to roughly `29-38 us` at 10k. | This suggests possible size-sensitive work, perhaps index invalidation, validation, lookup, or derived structure maintenance. This is the next engine pain-point investigation after establishing the TLS benchmark line and provenance. |
 | 4 | Bulk insert versus SQLite | At 1k, GRM bulk insert was about `5.6 ms`; SQLite in-memory transaction was about `2.7 ms`. | Expected comparator weakness: GRM does graph-specific bookkeeping that pays for fast graph reads. Understand the cost, but do not optimize by weakening graph correctness or derived-structure invariants. |
-| 5 | Local insecure gRPC per-call overhead | Local insecure gRPC calls generally landed around `115-225 us`, while embedded equivalents were often sub-microsecond to tens of microseconds. | Expected transport/workspace overhead. Keep as a local overhead baseline. This may matter for batching and service ergonomics, but public service comparisons wait for TLS. |
+| 5 | Local insecure gRPC per-call overhead | Local insecure gRPC calls generally landed around `115-225 us`, while embedded equivalents were often sub-microsecond to tens of microseconds. | Expected transport/workspace overhead. Keep as a local overhead baseline. This may matter for batching and service ergonomics, but public service comparisons require the separate measured TLS/mTLS line and repeatable provenance. |
 
 ## Priority Order
 
-The agreed sequence after WorkSlice 227 is:
+With WorkSlice 250 complete, the sequence is:
 
-1. Move next to the narrow TLS-capable gRPC service slice. This is the product
-   sequencing choice, so public client/server comparator claims can eventually
-   rest on a credible secured GRM service line.
-2. Circle back to performance after the TLS slice, starting with embedded write
-   operation scaling unless new TLS evidence changes the order.
-3. Bulk insert cost versus SQLite.
-4. Local insecure gRPC per-call overhead.
-5. Larger-dataset persistence follow-up only if reopen/checkpoint latency
-   remains important after the lazy property-index rebuild change.
+1. Add a distinct local TLS/mTLS Criterion line and record repeatable result
+   provenance; the transport path now exists, but its performance is not yet a
+   measured public baseline.
+2. Investigate embedded write operation scaling.
+3. Understand bulk insert cost versus SQLite.
+4. Understand local insecure gRPC per-call overhead and batching implications.
+5. Revisit persistence only if larger-dataset, repeatable evidence shows reopen
+   or checkpoint latency remains material after lazy property-index rebuild.
+6. Run public client/server comparators only in isolated disposable environments
+   against the TLS/mTLS GRM line.
 
-TLS remains required before public client/server comparator claims. The local
-performance threads are parked, not abandoned.
+TLS capability alone is not sufficient for public comparator claims. The
+secured line still needs repeatable measurement and provenance.
 
 ## Safe Claims
 
@@ -159,12 +160,14 @@ Safe internal claim:
 - WorkSlice 227 identified binary reopen cost centers, applied lazy
   property-index rebuild for persisted graph loads, and found disk-saved derived
   index contents unjustified for the current local 1k evidence.
+- WorkSlice 250 added and tested the narrow TLS/mTLS transport path across the
+  shared service boundary; TLS performance has not yet been characterized.
 
 Unsupported claims:
 
 - GRM service performance against Postgres, Mongo, Neo4j, or other client/server
   databases.
-- Hosted durability, multi-writer behavior, production security, or TLS
-  overhead.
+- Hosted durability, multi-writer behavior, production security, or measured
+  TLS overhead before the secured benchmark line is run.
 - GraphBLAS, traversal acceleration, or public service/database performance
   claims from this local embedded diagnostic.

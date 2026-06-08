@@ -25,25 +25,24 @@ workspace roots, and isolated Docker volumes.
 
 ## Sequence
 
-Benchmarking should proceed in three stages.
+Benchmarking proceeds in three stages.
 
-1. Establish the current baseline.
-2. Add a narrow TLS-capable service path.
-3. Run public client/server comparator benchmarks.
+1. Establish the embedded and local insecure gRPC baseline. Completed.
+2. Add and verify a narrow TLS/mTLS-capable service path. Completed.
+3. Measure the distinct TLS/mTLS service line in a repeatable, isolated
+   environment before running or publishing client/server comparator
+   benchmarks. Next.
 
-The first stage can start immediately. It should measure the embedded engine and
-local insecure gRPC service path so the project has before-numbers for the code
-that exists today.
-
-The third stage should not be treated as public evidence until GRM has a
-TLS-capable service line. Insecure gRPC measurements remain useful, but only as
-local/demo transport overhead measurements. The local TLS line uses generated
-or externally supplied certificate material through `GRM_SERVICE_TLS_SERVER_CERT`
-and `GRM_SERVICE_TLS_SERVER_KEY` on the server, with
+Insecure gRPC measurements remain useful only as local/demo transport overhead
+measurements. The completed local TLS path uses generated or externally supplied
+certificate material through `GRM_SERVICE_TLS_SERVER_CERT` and
+`GRM_SERVICE_TLS_SERVER_KEY` on the server, with
 `GRM_SERVICE_TLS_CLIENT_CA_CERT` requiring client authentication. Clients use
 `GRM_SERVICE_TLS_CA_CERT`, `GRM_SERVICE_TLS_DOMAIN_NAME`,
 `GRM_SERVICE_TLS_CLIENT_CERT`, and `GRM_SERVICE_TLS_CLIENT_KEY`. Tests must
-generate short-lived private keys outside the repository.
+generate short-lived private keys outside the repository. Public comparator
+evidence additionally requires repeatable machine, toolchain, commit, dataset,
+TLS mode, persistence format, and disposable-target provenance.
 
 ## Benchmark Lines
 
