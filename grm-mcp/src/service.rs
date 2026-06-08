@@ -6,7 +6,7 @@ use grm_rs::{
     Result as GrmResult, SessionBatchEndpoint, SessionBatchOp, SessionBatchParams,
     SessionBatchResponse, TraversalDirection, TraversalReturn,
 };
-use grm_service_api::proto;
+use grm_service_api::{GrpcClientTlsOptions, grpc_channel, proto};
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
 use tonic::transport::Channel;
@@ -23,6 +23,8 @@ pub(crate) struct ServiceMcpBackend {
     workspace: proto::WorkspaceRef,
     handle: proto::WorkspaceHandle,
     format: ServiceWorkspaceFormat,
+    tls_enabled: bool,
+    client_certificate_configured: bool,
     client: Arc<Mutex<proto::grm_service_client::GrmServiceClient<Channel>>>,
 }
 
@@ -82,11 +84,16 @@ impl ServiceMcpBackend {
         workspace_id: String,
         mode: ServiceWorkspaceMode,
         format: ServiceWorkspaceFormat,
+        tls: Option<GrpcClientTlsOptions>,
     ) -> GrmResult<Self> {
+        let tls_enabled = tls.is_some();
+        let client_certificate_configured =
+            tls.as_ref().is_some_and(GrpcClientTlsOptions::has_identity);
         let workspace = proto::WorkspaceRef { id: workspace_id };
-        let mut client = proto::grm_service_client::GrmServiceClient::connect(endpoint.clone())
+        let channel = grpc_channel(endpoint.clone(), tls.as_ref())
             .await
-            .map_err(service_transport_error)?;
+            .map_err(service_client_error)?;
+        let mut client = proto::grm_service_client::GrmServiceClient::new(channel);
         let format_code = format.as_proto_code();
         let handle = match mode {
             ServiceWorkspaceMode::Create => client
@@ -117,6 +124,8 @@ impl ServiceMcpBackend {
             workspace,
             handle,
             format,
+            tls_enabled,
+            client_certificate_configured,
             client: Arc::new(Mutex::new(client)),
         })
     }
@@ -130,6 +139,13 @@ impl ServiceMcpBackend {
                 "workspace_ref": self.workspace.id,
                 "workspace_handle": self.handle.id,
                 "workspace_format": self.format.as_str(),
+                "transport": if self.client_certificate_configured {
+                    "tls-with-client-certificate"
+                } else if self.tls_enabled {
+                    "tls"
+                } else {
+                    "insecure-local-grpc"
+                },
                 "workspace_scope": "ExecuteWorkspace",
                 "note": "MCP is using the GRM gRPC workspace service as the persisted operational-memory layer for the proven schema/CRUD/node.find traversal/find/batch subset.",
                 "supported_tools": [
@@ -157,7 +173,7 @@ impl ServiceMcpBackend {
             },
             "recommended_startup_flow": [
                 "Start the gRPC workspace service with a configured local workspace root.",
-                "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files.",
+                "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files. Set GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME to trust a local TLS service. Set GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when the service requires mutual TLS.",
                 "Call grm_schema_list to verify the workspace schema before writing.",
                 "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results. grm_explain and grm_profile support typed node.find and edge.find commands through ExecuteWorkspace."
             ]
@@ -979,6 +995,6 @@ fn service_status_error(status: tonic::Status) -> GrmError {
     GrmError::Backend(format!("gRPC service error: {status}"))
 }
 
-fn service_transport_error(error: tonic::transport::Error) -> GrmError {
+fn service_client_error(error: grm_service_api::GrpcWorkspaceClientError) -> GrmError {
     GrmError::Backend(format!("gRPC service connection failed: {error}"))
 }

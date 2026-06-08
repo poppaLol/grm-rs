@@ -32,6 +32,34 @@ The server owns one in-memory `SessionState` per process. Use
 mutations persisted after each write. Use `--export-json <path>` if you also
 want a readable interchange graph file updated after successful mutations.
 
+### gRPC Workspace Service Mode
+
+To route supported MCP tools through the GRM-owned gRPC workspace service, run:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=mcp-demo \
+GRM_SERVICE_WORKSPACE_MODE=create \
+grm-mcp
+```
+
+For a local TLS service, use an `https://` endpoint and set:
+
+```bash
+GRM_SERVICE_TLS_CA_CERT=/tmp/grm-tls/ca.crt
+GRM_SERVICE_TLS_DOMAIN_NAME=localhost
+GRM_SERVICE_TLS_CLIENT_CERT=/tmp/grm-tls/client.crt
+GRM_SERVICE_TLS_CLIENT_KEY=/tmp/grm-tls/client.key
+```
+
+MCP service mode uses workspace-scoped `ExecuteWorkspace` for schema, node,
+edge, traversal-capable `grm_node_find`, `grm_edge_find`, batch,
+`grm_explain`, and `grm_profile`. Direct unscoped service RPC families,
+import/export, free-form query parity, RBAC, production certificate
+lifecycle, hosted durability, and multi-writer coordination are not provided by
+this MCP service path.
+
 ### Neo4j MCP Mode
 
 To let agents write directly into a live Neo4j graph, run `grm-mcp` with:

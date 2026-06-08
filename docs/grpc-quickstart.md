@@ -1,8 +1,9 @@
 # GRM gRPC Docker Quick Start
 
-This quick start covers the local Docker-hosted gRPC workspace shell that has
-been smoke-tested in this branch. It is an insecure local demo, not a production
-daemon.
+This quick start covers the local gRPC workspace shell. Docker Compose remains
+an insecure local demo. The same local server example can also run with TLS from
+self-signed or local-CA certificate files for developer smoke tests and the
+TLS-capable benchmark line.
 
 ## Start The Service
 
@@ -15,6 +16,83 @@ files in the `grm-workspaces` Docker volume. Checked service-backed clients use
 binary workspace files by default; JSON remains available when a client
 explicitly requests `DURABILITY_FORMAT_JSON`.
 
+## Local TLS Service
+
+Generate throwaway localhost certificate material outside the repository. Use a
+local CA certificate to sign the server certificate:
+
+```bash
+mkdir -p /tmp/grm-tls
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /tmp/grm-tls/ca.key \
+  -out /tmp/grm-tls/ca.crt \
+  -days 1 \
+  -subj "/CN=GRM Local CA" \
+  -addext basicConstraints=critical,CA:TRUE \
+  -addext keyUsage=critical,keyCertSign,cRLSign
+
+openssl req -newkey rsa:2048 -nodes \
+  -keyout /tmp/grm-tls/server.key \
+  -out /tmp/grm-tls/server.csr \
+  -subj /CN=localhost
+
+printf "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n" \
+  > /tmp/grm-tls/server.ext
+
+openssl x509 -req \
+  -in /tmp/grm-tls/server.csr \
+  -CA /tmp/grm-tls/ca.crt \
+  -CAkey /tmp/grm-tls/ca.key \
+  -CAcreateserial \
+  -out /tmp/grm-tls/server.crt \
+  -days 1 \
+  -sha256 \
+  -extfile /tmp/grm-tls/server.ext
+
+openssl req -newkey rsa:2048 -nodes \
+  -keyout /tmp/grm-tls/client.key \
+  -out /tmp/grm-tls/client.csr \
+  -subj /CN=grm-local-client
+
+printf "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n" \
+  > /tmp/grm-tls/client.ext
+
+openssl x509 -req \
+  -in /tmp/grm-tls/client.csr \
+  -CA /tmp/grm-tls/ca.crt \
+  -CAkey /tmp/grm-tls/ca.key \
+  -CAcreateserial \
+  -out /tmp/grm-tls/client.crt \
+  -days 1 \
+  -sha256 \
+  -extfile /tmp/grm-tls/client.ext
+```
+
+Start the local workspace server with mutual TLS:
+
+```bash
+GRM_SERVICE_TLS_SERVER_CERT=/tmp/grm-tls/server.crt \
+GRM_SERVICE_TLS_SERVER_KEY=/tmp/grm-tls/server.key \
+GRM_SERVICE_TLS_CLIENT_CA_CERT=/tmp/grm-tls/ca.crt \
+cargo run -p grm-service-api --example local_workspace_server -- \
+  127.0.0.1:50051 /tmp/grm-service-workspaces
+```
+
+Clients trust the local CA and present their identity with:
+
+```bash
+export GRM_SERVICE_TLS_CA_CERT=/tmp/grm-tls/ca.crt
+export GRM_SERVICE_TLS_DOMAIN_NAME=localhost
+export GRM_SERVICE_TLS_CLIENT_CERT=/tmp/grm-tls/client.crt
+export GRM_SERVICE_TLS_CLIENT_KEY=/tmp/grm-tls/client.key
+```
+
+Omit the server's `GRM_SERVICE_TLS_CLIENT_CA_CERT` and the client's identity
+variables for server-authenticated TLS without client authentication. The
+mutual-TLS setup authenticates certificate holders at the transport boundary;
+it does not provide RBAC, per-operation authorization, certificate rotation,
+hosted durability, or multi-writer coordination.
+
 ## Run The Checked Rust Smoke Test
 
 In another shell:
@@ -22,6 +100,17 @@ In another shell:
 ```bash
 cargo run -p grm-service-api --example local_workspace_client -- \
   http://127.0.0.1:50051 quickstart-demo
+```
+
+For TLS, use an `https://` endpoint and the client trust variables above:
+
+```bash
+GRM_SERVICE_TLS_CA_CERT=/tmp/grm-tls/ca.crt \
+GRM_SERVICE_TLS_DOMAIN_NAME=localhost \
+GRM_SERVICE_TLS_CLIENT_CERT=/tmp/grm-tls/client.crt \
+GRM_SERVICE_TLS_CLIENT_KEY=/tmp/grm-tls/client.key \
+cargo run -p grm-service-api --example local_workspace_client -- \
+  https://127.0.0.1:50051 quickstart-demo
 ```
 
 This is the primary checked client path. It creates or opens a workspace,
@@ -44,9 +133,13 @@ service, configure the backend:
 
 ```bash
 GRM_BACKEND=grpc \
-GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_SERVICE_ENDPOINT=https://127.0.0.1:50051 \
 GRM_WORKSPACE_REF=quickstart-cli \
 GRM_SERVICE_WORKSPACE_MODE=create \
+GRM_SERVICE_TLS_CA_CERT=/tmp/grm-tls/ca.crt \
+GRM_SERVICE_TLS_DOMAIN_NAME=localhost \
+GRM_SERVICE_TLS_CLIENT_CERT=/tmp/grm-tls/client.crt \
+GRM_SERVICE_TLS_CLIENT_KEY=/tmp/grm-tls/client.key \
 cargo run --bin grm -- session
 ```
 
@@ -89,9 +182,13 @@ The Python package keeps the embedded `Session` API. It also exposes
 from grm_rs import ServiceSession
 
 session = ServiceSession(
-    endpoint="http://127.0.0.1:50051",
+    endpoint="https://127.0.0.1:50051",
     workspace_ref="quickstart-python",
     mode="create",
+    tls_ca_cert="/tmp/grm-tls/ca.crt",
+    tls_domain_name="localhost",
+    tls_client_cert="/tmp/grm-tls/client.crt",
+    tls_client_key="/tmp/grm-tls/client.key",
 )
 session.model_create("User", "userId", [{"name": "name", "type": "string", "required": True}])
 session.node_create("User", {"name": "Ada"})
@@ -100,6 +197,20 @@ assert len(session.node_find("User", {"name": "Ada"})) == 1
 
 `ServiceSession(..., workspace_format="binary")` is the default. Use
 `workspace_format="json"` explicitly for JSON workspace files.
+
+MCP service mode uses the same client trust variables:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=https://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=quickstart-mcp \
+GRM_SERVICE_WORKSPACE_MODE=create \
+GRM_SERVICE_TLS_CA_CERT=/tmp/grm-tls/ca.crt \
+GRM_SERVICE_TLS_DOMAIN_NAME=localhost \
+GRM_SERVICE_TLS_CLIENT_CERT=/tmp/grm-tls/client.crt \
+GRM_SERVICE_TLS_CLIENT_KEY=/tmp/grm-tls/client.key \
+cargo run -p grm-mcp
+```
 
 ## Optional grpcurl Smoke Scripts
 
@@ -138,5 +249,8 @@ docker compose down -v
   shell.
 - The Docker demo does not provide TLS, authentication, hosted durability, or
   multi-writer coordination.
+- The local server example supports TLS for local certificate material through
+  `GRM_SERVICE_TLS_SERVER_CERT` and `GRM_SERVICE_TLS_SERVER_KEY`, and mutual TLS
+  through `GRM_SERVICE_TLS_CLIENT_CA_CERT`.
 - The current service-backed durability target is single-writer local filesystem
   behavior with binary workspace files by default; JSON is explicit opt-in.

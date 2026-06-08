@@ -1,4 +1,4 @@
-use grm_service_api::proto;
+use grm_service_api::{GrpcClientTlsOptions, grpc_channel, proto};
 
 type GrmClient = proto::grm_service_client::GrmServiceClient<tonic::transport::Channel>;
 
@@ -11,7 +11,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let workspace_id = args.next().unwrap_or_else(|| "demo-workspace".into());
     let workspace = proto::WorkspaceRef { id: workspace_id };
 
-    let mut client = proto::grm_service_client::GrmServiceClient::connect(endpoint).await?;
+    let tls = GrpcClientTlsOptions::from_env()?;
+    let channel = grpc_channel(endpoint, tls.as_ref()).await?;
+    let mut client = proto::grm_service_client::GrmServiceClient::new(channel);
 
     let unsupported = client
         .schema_list(proto::SchemaListRequest {})

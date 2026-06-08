@@ -172,10 +172,30 @@ reopened = ServiceSession(
 assert len(reopened.node_find("User", {"name": "Ada"})) == 1
 ```
 
+For a local TLS service, use an `https://` endpoint and either pass trust
+material explicitly:
+
+```python
+session = ServiceSession(
+    endpoint="https://127.0.0.1:50051",
+    workspace_ref="python-demo",
+    mode="create",
+    tls_ca_cert="/tmp/grm-tls/ca.crt",
+    tls_domain_name="localhost",
+    tls_client_cert="/tmp/grm-tls/client.crt",
+    tls_client_key="/tmp/grm-tls/client.key",
+)
+```
+
+or set `GRM_SERVICE_TLS_CA_CERT`, `GRM_SERVICE_TLS_DOMAIN_NAME`,
+`GRM_SERVICE_TLS_CLIENT_CERT`, and `GRM_SERVICE_TLS_CLIENT_KEY` in the
+environment before constructing `ServiceSession`. Client certificate/key
+parameters are paired and are required when the server enforces mutual TLS.
+
 Service workspaces use binary persistence by default. Pass
 `workspace_format="json"` explicitly when you need JSON workspace files. The
 Python service path supports typed traversal-capable `node_find`,
 `explain_node_find`, and `profile_node_find` through workspace-scoped service
 requests. Direct unscoped service RPCs, free-form query parity, import/export,
-hosted durability, auth/TLS, and multi-writer coordination are not provided by
-this Python service path.
+hosted durability, RBAC, production certificate lifecycle, and multi-writer
+coordination are not provided by this Python service path.

@@ -10,7 +10,9 @@ use grm_rs::{
     NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, ProfileRequest,
     QueryRequest, RuntimeNodeModel, RuntimeRelModel, StoredNode, StoredRel,
 };
-use grm_service_api::{DurabilityFormat, GrpcWorkspaceClient, GrpcWorkspaceMode, proto};
+use grm_service_api::{
+    DurabilityFormat, GrpcClientTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceMode, proto,
+};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,7 +246,7 @@ fn parse_session_startup(args: Vec<String>) -> Result<SessionStartup, String> {
 }
 
 fn session_usage() -> &'static str {
-    "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]\n\nLocal mode:\n  cargo run --bin grm -- session\n\nService-backed workspace mode:\n  GRM_BACKEND=grpc GRM_SERVICE_ENDPOINT=<url> GRM_WORKSPACE_REF=<ref> \\\n    GRM_SERVICE_WORKSPACE_MODE=create|open cargo run --bin grm -- session\n\nGRM_SERVICE_WORKSPACE_MODE defaults to open when omitted.\nGRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set json only as an explicit opt-in.\nSupported service-mode commands route through ExecuteWorkspace."
+    "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]\n\nLocal mode:\n  cargo run --bin grm -- session\n\nService-backed workspace mode:\n  GRM_BACKEND=grpc GRM_SERVICE_ENDPOINT=<url> GRM_WORKSPACE_REF=<ref> \\\n    GRM_SERVICE_WORKSPACE_MODE=create|open cargo run --bin grm -- session\n\nSet GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME for server-authenticated TLS.\nSet GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when the service requires mutual TLS.\nGRM_SERVICE_WORKSPACE_MODE defaults to open when omitted.\nGRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set json only as an explicit opt-in.\nSupported service-mode commands route through ExecuteWorkspace."
 }
 
 async fn run_service_session<R: BufRead, W: Write>(
@@ -273,10 +275,19 @@ async fn run_service_session<R: BufRead, W: Write>(
             )));
         }
     };
-    let mut client =
-        GrpcWorkspaceClient::connect_with_format(&endpoint, &workspace_ref, mode, format)
-            .await
-            .map_err(service_error)?;
+    let tls = GrpcClientTlsOptions::from_env().map_err(grm_rs::GrmError::from)?;
+    let tls_enabled = tls.is_some();
+    let client_certificate_configured =
+        tls.as_ref().is_some_and(GrpcClientTlsOptions::has_identity);
+    let mut client = GrpcWorkspaceClient::connect_with_format_and_tls(
+        &endpoint,
+        &workspace_ref,
+        mode,
+        format,
+        tls,
+    )
+    .await
+    .map_err(service_error)?;
 
     writeln!(
         writer,
@@ -284,6 +295,17 @@ async fn run_service_session<R: BufRead, W: Write>(
     )?;
     writeln!(writer, "Backend: gRPC workspace storage")?;
     writeln!(writer, "Endpoint: {endpoint}")?;
+    writeln!(
+        writer,
+        "Transport: {}",
+        if client_certificate_configured {
+            "TLS with client certificate"
+        } else if tls_enabled {
+            "TLS"
+        } else {
+            "insecure local gRPC"
+        }
+    )?;
     writeln!(writer, "Workspace: {workspace_ref}")?;
     writeln!(writer, "Mode: {}", service_mode_display(mode))?;
     writeln!(
