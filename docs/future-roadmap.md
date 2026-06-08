@@ -165,9 +165,12 @@ Current progress:
   `return=edge` parity, typed `edge.find`, explain/profile coverage for typed
   find shapes, binary-by-default local persistence, and local
   transaction-delta WAL/replay test evidence.
+- The local service path supports server-authenticated TLS and optional mutual
+  TLS across Rust, CLI, Python, and MCP, with shared service-boundary tests for
+  trusted, missing, and untrusted client certificates.
 - This remains a local service-backed workspace/storage proof, not a production
-  daemon, hosted durability claim, auth/RBAC implementation, TLS service line,
-  or multi-writer service.
+  daemon, hosted durability claim, RBAC/authorization implementation,
+  production certificate-lifecycle system, or multi-writer service.
 
 Long-term direction:
 
@@ -176,9 +179,10 @@ Long-term direction:
 - keep direct schema/node/edge/query RPC families explicitly unsupported unless
   a later design maps them as workspace-scoped aliases over the same runtime
   path
-- add a narrow TLS-capable service path before public service/database
-  comparison claims, while keeping auth/RBAC/certificate lifecycle and hosted
-  durability out of scope until separate slices make them reviewable
+- measure a distinct TLS/mTLS service benchmark line before public
+  service/database comparison claims, while keeping RBAC/authorization,
+  production certificate lifecycle, and hosted durability out of scope until
+  separate slices make them reviewable
 - introduce SOML concepts such as session context, durable deltas, projections,
   and attestations only when the runtime can make and test those claims
 - keep unsupported surfaces explicit instead of filling gaps with textual query
@@ -432,9 +436,9 @@ This keeps `.grm` useful for authored workflows while allowing import/export to 
 
 ### Nearer Long-Term
 
-- benchmark-driven engine acceleration: establish embedded and local insecure
-  service baselines, add a narrow TLS service line, then choose derived
-  indexing/projection/algorithm targets from evidence
+- benchmark-driven engine acceleration: extend the completed embedded and local
+  insecure baselines with a distinct TLS/mTLS service line, then choose derived
+  indexing/projection/algorithm targets from larger-dataset evidence
 - repeatable performance provenance, including machine shape, toolchain,
   commit, benchmark line, TLS mode, persistence format, and disposable target
   status before public comparator claims

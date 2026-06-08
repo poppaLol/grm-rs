@@ -21,7 +21,9 @@ CLI, Python, Rust, and MCP can use the local gRPC workspace storage path where
 configured, binary persistence is the default for service-backed workspace
 storage, traversal-shaped find/result parity is in place, explain/profile parity
 exists for typed find shapes, and local transaction-delta WAL/replay evidence is
-available under the documented single-writer local durability target.
+available under the documented single-writer local durability target. The local
+service path also supports server-authenticated TLS and optional mutual TLS,
+including CLI client certificate configuration.
 
 Current CLI-facing priorities are therefore:
 
@@ -42,10 +44,10 @@ Current CLI-facing priorities are therefore:
 The Python and MCP surfaces should feel like first-class ways to use GRM, not
 thin wrappers over CLI text.
 
-Near-term work:
+Remaining polish should:
 
-- align remaining schema, CRUD, traversal, explain/profile, and error behavior
-  gaps across CLI, Python, MCP, and service-backed workspace sessions
+- keep schema, CRUD, traversal, explain/profile, and error behavior aligned
+  across CLI, Python, MCP, and service-backed workspace sessions
 - keep shared batch operations as the preferred multi-entity write path
 - normalize error shapes and recovery hints across integration surfaces
 - make agent-facing help steer repeated writes toward batch or graph patch tools
@@ -64,9 +66,9 @@ can stay simple, but the implementation needs clearer durability boundaries.
 Near-term work:
 
 - preserve the documented single-writer local durability target class
-- investigate measured reopen/checkpoint costs before deciding whether saved
-  derived indexes, faster rebuilds, or other workspace-load optimizations are
-  justified
+- preserve the lazy property-index rebuild improvement established by the
+  completed reopen investigation; revisit checkpoint or saved derived-index
+  work only if larger repeatable datasets justify it
 - keep transaction-delta WAL/replay evidence narrow and avoid hosted or
   multi-writer durability claims
 - preserve clear recovery behavior for damaged snapshots and replay logs
@@ -112,10 +114,10 @@ Good demo scenarios should show:
 
 ## Next
 
-1. Benchmark-driven traversal/profile and persistence investigations that keep
-   CLI behavior measurable alongside embedded and service-backed paths.
-2. Narrow TLS-capable service path before any public service/database benchmark
-   comparison claims.
+1. Add a distinct TLS/mTLS service benchmark line and repeatable result
+   provenance before any public service/database comparison claims.
+2. Resume benchmark-driven write-scaling, bulk-insert, and transport-overhead
+   investigations while keeping CLI behavior measurable.
 3. Import/export design and bulk interchange surface across CLI, Python, and MCP.
 4. Explicit bulk-update design for matched query results.
 5. Richer traversal result controls and graph presentation polish.
@@ -178,8 +180,8 @@ single-writer assumptions, and interrupted-write behavior.
 - What exact durability class should local sessions promise?
 - Should file-backed sessions remain strictly single-writer?
 - What transaction model should a future service-style backend expose?
-- What CLI-visible status should distinguish embedded, local insecure gRPC, and
-  future TLS service-backed workspace modes during benchmark and demo work?
+- What benchmark/result provenance should accompany embedded, local insecure
+  gRPC, and TLS/mTLS service-backed measurements?
 - How should UUID or non-integer backend IDs appear in CLI commands and saved
   sessions?
 - How much of the current dotted command surface should be treated as stable?
