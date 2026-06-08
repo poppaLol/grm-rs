@@ -9,6 +9,93 @@ not yet include the full provenance envelope planned for the future repeatable
 cloud/VPS benchmark runner. Do not use this note for public service/database
 comparison claims.
 
+## WorkSlice 246 Local mTLS Baseline
+
+WorkSlice 246 added a distinct mutual-TLS Criterion line without renaming the
+existing insecure groups or functions.
+
+Provenance for the local run recorded on June 8, 2026:
+
+| Context | Value |
+| --- | --- |
+| Machine | Dell XPS 15 9500; Intel Core i7-10750H, 6 cores / 12 threads; 30 GiB RAM |
+| OS | Ubuntu 26.04 LTS, Linux `7.0.0-22-generic`, x86_64 |
+| Power | AC online |
+| Rust | `rustc 1.88.0 (6b00bc388 2025-06-23)`, LLVM 20.1.5 |
+| Cargo | `cargo 1.88.0 (873a06493 2025-05-10)` |
+| Git | branch `ws250_doc_updates`; base commit `bf26eed1cc66b40693286e2d7a2e67f75a3d4891`; benchmark harness/docs modified in the working tree |
+| Dataset shapes | 250 and 1,000 users, the same number of posts, and the same number of `Authored` edges |
+| Persistence | Binary local workspace files |
+| Storage isolation | Fresh temporary workspace root per transport/dataset; no live database or shared project-memory workspace |
+| TLS mode | Mutual TLS on ephemeral loopback TCP; generated short-lived server CA/cert and separate client CA/cert |
+| Criterion | 10 samples, 1 second warm-up, 3 second measurement; Plotters backend |
+
+Commands:
+
+```sh
+cargo test -p grm-service-api --test tls_workspace
+cargo bench -p grm-service-api --bench local_grpc_workspace \
+  'baseline_grpc_mtls_250/(grm_local_grpc_mtls_node_find_name_eq|grm_local_grpc_mtls_edge_find_from|grm_local_grpc_mtls_traversal_selective|grm_local_grpc_mtls_explain_node_find|grm_local_grpc_mtls_explain_edge_find|grm_local_grpc_mtls_profile_edge_find|grm_local_grpc_mtls_profile_node_find)' \
+  -- --noplot
+cargo bench -p grm-service-api --bench local_grpc_workspace \
+  'baseline_grpc_mtls_1k/(grm_local_grpc_mtls_node_find_name_eq|grm_local_grpc_mtls_edge_find_from|grm_local_grpc_mtls_traversal_selective|grm_local_grpc_mtls_explain_node_find|grm_local_grpc_mtls_explain_edge_find|grm_local_grpc_mtls_profile_edge_find|grm_local_grpc_mtls_profile_node_find)' \
+  -- --noplot
+```
+
+Representative 95% Criterion estimate intervals:
+
+| Secured operation | 250 rows | 1,000 rows |
+| --- | ---: | ---: |
+| indexed node property lookup | `126.68-133.19 us` | `122.11-130.86 us` |
+| edge endpoint lookup | `118.62-133.54 us` | `121.19-130.23 us` |
+| selective one-hop traversal | `142.48-150.01 us` | `148.83-155.01 us` |
+| explain node traversal | `177.62-186.62 us` | `173.73-182.83 us` |
+| explain edge find | `147.37-163.75 us` | `146.01-162.21 us` |
+| profile edge find | `155.90-167.52 us` | `151.56-159.77 us` |
+| profile node traversal | `215.52-229.20 us` | `211.43-225.99 us` |
+
+The retained Criterion medians give the following directional overview. These
+are separate local captures, not an interleaved paired experiment, so the delta
+column includes run-to-run noise as well as transport-mode differences.
+
+| Dataset | Operation | Insecure median | mTLS median | Directional delta |
+| --- | --- | ---: | ---: | ---: |
+| 250 | indexed node property lookup | `150.45 us` | `131.28 us` | `-12.7%` |
+| 250 | edge endpoint lookup | `126.07 us` | `126.49 us` | `+0.3%` |
+| 250 | selective one-hop traversal | `140.64 us` | `151.64 us` | `+7.8%` |
+| 250 | explain node traversal | `174.55 us` | `184.76 us` | `+5.9%` |
+| 250 | explain edge find | `140.90 us` | `151.21 us` | `+7.3%` |
+| 250 | profile edge find | `145.94 us` | `159.32 us` | `+9.2%` |
+| 250 | profile node traversal | `210.54 us` | `215.70 us` | `+2.4%` |
+| 1,000 | indexed node property lookup | `120.80 us` | `128.63 us` | `+6.5%` |
+| 1,000 | edge endpoint lookup | `116.07 us` | `127.39 us` | `+9.8%` |
+| 1,000 | selective one-hop traversal | `150.44 us` | `152.52 us` | `+1.4%` |
+| 1,000 | explain node traversal | `196.69 us` | `177.71 us` | `-9.7%` |
+| 1,000 | explain edge find | `139.54 us` | `148.74 us` | `+6.6%` |
+| 1,000 | profile edge find | `151.15 us` | `154.75 us` | `+2.4%` |
+| 1,000 | profile node traversal | `224.09 us` | `212.16 us` | `-5.3%` |
+
+The directional headline is that mTLS was slower in 11 of 14 retained rows,
+usually by roughly `1-10%`, while three rows moved the other way. A controlled
+TLS-overhead claim would require insecure and mTLS cases to be interleaved in
+the same run, with repeated runs and confidence intervals for the paired delta.
+
+Certificate generation, service startup, schema definition, fixture population,
+connection establishment, and workspace close were outside the recorded
+operation duration. The read/query rows reused an established mTLS HTTP/2
+connection. The create/update mTLS rows are registered and compile-checked, but
+were not included in this representative result capture because their
+populated-workspace setup makes a full local run substantially longer.
+
+Safe conclusion: GRM now has a repeatable, separately named local mTLS Criterion
+line with isolated storage and short-lived credentials. The observed secured
+steady-state query/profile rows on this machine were about `119-229 us` across
+the two checked dataset shapes.
+
+This run does not establish TLS handshake cost, mTLS overhead versus insecure
+gRPC, production certificate lifecycle behavior, authorization, hosted
+durability, comparator database performance, or a public performance claim.
+
 ## WorkSlice 226 Follow-Up
 
 WorkSlice 226 investigated the first pain point and found that raw embedded
@@ -118,9 +205,10 @@ The artifacts cover current local Criterion benchmark groups for:
 - existing insert, property lookup, one-hop traversal, and transaction-overlay
   read groups
 
-Local insecure gRPC remains a local transport-overhead and demo line only. It is
-not a credible deployable service baseline. The implemented TLS/mTLS path still
-needs its own repeatable, provenance-backed measurement.
+Local insecure gRPC remains a local transport-overhead and demo line only.
+WorkSlice 246 now records the separate local mTLS line above. Embedded,
+insecure-local, and mTLS results remain differently labelled and must not be
+combined into one headline.
 
 ## Observed Pain Points
 
@@ -134,21 +222,21 @@ needs its own repeatable, provenance-backed measurement.
 
 ## Priority Order
 
-With WorkSlice 250 complete, the sequence is:
+With WorkSlices 250 and 246 complete, the sequence is:
 
-1. Add a distinct local TLS/mTLS Criterion line and record repeatable result
-   provenance; the transport path now exists, but its performance is not yet a
-   measured public baseline.
-2. Investigate embedded write operation scaling.
-3. Understand bulk insert cost versus SQLite.
-4. Understand local insecure gRPC per-call overhead and batching implications.
-5. Revisit persistence only if larger-dataset, repeatable evidence shows reopen
+1. Complete WorkSlice 221 repeatable VPS/cloud benchmark provenance.
+2. Pause open-ended acceleration unless demonstrator, regression, larger-scale,
+   or user evidence identifies a material bottleneck.
+3. Revisit embedded write scaling, bulk insert cost, or transport batching only
+   when such evidence makes one of them material.
+4. Revisit persistence only if larger-dataset, repeatable evidence shows reopen
    or checkpoint latency remains material after lazy property-index rebuild.
-6. Run public client/server comparators only in isolated disposable environments
+5. Run public client/server comparators only in isolated disposable environments
    against the TLS/mTLS GRM line.
 
-TLS capability alone is not sufficient for public comparator claims. The
-secured line still needs repeatable measurement and provenance.
+The local secured line is necessary evidence, but it is not sufficient for
+public comparator claims. Those also require repeatable VPS/cloud provenance and
+like-for-like isolated comparator methodology.
 
 ## Safe Claims
 
@@ -161,13 +249,16 @@ Safe internal claim:
   property-index rebuild for persisted graph loads, and found disk-saved derived
   index contents unjustified for the current local 1k evidence.
 - WorkSlice 250 added and tested the narrow TLS/mTLS transport path across the
-  shared service boundary; TLS performance has not yet been characterized.
+  shared service boundary.
+- WorkSlice 246 added a distinct local mTLS Criterion line and recorded local
+  steady-state query/profile evidence with machine, toolchain, commit, dataset,
+  persistence, TLS, command, and isolation provenance.
 
 Unsupported claims:
 
 - GRM service performance against Postgres, Mongo, Neo4j, or other client/server
   databases.
 - Hosted durability, multi-writer behavior, production security, or measured
-  TLS overhead before the secured benchmark line is run.
+  TLS handshake/overhead claims from the steady-state local mTLS rows.
 - GraphBLAS, traversal acceleration, or public service/database performance
   claims from this local embedded diagnostic.

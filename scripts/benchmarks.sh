@@ -15,6 +15,12 @@ case "${1:-all}" in
   local-grpc-workspace)
     cargo bench -p grm-service-api --bench local_grpc_workspace "${@:2}"
     ;;
+  local-grpc-insecure)
+    cargo bench -p grm-service-api --bench local_grpc_workspace baseline_grpc_insecure "${@:2}"
+    ;;
+  local-grpc-mtls)
+    cargo bench -p grm-service-api --bench local_grpc_workspace baseline_grpc_mtls "${@:2}"
+    ;;
   quick)
     cargo bench --bench grm_vs_sqlite property_lookup_1k -- --sample-size 10 --warm-up-time 1 --measurement-time 2 "${@:2}"
     ;;
@@ -39,7 +45,7 @@ case "${1:-all}" in
     cargo bench -p grm-service-api --bench local_grpc_workspace --no-run
     ;;
   *)
-    echo "usage: scripts/benchmarks.sh [all|grm-vs-sqlite|persistence|local-grpc-workspace|quick|scaled|stress|profile-insert|check] [cargo bench args...]" >&2
+    echo "usage: scripts/benchmarks.sh [all|grm-vs-sqlite|persistence|local-grpc-workspace|local-grpc-insecure|local-grpc-mtls|quick|scaled|stress|profile-insert|check] [cargo bench args...]" >&2
     exit 2
     ;;
 esac
