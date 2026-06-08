@@ -116,6 +116,21 @@ RPC duration against that populated workspace. `close_workspace` also runs
 outside the recorded duration. These rows are operation-over-populated-workspace
 microbenchmarks, not end-to-end workspace setup benchmarks.
 
+The Criterion harness registers mutual TLS as a separate line:
+
+- groups: `baseline_grpc_mtls_250` and `baseline_grpc_mtls_1k`
+- functions: `grm_local_grpc_mtls_*`
+- persistence: binary workspace files
+- workspace storage: a fresh temporary directory per transport and dataset
+- certificate storage: a separate temporary directory containing generated
+  server/client CAs, certificates, and keys for that benchmark process
+
+The insecure names remain unchanged under `baseline_grpc_insecure_*` and
+`grm_local_grpc_insecure_*`. Certificate generation, service startup, schema
+definition, fixture population, connection establishment, and workspace close
+are not timed. Read/query rows reuse an established connection, so this is a
+steady-state secured RPC baseline rather than a TLS handshake benchmark.
+
 ### Persistence Cost
 
 - GRM `save_to_json`
@@ -235,12 +250,18 @@ scripts/benchmarks.sh all
 scripts/benchmarks.sh grm-vs-sqlite
 scripts/benchmarks.sh persistence
 scripts/benchmarks.sh local-grpc-workspace
+scripts/benchmarks.sh local-grpc-insecure
+scripts/benchmarks.sh local-grpc-mtls
 scripts/benchmarks.sh quick
 scripts/benchmarks.sh scaled
 scripts/benchmarks.sh stress
 scripts/benchmarks.sh profile-insert
 scripts/benchmarks.sh check
 ```
+
+`local-grpc-workspace` runs both local service lines.
+`local-grpc-insecure` and `local-grpc-mtls` select one line by its stable
+Criterion group prefix.
 
 `profile-insert` builds the Criterion benchmark, then runs the compiled
 benchmark binary through `flamegraph` in Criterion profile mode. Running the

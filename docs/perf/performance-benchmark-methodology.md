@@ -31,7 +31,7 @@ Benchmarking proceeds in three stages.
 2. Add and verify a narrow TLS/mTLS-capable service path. Completed.
 3. Measure the distinct TLS/mTLS service line in a repeatable, isolated
    environment before running or publishing client/server comparator
-   benchmarks. Next.
+   benchmarks. Completed locally for WorkSlice 246.
 
 Insecure gRPC measurements remain useful only as local/demo transport overhead
 measurements. The completed local TLS path uses generated or externally supplied
@@ -43,6 +43,12 @@ certificate material through `GRM_SERVICE_TLS_SERVER_CERT` and
 generate short-lived private keys outside the repository. Public comparator
 evidence additionally requires repeatable machine, toolchain, commit, dataset,
 TLS mode, persistence format, and disposable-target provenance.
+
+The local Criterion harness creates workspace storage and certificate material
+in separate temporary directories. The mTLS line uses a generated server CA,
+server certificate, client CA, and client certificate, all scoped to one
+benchmark process. It uses binary workspace persistence and binds only an
+ephemeral loopback port.
 
 ## Benchmark Lines
 
@@ -125,6 +131,21 @@ Use stable benchmark names so Criterion baselines remain useful.
 Do not mix embedded results and service results in one headline. A fast embedded
 engine result does not prove a fast secured service deployment.
 
+For the local gRPC workspace harness:
+
+- `baseline_grpc_insecure_{size}` remains the insecure local transport line
+- `baseline_grpc_mtls_{size}` is the separate mutual-TLS line
+- certificate generation, service startup, schema definition, deterministic
+  fixture population, connection establishment, and workspace close are outside
+  the recorded operation duration
+- steady-state read/query rows reuse one established HTTP/2 connection
+- create/update rows prepare a populated disposable workspace and establish its
+  connection before timing the single mutation RPC
+
+The mTLS rows therefore measure operation latency over an established secured
+connection. They do not measure handshake latency, certificate generation,
+service startup, workspace creation, fixture loading, or certificate lifecycle.
+
 ## Interpreting Results
 
 SQLite is a brutal baseline for flat transactional inserts and should be treated
@@ -156,6 +177,7 @@ This methodology does not claim:
 - production certificate lifecycle
 - universal backend parity
 - a final GRM/SOML protocol conformance model
+- public performance parity with any comparator database
 
 Those require separate implementation and test evidence before they can be used
 in public claims.
