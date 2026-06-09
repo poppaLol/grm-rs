@@ -14,11 +14,14 @@ Available tutorials:
   workflow through `grm_rs.Session`
 - [MCP workflows](mcp-workflow.md): agent-oriented graph memory with structured
   tools, batching, traversal, explain/profile, and export
+- [Rust service workspaces](rust-service-workspace.md): connect with
+  `GrpcWorkspaceClient`, use typed workspace operations, and reopen persisted
+  service state
 
 Planned tutorials:
 
-- Rust typed models: derives, repositories, typed IDs, transactions, and
-  traversal
+- Rust embedded typed models: derives, repositories, typed IDs, transactions,
+  and traversal
 - Neo4j backend: running shared behavior against a live graph backend
 
 Existing starting points:

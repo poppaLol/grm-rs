@@ -28,6 +28,8 @@ grm(session)>
 
 The session starts empty.
 
+## Use The gRPC Workspace Backend
+
 `cargo run --bin grm -- session` still starts the local embedded CLI session.
 When `GRM_BACKEND=grpc` is set, the same entry point opens a service-backed
 session instead and routes the supported schema/CRUD/find subset through the

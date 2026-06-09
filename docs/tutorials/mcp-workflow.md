@@ -23,6 +23,7 @@ Configure an MCP client to run the compiled binary over stdio:
 {
   "mcpServers": {
     "grm": {
+      "transport": "stdio",
       "command": "./target/debug/grm-mcp",
       "args": [
         "--autocommit-json",
@@ -35,10 +36,71 @@ Configure an MCP client to run the compiled binary over stdio:
 }
 ```
 
+Claude Code required the explicit `"transport": "stdio"` field during this
+workflow. Some MCP clients infer stdio when a command is supplied, but keeping
+the field makes the intended transport unambiguous and improves portability
+between client configurations.
+
 The server owns one in-memory `SessionState` per process.
 `--autocommit-json` persists successful mutations through the shared
 append-log/checkpoint path. `--export-json` keeps a readable
 `grm.interchange` graph file updated after successful mutations.
+
+## Use The gRPC Workspace Backend
+
+MCP can expose the same tools while storing its workspace through the local
+gRPC service. Configure the MCP process with service environment variables and
+omit local load, autocommit, import, and export arguments:
+
+```json
+{
+  "mcpServers": {
+    "grm": {
+      "transport": "stdio",
+      "command": "./target/debug/grm-mcp",
+      "env": {
+        "GRM_BACKEND": "grpc",
+        "GRM_SERVICE_ENDPOINT": "http://127.0.0.1:50051",
+        "GRM_WORKSPACE_REF": "tutorial-mcp",
+        "GRM_SERVICE_WORKSPACE_MODE": "create"
+      }
+    }
+  }
+}
+```
+
+Use `create` once for a new workspace and `open` when reconnecting to it.
+Binary persistence is the default. The agent still sees GRM's structured MCP
+tools; gRPC is the workspace storage mode behind the adapter, not an additional
+agent-facing tool surface.
+
+TLS and mutual TLS use `GRM_SERVICE_TLS_CA_CERT`,
+`GRM_SERVICE_TLS_DOMAIN_NAME`, `GRM_SERVICE_TLS_CLIENT_CERT`, and
+`GRM_SERVICE_TLS_CLIENT_KEY`. See the
+[gRPC Docker quick start](../grpc-quickstart.md) for service startup and
+certificate setup.
+
+## Schema Memory Across MCP Backends
+
+An MCP agent needs schema orientation regardless of which backend stores the
+graph. The intended direction is therefore for durable workspace
+schema/catalog memory to become a normal capability of every MCP-fronted GRM
+backend, so a restarted agent can inspect declared models before reading or
+writing.
+
+The mechanisms are not yet identical:
+
+- embedded MCP sessions persist runtime schema with their saved or autocommit
+  workspace state
+- gRPC MCP mode receives schema from the service-managed workspace
+- Neo4j MCP mode can currently use `GRM_SCHEMA_TEMPLATE` as a separate local
+  schema-memory file because GRM metadata is not written into the user's Neo4j
+  graph by default
+
+`GRM_SCHEMA_TEMPLATE` should not be read as the final universal interface. It
+is the current transitional Neo4j mechanism. The longer-term authority is the
+workspace catalog/schema memory, with each backend exposing a runtime
+projection through `grm_schema_list` and backend orientation.
 
 ## Ask What GRM Can Do
 

@@ -7,6 +7,18 @@ TLS-capable benchmark line.
 
 ## Start The Service
 
+Pull and run the published image:
+
+```bash
+docker pull lauriebart/grm:latest
+docker run --rm --name grm \
+  -p 50051:50051 \
+  -v grm-workspaces:/workspaces \
+  lauriebart/grm:latest
+```
+
+Alternatively, build the current repository checkout:
+
 ```bash
 docker compose up --build
 ```
@@ -278,6 +290,14 @@ for checking protobuf JSON request shape, but the Rust client remains the more
 complete demo.
 
 ## Stop The Service
+
+Stop the published-image container with:
+
+```bash
+docker stop grm
+```
+
+For the Compose service, use:
 
 ```bash
 docker compose down
