@@ -74,7 +74,7 @@ Start the local workspace server with mutual TLS:
 GRM_SERVICE_TLS_SERVER_CERT=/tmp/grm-tls/server.crt \
 GRM_SERVICE_TLS_SERVER_KEY=/tmp/grm-tls/server.key \
 GRM_SERVICE_TLS_CLIENT_CA_CERT=/tmp/grm-tls/ca.crt \
-cargo run -p grm-service-api --example local_workspace_server -- \
+cargo run -p grm-service-api --bin grm-local-workspace-server -- \
   127.0.0.1:50051 /tmp/grm-service-workspaces
 ```
 

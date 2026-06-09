@@ -1,22 +1,16 @@
 FROM rust:1.88.0-slim-bookworm AS builder
 
-WORKDIR /src
+ENV RUSTUP_TOOLCHAIN=1.88.0
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
 
 COPY . .
 
-RUN cargo build -p grm-service-api --release --example local_workspace_server
+RUN cargo build -p grm-service-api --release --bin grm-local-workspace-server
 
 FROM debian:bookworm-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /src/target/release/examples/local_workspace_server /usr/local/bin/grm-local-workspace-server
+COPY --from=builder /src/target/release/grm-local-workspace-server /usr/local/bin/grm-local-workspace-server
 
 RUN useradd --system --create-home --home-dir /var/lib/grm grm \
     && mkdir -p /workspaces \

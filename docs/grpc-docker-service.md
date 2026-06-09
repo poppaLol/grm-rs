@@ -5,7 +5,7 @@ It is intended for local development, examples, and adapter integration tests.
 It is not the TLS-capable benchmark line and does not provide authentication,
 authorization, hosted durability, or multi-writer coordination.
 
-The container runs the `grm-service-api` `local_workspace_server` example:
+The container runs the `grm-service-api` `grm-local-workspace-server` binary:
 
 ```text
 grm-local-workspace-server 0.0.0.0:50051 /workspaces
@@ -78,14 +78,14 @@ operations, closes the workspace, reopens it, and verifies data is still present
 
 ## TLS-Capable Local Service
 
-The `local_workspace_server` example can run with local TLS certificate files
+The `grm-local-workspace-server` binary can run with local TLS certificate files
 outside the Docker Compose demo:
 
 ```bash
 GRM_SERVICE_TLS_SERVER_CERT=/tmp/grm-tls/server.crt \
 GRM_SERVICE_TLS_SERVER_KEY=/tmp/grm-tls/server.key \
 GRM_SERVICE_TLS_CLIENT_CA_CERT=/tmp/grm-tls/ca.crt \
-cargo run -p grm-service-api --example local_workspace_server -- \
+cargo run -p grm-service-api --bin grm-local-workspace-server -- \
   127.0.0.1:50051 /tmp/grm-service-workspaces
 ```
 

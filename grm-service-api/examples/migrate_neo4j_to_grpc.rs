@@ -245,7 +245,7 @@ impl Options {
 }
 
 fn usage() -> &'static str {
-    "usage: cargo run -p grm-service-api --example migrate_neo4j_to_grpc -- \
+    "usage: cargo run -p grm-service-api --features neo4j --example migrate_neo4j_to_grpc -- \
      --schema <schema-session.json> --endpoint http://127.0.0.1:50051 \
      --workspace <workspace-ref> [--mode create|open] [--format json|bin; default bin]"
 }
