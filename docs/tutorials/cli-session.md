@@ -40,6 +40,12 @@ only when you explicitly want JSON files. The service-backed CLI prints the
 endpoint, workspace ref, create/open mode, persistence format, and
 `ExecuteWorkspace` scope before the prompt appears.
 
+The local `--script <path>` startup option is also supported in gRPC mode. The
+CLI parses commands locally, sends typed workspace requests, and continues into
+the interactive session after the script succeeds. Script text is not sent to
+the service as a second command protocol. `--load` remains local-only; use
+`GRM_SERVICE_WORKSPACE_MODE=open` to resume a service-managed workspace.
+
 ```bash
 GRM_BACKEND=grpc \
 GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
@@ -62,8 +68,8 @@ Typed `session.explain/profile node.find|edge.find` runs through the service
 workspace path. Local file commands, transactions, free-form query parity, and
 import/export remain local-only or unsupported in service CLI mode. The current
 local service path is GRM-owned memory/file backed workspace storage; it is not
-Neo4j-backed and does not claim hosted durability, auth/TLS, or multi-writer
-coordination.
+Neo4j-backed and does not claim hosted durability, authorization/RBAC,
+production certificate lifecycle, or multi-writer coordination.
 
 ## Define A Small Graph
 

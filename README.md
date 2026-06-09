@@ -231,6 +231,17 @@ GRM_SERVICE_WORKSPACE_MODE=create \
 cargo run --bin grm -- session
 ```
 
+To seed a small movie graph through the same typed workspace path and continue
+interactively:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=movies-demo \
+GRM_SERVICE_WORKSPACE_MODE=create \
+cargo run --bin grm -- session --script examples/service_movies.grm
+```
+
 `GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; JSON is an explicit opt-in.
 Create mode rejects an existing workspace ref; use
 `GRM_SERVICE_WORKSPACE_MODE=open` to reopen an existing service-managed

@@ -123,6 +123,16 @@ checkpoint, successful supported `ExecuteWorkspace` mutations append durable
 operation records, and `OpenWorkspace` replays complete records after the
 checkpoint. Binary workspace files are the default; JSON is explicit opt-in.
 
+The service writes one aggregate completion line for each successful workspace
+operation. Logs include the workspace ref or opaque handle, operation family,
+and separate aggregate counts for node models, link models, node records, and
+edge records. Zero-valued counts are omitted. Logs do not include model names,
+record IDs, properties, predicates, query text, or returned values.
+
+```text
+workspace_operation completed workspace=demo operation=node.create nodes_created=1
+```
+
 Before using this shape beyond local development, GRM still needs explicit
 service lifecycle, auth, authorization, limits, audit, recovery, production
 certificate lifecycle, and coordination design.

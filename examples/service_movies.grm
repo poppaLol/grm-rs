@@ -1,0 +1,18 @@
+# Small canonical movie graph for the local gRPC service demonstrator.
+model.define Person personId name:string:required born:int:optional
+model.define Movie movieId title:string:required released:int:required
+link.define ACTEDIN Person Movie actedInId role:string:required
+
+let keanu = node.create Person name="Keanu Reeves" born=1964
+let carrie = node.create Person name="Carrie-Anne Moss" born=1967
+let laurence = node.create Person name="Laurence Fishburne" born=1961
+
+let matrix = node.create Movie title="The Matrix" released=1999
+let reloaded = node.create Movie title="The Matrix Reloaded" released=2003
+
+edge.create ACTEDIN from=keanu to=matrix role="Neo"
+edge.create ACTEDIN from=carrie to=matrix role="Trinity"
+edge.create ACTEDIN from=laurence to=matrix role="Morpheus"
+edge.create ACTEDIN from=keanu to=reloaded role="Neo"
+edge.create ACTEDIN from=carrie to=reloaded role="Trinity"
+edge.create ACTEDIN from=laurence to=reloaded role="Morpheus"

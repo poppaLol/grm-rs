@@ -61,15 +61,21 @@ async fn main() {
             let stdout = io::stdout();
             let writer = stdout.lock();
             if std::env::var("GRM_BACKEND").ok().as_deref() == Some("grpc") {
-                if !matches!(startup, SessionStartup::Fresh) {
-                    eprintln!(
-                        "--script and --load are local CLI startup options and are not supported in gRPC service mode"
-                    );
-                    std::process::exit(1);
-                }
+                let script = match startup {
+                    SessionStartup::Fresh => None,
+                    SessionStartup::Script { path } => Some(path),
+                    SessionStartup::Load { .. } => {
+                        eprintln!(
+                            "--load is not supported in gRPC service mode; use GRM_SERVICE_WORKSPACE_MODE=open"
+                        );
+                        std::process::exit(1);
+                    }
+                };
                 let stdin = io::stdin();
                 let reader = BufReader::new(stdin.lock());
-                if let Err(err) = run_service_session(reader, writer, should_enable_color()).await {
+                if let Err(err) =
+                    run_service_session(reader, writer, should_enable_color(), script).await
+                {
                     eprintln!("{err}");
                     std::process::exit(1);
                 }
@@ -246,13 +252,34 @@ fn parse_session_startup(args: Vec<String>) -> Result<SessionStartup, String> {
 }
 
 fn session_usage() -> &'static str {
-    "Usage: grm session [--script <path> | --load json|bin <path> [--autocommit on|off]]\n\nLocal mode:\n  cargo run --bin grm -- session\n\nService-backed workspace mode:\n  GRM_BACKEND=grpc GRM_SERVICE_ENDPOINT=<url> GRM_WORKSPACE_REF=<ref> \\\n    GRM_SERVICE_WORKSPACE_MODE=create|open cargo run --bin grm -- session\n\nSet GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME for server-authenticated TLS.\nSet GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when the service requires mutual TLS.\nGRM_SERVICE_WORKSPACE_MODE defaults to open when omitted.\nGRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set json only as an explicit opt-in.\nSupported service-mode commands route through ExecuteWorkspace."
+    concat!(
+        "Usage: grm session [--script <path> | --load json|bin <path> ",
+        "[--autocommit on|off]]\n\n",
+        "Local mode:\n  cargo run --bin grm -- session\n\n",
+        "Service-backed workspace mode:\n",
+        "  GRM_BACKEND=grpc GRM_SERVICE_ENDPOINT=<url> GRM_WORKSPACE_REF=<ref> ",
+        "\\\n",
+        "    GRM_SERVICE_WORKSPACE_MODE=create|open cargo run --bin grm -- session ",
+        "[--script <path>]\n\n",
+        "Set GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME for ",
+        "server-authenticated TLS.\n",
+        "Set GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when ",
+        "the service requires mutual TLS.\n",
+        "GRM_SERVICE_WORKSPACE_MODE defaults to open when omitted.\n",
+        "GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set json only as ",
+        "an explicit opt-in.\n",
+        "Service scripts are parsed by the CLI and supported commands route ",
+        "through ExecuteWorkspace.\n",
+        "--load remains local-only; reopen a service workspace with ",
+        "GRM_SERVICE_WORKSPACE_MODE=open."
+    )
 }
 
 async fn run_service_session<R: BufRead, W: Write>(
     reader: R,
     mut writer: W,
     color_enabled: bool,
+    script: Option<PathBuf>,
 ) -> grm_rs::Result<()> {
     let endpoint = required_env("GRM_SERVICE_ENDPOINT")?;
     let workspace_ref = required_env("GRM_WORKSPACE_REF")?;
@@ -332,6 +359,35 @@ async fn run_service_session<R: BufRead, W: Write>(
         },
         color_enabled,
     );
+    if let Some(path) = script {
+        let file = File::open(&path).map_err(|error| {
+            grm_rs::GrmError::Backend(format!(
+                "failed to open service script '{}': {error}",
+                path.display()
+            ))
+        })?;
+        writeln!(writer, "Running service setup script: {}", path.display())?;
+        for (index, line) in BufReader::new(file).lines().enumerate() {
+            let line = line?;
+            let line = strip_service_script_comment(&line);
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match session.handle_command(&mut writer, trimmed, true).await {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(grm_rs::GrmError::Constraint(format!(
+                        "service script '{}' line {} failed: {error}",
+                        path.display(),
+                        index + 1
+                    )));
+                }
+            }
+        }
+        writeln!(writer, "Service setup script complete.")?;
+    }
     let mut lines = reader.lines();
     loop {
         write!(writer, "grm(service)> ")?;
@@ -345,7 +401,7 @@ async fn run_service_session<R: BufRead, W: Write>(
         if trimmed.is_empty() {
             continue;
         }
-        match session.handle_command(&mut writer, trimmed).await {
+        match session.handle_command(&mut writer, trimmed, false).await {
             Ok(true) => break,
             Ok(false) => {}
             Err(err) => writeln!(writer, "{err}")?,
@@ -387,6 +443,7 @@ impl<'a> ServiceCliSession<'a> {
         &mut self,
         writer: &mut W,
         line: &str,
+        fail_fast: bool,
     ) -> grm_rs::Result<bool> {
         match parse_command_line(line)? {
             SessionCommand::Help => write_service_help(writer, &self.colors)?,
@@ -607,6 +664,11 @@ impl<'a> ServiceCliSession<'a> {
                     .map_err(service_error)?;
                 write_service_profile(writer, &profile)?;
             }
+            SessionCommand::Unknown { .. } if fail_fast => {
+                return Err(grm_rs::GrmError::Constraint(format!(
+                    "unknown command: {line}"
+                )));
+            }
             SessionCommand::Unknown { .. } => writeln!(writer, "Unknown command: {line}")?,
             SessionCommand::SessionSave { args: _ }
             | SessionCommand::SessionLoad { args: _ }
@@ -619,6 +681,10 @@ impl<'a> ServiceCliSession<'a> {
             | SessionCommand::TxCommit
             | SessionCommand::ModelShow { .. }
             | SessionCommand::LinkShow { .. } => {
+                let message = "command is local-only or not supported in gRPC service CLI mode yet";
+                if fail_fast {
+                    return Err(grm_rs::GrmError::NotSupported(message));
+                }
                 writeln!(
                     writer,
                     "Command is local-only or not supported in gRPC service CLI mode yet"
@@ -746,6 +812,30 @@ impl<'a> ServiceCliSession<'a> {
         }
         Ok(())
     }
+}
+
+fn strip_service_script_comment(line: &str) -> String {
+    let mut quote: Option<char> = None;
+    let mut chars = line.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        match quote {
+            Some(quote_char) => match ch {
+                '\\' => {
+                    chars.next();
+                }
+                _ if ch == quote_char => quote = None,
+                _ => {}
+            },
+            None => match ch {
+                '"' | '\'' => quote = Some(ch),
+                '#' => return line[..index].trim_end().to_string(),
+                _ => {}
+            },
+        }
+    }
+
+    line.to_string()
 }
 
 fn service_mode_display(mode: GrpcWorkspaceMode) -> &'static str {

@@ -41,9 +41,20 @@ fn run_grm_service_session(
     mode: Option<&str>,
     input: &str,
 ) -> std::process::Output {
+    run_grm_service_session_with_args(endpoint, workspace_ref, mode, &[], input)
+}
+
+fn run_grm_service_session_with_args(
+    endpoint: &str,
+    workspace_ref: &str,
+    mode: Option<&str>,
+    args: &[&str],
+    input: &str,
+) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_grm"));
     command
         .arg("session")
+        .args(args)
         .env("GRM_BACKEND", "grpc")
         .env("GRM_SERVICE_ENDPOINT", endpoint)
         .env("GRM_WORKSPACE_REF", workspace_ref);
@@ -66,6 +77,81 @@ fn run_grm_service_session(
     drop(child.stdin.take());
 
     child.wait_with_output().unwrap()
+}
+
+#[tokio::test]
+async fn grpc_service_session_runs_startup_script_then_continues_interactively() {
+    let temp = tempfile::tempdir().unwrap();
+    let script = temp.path().join("movies.grm");
+    std::fs::write(
+        &script,
+        r#"
+# Script text stays in the CLI adapter.
+model.define Person personId name:string:required
+model.define Movie movieId title:string:required
+link.define ACTEDIN Person Movie actedInId role:string:required
+let actor = node.create Person name="Hash # Actor"
+let movie = node.create Movie title="Graph Film"
+edge.create ACTEDIN from=actor to=movie role="Lead"
+"#,
+    )
+    .unwrap();
+    let (endpoint, shutdown_tx, server) = start_workspace_service(temp.path()).await;
+
+    let script_path = script.to_string_lossy().into_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        run_grm_service_session_with_args(
+            &endpoint,
+            "cli-script-smoke",
+            Some("create"),
+            &["--script", &script_path],
+            "node.find Person name=\"Hash # Actor\" via=out:ACTEDIN:Movie\nsession.exit\n",
+        )
+    })
+    .await
+    .unwrap();
+
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Running service setup script:"));
+    assert!(stdout.contains("Service setup script complete."));
+    assert!(stdout.contains("Node Movie id=2"));
+    assert!(stdout.contains("title=\"Graph Film\""));
+    assert!(temp.path().join("cli-script-smoke.bin").exists());
+}
+
+#[tokio::test]
+async fn grpc_service_session_runs_checked_in_movie_demonstrator() {
+    let temp = tempfile::tempdir().unwrap();
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples/service_movies.grm");
+    let (endpoint, shutdown_tx, server) = start_workspace_service(temp.path()).await;
+
+    let script_path = script.to_string_lossy().into_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        run_grm_service_session_with_args(
+            &endpoint,
+            "movies-demo",
+            Some("create"),
+            &["--script", &script_path],
+            "edge.find ACTEDIN from=keanu\nsession.exit\n",
+        )
+    })
+    .await
+    .unwrap();
+
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Service setup script complete."));
+    assert!(stdout.contains("Edge ACTEDIN id=1 from=1 to=4"));
+    assert!(stdout.contains("role=Neo"));
+    assert!(temp.path().join("movies-demo.bin").exists());
 }
 
 async fn start_workspace_service(
