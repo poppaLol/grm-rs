@@ -50,6 +50,19 @@ server certificate, client CA, and client certificate, all scoped to one
 benchmark process. It uses binary workspace persistence and binds only an
 ephemeral loopback port.
 
+WorkSlice 221 provides the repeatable execution and provenance layer through
+[`scripts/cloud_benchmark.py`](../../scripts/cloud_benchmark.py) and the
+[repeatable cloud/VPS benchmark guide](repeatable-cloud-benchmarks.md). The
+runner uses the existing Criterion profiles, creates an isolated run directory,
+and refuses to execute without explicit confirmation that the target is
+disposable and contains no shared project memory.
+
+The checked-in runner and locally validated provenance envelope implement the
+platform. WorkSlice 221 completes after one clean-checkout benchmark run proves
+the full path on an isolated VPS/cloud target. After that run, open-ended engine
+acceleration pauses until demonstrator workloads, larger datasets, regressions,
+or user evidence identify a material bottleneck.
+
 ## Benchmark Lines
 
 Use separate benchmark lines so results do not blur different deployment shapes.
@@ -117,6 +130,7 @@ Keep setup outside timed loops unless setup is the workload being measured.
 Record enough context to reproduce results:
 
 - GRM commit
+- branch and dirty-worktree state
 - benchmark command
 - dataset size and shape
 - benchmark line
@@ -124,7 +138,12 @@ Record enough context to reproduce results:
 - TLS or insecure mode
 - persistence format
 - database target and whether it is disposable or protected project memory
-- machine notes when relevant
+- provider, region, availability zone, and instance type when relevant
+- OS, kernel, CPU shape/model, memory, storage, virtualization, and toolchain
+
+For repeatable VPS/cloud runs, keep the generated `provenance.json`,
+`benchmark.log`, and isolated Criterion directory together. A result without
+its provenance envelope is anecdotal evidence.
 
 Use stable benchmark names so Criterion baselines remain useful.
 

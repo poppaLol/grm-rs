@@ -291,6 +291,27 @@ FLAMEGRAPH_OUTPUT=target/flamegraph.svg scripts/benchmarks.sh profile-insert
 The SQLite comparator uses `rusqlite` with bundled SQLite, so local benchmark runs
 do not require a system SQLite installation.
 
+## Repeatable VPS And Cloud Runs
+
+Use the provenance runner instead of invoking Cargo directly when recording a
+repeatable machine result:
+
+```bash
+python3 scripts/cloud_benchmark.py local-grpc-mtls \
+  --provider <provider> \
+  --region <region> \
+  --instance-type <instance-type> \
+  --target-description "disposable GRM benchmark VM" \
+  --storage-description "<provider storage class and size>" \
+  --confirm-disposable
+```
+
+The runner records source, machine, toolchain, benchmark-line, TLS, persistence,
+dataset, and target-isolation metadata beside an isolated Criterion directory.
+See
+[Repeatable Cloud And VPS Benchmarks](../docs/perf/repeatable-cloud-benchmarks.md)
+for machine selection, safety requirements, output layout, and interpretation.
+
 ## Next Optimization Phase
 
 The next performance phase is tracked in

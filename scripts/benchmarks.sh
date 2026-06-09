@@ -46,6 +46,7 @@ case "${1:-all}" in
     ;;
   *)
     echo "usage: scripts/benchmarks.sh [all|grm-vs-sqlite|persistence|local-grpc-workspace|local-grpc-insecure|local-grpc-mtls|quick|scaled|stress|profile-insert|check] [cargo bench args...]" >&2
+    echo "repeatable VPS/cloud runs: scripts/cloud_benchmark.py --help" >&2
     exit 2
     ;;
 esac
