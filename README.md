@@ -228,8 +228,9 @@ cargo run --bin grm -- session
 ```
 
 `GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; JSON is an explicit opt-in.
-Use `GRM_SERVICE_WORKSPACE_MODE=open` to reopen an existing service-managed
-workspace.
+Create mode rejects an existing workspace ref; use
+`GRM_SERVICE_WORKSPACE_MODE=open` to reopen an existing service-managed
+workspace without altering it.
 
 See [docs/grpc-docker-service.md](docs/grpc-docker-service.md),
 [docs/grpc-quickstart.md](docs/grpc-quickstart.md), and

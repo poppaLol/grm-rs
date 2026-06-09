@@ -145,9 +145,10 @@ cargo run --bin grm -- session
 
 The CLI prints the selected endpoint, workspace ref, create/open mode,
 persistence format, and `ExecuteWorkspace` scope before the prompt appears.
-Use `GRM_SERVICE_WORKSPACE_MODE=create` to initialize or overwrite a local
-service-managed workspace file. Use `GRM_SERVICE_WORKSPACE_MODE=open` to reopen
-an existing workspace:
+Use `GRM_SERVICE_WORKSPACE_MODE=create` only to initialize a new local
+service-managed workspace. Create rejects an existing workspace ref without
+altering its checkpoint, append log, or backup; use
+`GRM_SERVICE_WORKSPACE_MODE=open` to reopen it:
 
 ```bash
 GRM_BACKEND=grpc \

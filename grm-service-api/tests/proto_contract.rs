@@ -859,6 +859,106 @@ async fn workspace_client_executes_through_workspace_scope() {
 }
 
 #[tokio::test]
+async fn generated_grpc_create_rejects_existing_workspace_without_replacing_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let workspace = proto::WorkspaceRef {
+        id: "existing-workspace".into(),
+    };
+    let mut client = proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+    let created = client
+        .create_workspace(proto::WorkspaceCreateRequest {
+            mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+            workspace: Some(workspace.clone()),
+            format: proto::DurabilityFormat::Binary as i32,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let handle = created.handle.unwrap();
+
+    execute_workspace_proto(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::DefineNode(define_node_proto(
+            "User",
+            "userId",
+            [("name", proto::FieldValueType::String, true)],
+        )),
+    )
+    .await;
+    execute_workspace_proto(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::CreateNode(node_create_proto(
+            "User",
+            [(
+                "name",
+                proto::property_value::Kind::StringValue("Ada".into()),
+            )],
+        )),
+    )
+    .await;
+    client
+        .close_workspace(proto::WorkspaceCloseRequest {
+            handle: Some(handle),
+        })
+        .await
+        .unwrap();
+
+    let error = client
+        .create_workspace(proto::WorkspaceCreateRequest {
+            mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+            workspace: Some(workspace.clone()),
+            format: proto::DurabilityFormat::Json as i32,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::AlreadyExists);
+    assert_eq!(
+        error.message(),
+        "workspace 'existing-workspace' already exists; use open mode"
+    );
+    assert!(!error.message().contains(&temp.path().display().to_string()));
+    assert!(temp.path().join("existing-workspace.bin").exists());
+    assert!(!temp.path().join("existing-workspace.json").exists());
+
+    let opened = client
+        .open_workspace(proto::WorkspaceOpenRequest {
+            workspace: Some(workspace),
+            snapshot: None,
+            format: proto::DurabilityFormat::Binary as i32,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let found = execute_workspace_proto(
+        &mut client,
+        &opened.handle.unwrap(),
+        proto::runtime_request::Request::FindNodes(find_all_nodes_proto("User")),
+    )
+    .await;
+    assert_eq!(node_string_props(found, "name"), vec!["Ada"]);
+
+    shutdown_tx.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn ergonomic_workspace_client_routes_supported_operations_through_execute_workspace() {
     let temp = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

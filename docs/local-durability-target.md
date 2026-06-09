@@ -52,10 +52,10 @@ service-backed workspaces.
 
 `CreateWorkspace` in local autocommit mode creates a fresh in-memory workspace,
 maps the workspace ref to the local workspace file, enables autocommit, and
-immediately writes a checkpoint. Creating with an existing workspace ref
-reinitializes/replaces that service-managed file by writing a fresh checkpoint
-and clearing the previous append log; it is not a safe attach/open path, merge
-operation, or multi-writer attach operation.
+immediately writes a checkpoint. Creating with an existing workspace ref is
+rejected if either persistence format or its append-log/backup companion state
+already exists. Use `OpenWorkspace` to resume an existing workspace. Create is
+not an attach, reset, merge, or multi-writer operation.
 
 `OpenWorkspace` with a workspace ref loads the checkpoint file, replays any
 complete append-log records after that checkpoint, and then re-enables
