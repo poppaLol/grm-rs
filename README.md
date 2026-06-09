@@ -193,7 +193,17 @@ GRM-owned memory/file backed workspaces and adapter integration, not a separate
 user-facing surface, production daemon, Neo4j-backed service, or hosted
 durability claim.
 
-Start the insecure local service:
+Pull and run the published insecure local service:
+
+```bash
+docker pull lauriebart/grm:latest
+docker run --rm --name grm \
+  -p 50051:50051 \
+  -v grm-workspaces:/workspaces \
+  lauriebart/grm:latest
+```
+
+Or build the current checkout with Docker Compose:
 
 ```bash
 docker compose up --build
@@ -305,6 +315,7 @@ Available tutorials include:
 - [CLI sessions](docs/tutorials/cli-session.md)
 - [Python sessions](docs/tutorials/python-session.md)
 - [MCP workflows](docs/tutorials/mcp-workflow.md)
+- [Rust service workspaces](docs/tutorials/rust-service-workspace.md)
 - [gRPC service](docs/grpc-docker-service.md)
 
 Additional reference docs:
@@ -317,7 +328,7 @@ Additional reference docs:
 
 Planned tutorials:
 
-- Rust typed models: derives, repositories, transactions, traversal
+- Rust embedded typed models: derives, repositories, transactions, traversal
 - Neo4j: running the same behavior against a live backend
 
 ## Status

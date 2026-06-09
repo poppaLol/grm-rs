@@ -41,7 +41,30 @@ Current non-goals:
 - direct RPC-family parity outside `ExecuteWorkspace`
 - full traversal/query/explain/profile/import/export parity through all adapters
 
-## Run With Docker Compose
+## Run The Published Image
+
+The ready-built service is published as `lauriebart/grm:latest`:
+
+```bash
+docker pull lauriebart/grm:latest
+docker run --rm --name grm \
+  -p 50051:50051 \
+  -v grm-workspaces:/workspaces \
+  lauriebart/grm:latest
+```
+
+The service listens on `localhost:50051`. Workspace data persists in the named
+`grm-workspaces` volume when the container stops.
+
+Stop the foreground container from another shell with:
+
+```bash
+docker stop grm
+```
+
+## Build With Docker Compose
+
+Contributors can build the service from the current checkout:
 
 ```bash
 docker compose up --build

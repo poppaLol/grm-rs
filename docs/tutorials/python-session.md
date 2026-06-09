@@ -45,6 +45,32 @@ session = Session()
 
 The session starts empty.
 
+## Use The gRPC Workspace Backend
+
+Use `ServiceSession` when Python should operate on a workspace owned by the
+local gRPC service rather than an embedded in-process session:
+
+```python
+from grm_rs import ServiceSession
+
+session = ServiceSession(
+    endpoint="http://127.0.0.1:50051",
+    workspace_ref="tutorial-python",
+    mode="create",
+)
+```
+
+The schema, CRUD, traversal, batch, explain, and profile methods follow the
+same Python surface where supported. Binary service persistence is the default.
+Use `mode="open"` to resume the workspace on a later run. The service owns
+persistence, so local `Session` save/load/import/export methods do not apply to
+`ServiceSession`.
+
+For TLS or mutual TLS, pass `tls_ca_cert`, `tls_domain_name`,
+`tls_client_cert`, and `tls_client_key`, or use the shared service environment
+variables. See the [gRPC Docker quick start](../grpc-quickstart.md) for service
+startup and certificate setup.
+
 ## Define A Small Graph
 
 Create two node models and one relationship model:
