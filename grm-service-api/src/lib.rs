@@ -292,6 +292,7 @@ fn optional_path_pair(
 #[derive(Debug)]
 pub enum WorkspaceServiceError {
     Runtime(grm_rs::GrmError),
+    WorkspaceAlreadyExists { workspace: WorkspaceRef },
     UnknownWorkspaceHandle { handle: WorkspaceHandle },
     UnknownSnapshotHandle { snapshot: SnapshotHandle },
     UnsupportedWorkspaceOperation(&'static str),
@@ -301,6 +302,13 @@ impl fmt::Display for WorkspaceServiceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Runtime(error) => write!(f, "{error}"),
+            Self::WorkspaceAlreadyExists { workspace } => {
+                write!(
+                    f,
+                    "workspace '{}' already exists; use open mode",
+                    workspace.id
+                )
+            }
             Self::UnknownWorkspaceHandle { handle } => {
                 write!(f, "unknown workspace handle '{}'", handle.id)
             }
@@ -318,7 +326,8 @@ impl Error for WorkspaceServiceError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Runtime(error) => Some(error),
-            Self::UnknownWorkspaceHandle { .. }
+            Self::WorkspaceAlreadyExists { .. }
+            | Self::UnknownWorkspaceHandle { .. }
             | Self::UnknownSnapshotHandle { .. }
             | Self::UnsupportedWorkspaceOperation(_) => None,
         }
@@ -876,7 +885,18 @@ impl InProcessWorkspaceService {
                 })
             }
             WorkspaceCreateMode::LocalAutocommit => {
-                let workspace_ref = self.normalize_workspace_ref(request.workspace)?;
+                let workspace_ref = match request.workspace {
+                    Some(workspace) => {
+                        validate_workspace_ref(&workspace)?;
+                        if self.local_workspace_exists(&workspace)? {
+                            return Err(WorkspaceServiceError::WorkspaceAlreadyExists {
+                                workspace,
+                            });
+                        }
+                        workspace
+                    }
+                    None => self.next_available_workspace_ref()?,
+                };
                 let path = self.local_workspace_path(&workspace_ref, request.format)?;
                 let mut workspace = grm_rs::Workspace::new();
                 workspace.enable_autocommit(request.format.into(), path)?;
@@ -1062,17 +1082,34 @@ impl InProcessWorkspaceService {
         }
     }
 
-    fn normalize_workspace_ref(
-        &mut self,
-        workspace: Option<WorkspaceRef>,
-    ) -> WorkspaceServiceResult<WorkspaceRef> {
-        match workspace {
-            Some(workspace) => {
-                validate_workspace_ref(&workspace)?;
-                Ok(workspace)
+    fn next_available_workspace_ref(&mut self) -> WorkspaceServiceResult<WorkspaceRef> {
+        loop {
+            let workspace = self.next_workspace_ref();
+            if !self.local_workspace_exists(&workspace)? {
+                return Ok(workspace);
             }
-            None => Ok(self.next_workspace_ref()),
         }
+    }
+
+    fn local_workspace_exists(&self, workspace: &WorkspaceRef) -> WorkspaceServiceResult<bool> {
+        for format in [DurabilityFormat::Binary, DurabilityFormat::Json] {
+            let path = self.local_workspace_path(workspace, format)?;
+            for artifact in [
+                path.clone(),
+                durability_companion_path(&path, "log"),
+                durability_companion_path(&path, "bak"),
+            ] {
+                if artifact.try_exists().map_err(|error| {
+                    WorkspaceServiceError::Runtime(grm_rs::GrmError::Backend(format!(
+                        "failed to inspect local workspace '{}': {error}",
+                        workspace.id
+                    )))
+                })? {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn local_workspace_path(
@@ -1092,6 +1129,16 @@ impl InProcessWorkspaceService {
         };
         Ok(root.join(format!("{}.{}", workspace.id, extension)))
     }
+}
+
+fn durability_companion_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("grm-data");
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{file_name}.{suffix}"))
 }
 
 fn validate_workspace_ref(workspace: &WorkspaceRef) -> WorkspaceServiceResult<()> {
@@ -1350,6 +1397,9 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
 
 fn workspace_status(error: WorkspaceServiceError) -> Status {
     match error {
+        WorkspaceServiceError::WorkspaceAlreadyExists { .. } => {
+            Status::already_exists(error.to_string())
+        }
         WorkspaceServiceError::UnknownWorkspaceHandle { .. }
         | WorkspaceServiceError::UnknownSnapshotHandle { .. } => {
             Status::not_found(error.to_string())
