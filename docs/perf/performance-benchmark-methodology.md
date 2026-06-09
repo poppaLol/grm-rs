@@ -142,8 +142,11 @@ Record enough context to reproduce results:
 - OS, kernel, CPU shape/model, memory, storage, virtualization, and toolchain
 
 For repeatable VPS/cloud runs, keep the generated `provenance.json`,
-`benchmark.log`, and isolated Criterion directory together. A result without
-its provenance envelope is anecdotal evidence.
+`benchmark.log`, `report.json`, `report.md`, and isolated Criterion directory
+together. A result without its provenance envelope is anecdotal evidence.
+Public tables should be generated from Criterion JSON rather than transcribed
+from console output, and should retain the benchmark-line and claim-boundary
+language emitted by the WS221 report generator.
 
 Use stable benchmark names so Criterion baselines remain useful.
 

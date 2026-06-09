@@ -104,6 +104,10 @@ The directory contains:
 - `provenance.json`: machine-readable run envelope
 - `benchmark.log`: combined Cargo and Criterion output
 - `cargo-target/criterion/`: Criterion estimates and reports
+- `report.json`: publication-oriented result data with raw nanosecond estimates
+  and confidence intervals
+- `report.md`: a compact result and provenance table suitable for a PR or
+  website content page
 
 The envelope records:
 
@@ -120,6 +124,26 @@ The envelope records:
 
 Private keys, cloud credentials, arbitrary environment variables, and service
 data are not captured.
+
+## Publishing The Result
+
+For the first public result, review `report.md` beside `provenance.json` and the
+Criterion artifacts. The Markdown report contains:
+
+- a table with operations as rows and dataset sizes as columns
+- Criterion median latency values using readable `ns`, `us`, `ms`, or `s` units
+- benchmark line, TLS mode, persistence format, provider, machine, storage,
+  operating system, Rust version, commit, and date
+- an explicit boundary against database-superiority, hosted-durability,
+  multi-writer, authorization, and production certificate-lifecycle claims
+
+`report.json` carries the same publication metadata plus raw median nanoseconds
+and 95% confidence intervals. A future `soml.io` page can render that JSON
+directly; initially, the checked `report.md` table can be adapted into website
+content without manually transcribing Criterion output.
+
+Do not publish a failed run, a dirty-checkout exploratory run, or a report whose
+provenance does not match the retained Criterion directory.
 
 Validate metadata collection without compiling or running a benchmark:
 
