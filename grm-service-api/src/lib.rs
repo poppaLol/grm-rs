@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -844,6 +845,7 @@ pub struct InProcessWorkspaceService {
     next_workspace_ref_id: u64,
     next_snapshot_id: u64,
     workspaces: BTreeMap<String, grm_rs::Workspace>,
+    workspace_refs: BTreeMap<String, Option<WorkspaceRef>>,
     local_snapshots: BTreeMap<String, LocalWorkspaceSnapshot>,
     local_workspace_root: Option<PathBuf>,
 }
@@ -879,6 +881,7 @@ impl InProcessWorkspaceService {
                 let handle = self.next_workspace_handle();
                 self.workspaces
                     .insert(handle.id.clone(), grm_rs::Workspace::new());
+                self.workspace_refs.insert(handle.id.clone(), None);
                 Ok(WorkspaceCreateResponse {
                     handle,
                     workspace: None,
@@ -902,6 +905,8 @@ impl InProcessWorkspaceService {
                 workspace.enable_autocommit(request.format.into(), path)?;
                 let handle = self.next_workspace_handle();
                 self.workspaces.insert(handle.id.clone(), workspace);
+                self.workspace_refs
+                    .insert(handle.id.clone(), Some(workspace_ref.clone()));
                 Ok(WorkspaceCreateResponse {
                     handle,
                     workspace: Some(workspace_ref),
@@ -960,6 +965,8 @@ impl InProcessWorkspaceService {
         };
         let handle = self.next_workspace_handle();
         self.workspaces.insert(handle.id.clone(), workspace);
+        self.workspace_refs
+            .insert(handle.id.clone(), workspace_ref.clone());
         Ok(WorkspaceOpenResponse {
             handle,
             workspace: workspace_ref,
@@ -988,8 +995,11 @@ impl InProcessWorkspaceService {
     ) -> WorkspaceServiceResult<WorkspaceCloseResponse> {
         self.workspaces
             .remove(&request.handle.id)
-            .map(|_| WorkspaceCloseResponse {
-                handle: request.handle.clone(),
+            .map(|_| {
+                self.workspace_refs.remove(&request.handle.id);
+                WorkspaceCloseResponse {
+                    handle: request.handle.clone(),
+                }
             })
             .ok_or(WorkspaceServiceError::UnknownWorkspaceHandle {
                 handle: request.handle,
@@ -1057,6 +1067,14 @@ impl InProcessWorkspaceService {
                 handle: handle.clone(),
             }
         })
+    }
+
+    fn workspace_log_name(&self, handle: &WorkspaceHandle) -> String {
+        self.workspace_refs
+            .get(&handle.id)
+            .and_then(Option::as_ref)
+            .map(|workspace| workspace.id.clone())
+            .unwrap_or_else(|| handle.id.clone())
     }
 
     fn next_workspace_handle(&mut self) -> WorkspaceHandle {
@@ -1199,6 +1217,14 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             .await
             .create_workspace(request)
             .map_err(workspace_status)?;
+        log_workspace_lifecycle(
+            response
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.id.as_str())
+                .unwrap_or(response.handle.id.as_str()),
+            "workspace.create",
+        );
         Ok(Response::new(response.into()))
     }
 
@@ -1213,6 +1239,14 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             .await
             .open_workspace(request)
             .map_err(workspace_status)?;
+        log_workspace_lifecycle(
+            response
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.id.as_str())
+                .unwrap_or(response.handle.id.as_str()),
+            "workspace.open",
+        );
         Ok(Response::new(response.into()))
     }
 
@@ -1220,16 +1254,18 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceRuntimeRequest>,
     ) -> Result<Response<proto::WorkspaceRuntimeResponse>, Status> {
-        let request = request.into_inner().try_into().map_err(proto_status)?;
-        let response = self
-            .inner
-            .lock()
-            .await
+        let request: WorkspaceRuntimeRequest =
+            request.into_inner().try_into().map_err(proto_status)?;
+        let mut service = self.inner.lock().await;
+        let workspace = service.workspace_log_name(&request.handle);
+        let response = service
             .execute_runtime(request)
             .await
-            .map_err(workspace_status)?
-            .try_into()
-            .map_err(proto_status)?;
+            .map_err(workspace_status)?;
+        let summary = WorkspaceOperationSummary::from_response(&response.response);
+        drop(service);
+        let response = response.try_into().map_err(proto_status)?;
+        println!("{}", summary.render(&workspace));
         Ok(Response::new(response))
     }
 
@@ -1237,13 +1273,13 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCloseRequest>,
     ) -> Result<Response<proto::WorkspaceCloseResponse>, Status> {
-        let request = request.into_inner().try_into().map_err(proto_status)?;
-        let response = self
-            .inner
-            .lock()
-            .await
-            .close_workspace(request)
-            .map_err(workspace_status)?;
+        let request: WorkspaceCloseRequest =
+            request.into_inner().try_into().map_err(proto_status)?;
+        let mut service = self.inner.lock().await;
+        let workspace = service.workspace_log_name(&request.handle);
+        let response = service.close_workspace(request).map_err(workspace_status)?;
+        drop(service);
+        log_workspace_lifecycle(&workspace, "workspace.close");
         Ok(Response::new(response.into()))
     }
 
@@ -1393,6 +1429,158 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
     ) -> Result<Response<proto::SummaryResponse>, Status> {
         Err(unsupported_rpc("Summary"))
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct WorkspaceOperationSummary {
+    operation: &'static str,
+    models_defined: usize,
+    models_read: usize,
+    links_defined: usize,
+    links_read: usize,
+    nodes_created: usize,
+    nodes_read: usize,
+    nodes_updated: usize,
+    nodes_deleted: usize,
+    edges_created: usize,
+    edges_read: usize,
+    edges_updated: usize,
+    edges_deleted: usize,
+}
+
+impl WorkspaceOperationSummary {
+    fn from_response(response: &grm_rs::RuntimeResponse) -> Self {
+        match response {
+            grm_rs::RuntimeResponse::Schema(grm_rs::SchemaResponse::DefineNode(_)) => Self {
+                operation: "schema.define",
+                models_defined: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Schema(grm_rs::SchemaResponse::DefineEdge(_)) => Self {
+                operation: "schema.define",
+                links_defined: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Schema(grm_rs::SchemaResponse::List(schema)) => Self {
+                operation: "schema.list",
+                models_read: schema.node_models.len(),
+                links_read: schema.edge_models.len(),
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Create(_)) => Self {
+                operation: "node.create",
+                nodes_created: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Update(_)) => Self {
+                operation: "node.update",
+                nodes_updated: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Delete(_)) => Self {
+                operation: "node.delete",
+                nodes_deleted: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Find(found)) => Self {
+                operation: "node.find",
+                nodes_read: found.nodes.len(),
+                edges_read: found.edges.len(),
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Create(_)) => Self {
+                operation: "edge.create",
+                edges_created: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Update(_)) => Self {
+                operation: "edge.update",
+                edges_updated: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Delete(_)) => Self {
+                operation: "edge.delete",
+                edges_deleted: 1,
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Edge(grm_rs::EdgeResponse::Find(found)) => Self {
+                operation: "edge.find",
+                edges_read: found.edges.len(),
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Explain(_) => Self {
+                operation: "explain",
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Profile(_) => Self {
+                operation: "profile",
+                ..Self::default()
+            },
+            grm_rs::RuntimeResponse::Batch(batch) => Self {
+                operation: "batch",
+                models_defined: batch_operation_count(&batch.value, "schema_define_node"),
+                links_defined: batch_operation_count(&batch.value, "schema_define_edge"),
+                nodes_created: batch_operation_count(&batch.value, "node_create"),
+                nodes_updated: batch_operation_count(&batch.value, "node_update"),
+                nodes_deleted: batch_operation_count(&batch.value, "node_delete"),
+                edges_created: batch_operation_count(&batch.value, "edge_create"),
+                edges_updated: batch_operation_count(&batch.value, "edge_update"),
+                edges_deleted: batch_operation_count(&batch.value, "edge_delete"),
+                ..Self::default()
+            },
+        }
+    }
+
+    fn render(&self, workspace: &str) -> String {
+        let mut log = format!(
+            "workspace_operation completed workspace={workspace} operation={}",
+            self.operation
+        );
+        for (name, count) in [
+            ("models_defined", self.models_defined),
+            ("models_read", self.models_read),
+            ("links_defined", self.links_defined),
+            ("links_read", self.links_read),
+            ("nodes_created", self.nodes_created),
+            ("nodes_read", self.nodes_read),
+            ("nodes_updated", self.nodes_updated),
+            ("nodes_deleted", self.nodes_deleted),
+            ("edges_created", self.edges_created),
+            ("edges_read", self.edges_read),
+            ("edges_updated", self.edges_updated),
+            ("edges_deleted", self.edges_deleted),
+        ] {
+            if count > 0 {
+                write!(log, " {name}={count}").expect("writing to a string cannot fail");
+            }
+        }
+        log
+    }
+}
+
+fn batch_operation_count(value: &Value, operation: &str) -> usize {
+    let Some(counts) = value.get("counts").and_then(Value::as_object) else {
+        return 0;
+    };
+    counts
+        .get(operation)
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|models| models.values())
+        .filter_map(Value::as_u64)
+        .map(|count| count as usize)
+        .sum()
+}
+
+fn log_workspace_lifecycle(workspace: &str, operation: &'static str) {
+    println!(
+        "{}",
+        WorkspaceOperationSummary {
+            operation,
+            ..WorkspaceOperationSummary::default()
+        }
+        .render(workspace)
+    );
 }
 
 fn workspace_status(error: WorkspaceServiceError) -> Status {
@@ -4762,5 +4950,67 @@ fn proto_id_type(id_type: grm_rs::BackendIdType) -> grm_rs::Result<i32> {
         grm_rs::BackendIdType::Uuid => Err(grm_rs::GrmError::NotSupported(
             "service proto id type mapping for UUID ids",
         )),
+    }
+}
+
+#[cfg(test)]
+mod workspace_operation_log_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn operation_log_separates_schema_node_and_edge_counts() {
+        let response = grm_rs::RuntimeResponse::Batch(grm_rs::RuntimeBatchResponse {
+            value: json!({
+                "counts": {
+                    "schema_define_node": { "SensitiveModel": 2 },
+                    "schema_define_edge": { "SensitiveLink": 1 },
+                    "node_create": { "SensitiveModel": 3 },
+                    "node_update": { "SensitiveModel": 4 },
+                    "node_delete": { "SensitiveModel": 5 },
+                    "edge_create": { "SensitiveLink": 6 },
+                    "edge_update": { "SensitiveLink": 7 },
+                    "edge_delete": { "SensitiveLink": 8 }
+                }
+            }),
+            should_persist: true,
+        });
+
+        let log = WorkspaceOperationSummary::from_response(&response).render("workspace-1");
+
+        assert!(log.contains("models_defined=2"));
+        assert!(log.contains("links_defined=1"));
+        assert!(log.contains("nodes_created=3"));
+        assert!(log.contains("nodes_updated=4"));
+        assert!(log.contains("nodes_deleted=5"));
+        assert!(log.contains("edges_created=6"));
+        assert!(log.contains("edges_updated=7"));
+        assert!(log.contains("edges_deleted=8"));
+        assert!(!log.contains("models_read="));
+        assert!(!log.contains("nodes_read="));
+        assert!(!log.contains("edges_read="));
+        assert!(!log.contains("SensitiveModel"));
+        assert!(!log.contains("SensitiveLink"));
+    }
+
+    #[test]
+    fn operation_log_does_not_render_record_content() {
+        let response =
+            grm_rs::RuntimeResponse::Node(grm_rs::NodeResponse::Create(grm_rs::StoredNode {
+                id: 42,
+                labels: vec!["SecretModel".into()],
+                props: [("password".into(), json!("not-for-logs"))]
+                    .into_iter()
+                    .collect(),
+            }));
+
+        let log = WorkspaceOperationSummary::from_response(&response).render("safe-workspace");
+
+        assert!(log.contains("operation=node.create"));
+        assert!(log.contains("nodes_created=1"));
+        assert!(!log.contains("=0"));
+        for secret in ["42", "SecretModel", "password", "not-for-logs"] {
+            assert!(!log.contains(secret));
+        }
     }
 }

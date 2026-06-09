@@ -120,6 +120,50 @@ reopens the workspace, and verifies data is still present.
 Rust callers can use `grm_service_api::GrpcWorkspaceClient` directly for the
 same checked subset without building generated protobuf requests manually.
 
+## Seed The Movie Demonstrator Through The CLI
+
+The repository includes a small movie graph at
+[`examples/service_movies.grm`](../examples/service_movies.grm). Build the CLI,
+then use it to create and populate a service-managed workspace:
+
+```bash
+cargo build -p grm-cli
+
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
+GRM_WORKSPACE_REF=movies-demo \
+GRM_SERVICE_WORKSPACE_MODE=create \
+target/debug/grm session --script examples/service_movies.grm
+```
+
+The CLI parses the script locally and sends each supported command through the
+typed `ExecuteWorkspace` API. After setup it remains at the interactive prompt,
+with script bindings still available. Some useful queries are:
+
+```text
+node.find Person name="Keanu Reeves" via=out:ACTEDIN:Movie order=released:asc
+node.find Movie title="The Matrix" via=in:ACTEDIN:Person order=name:asc
+edge.find ACTEDIN role="Neo"
+session.describe
+```
+
+The service console reports sparse operation summaries without model names,
+IDs, properties, predicates, or values. A portion of this setup looks like:
+
+```text
+workspace_operation completed workspace=movies-demo operation=workspace.create
+workspace_operation completed workspace=movies-demo operation=schema.define models_defined=1
+workspace_operation completed workspace=movies-demo operation=schema.define links_defined=1
+workspace_operation completed workspace=movies-demo operation=node.create nodes_created=1
+workspace_operation completed workspace=movies-demo operation=edge.create edges_created=1
+workspace_operation completed workspace=movies-demo operation=node.find nodes_read=2
+```
+
+Service script execution is fail-fast, but it is not transactional: successful
+earlier commands remain committed if a later line fails. Reuse an existing
+demonstrator workspace with mode `open`; mode `create` deliberately rejects an
+existing workspace ref.
+
 ## CLI Service-Backed Workspace Mode
 
 The regular local CLI remains:
@@ -164,8 +208,10 @@ In this mode, `model.define`, `link.define`, node/edge CRUD, simple find,
 traversal-capable `node.find` for node/root/end/edge results, typed
 `session.explain/profile node.find|edge.find`, `model.list`, `link.list`, and
 `session.describe` use `ExecuteWorkspace`.
-Local session file commands, transactions, free-form query parity, and
-import/export remain local-only or unsupported in service CLI mode.
+The CLI also supports `--script <path>` by parsing the file locally and routing
+the supported commands through `ExecuteWorkspace`. Local session file loading,
+transactions, free-form query parity, and import/export remain local-only or
+unsupported in service CLI mode.
 `GRM_SERVICE_WORKSPACE_FORMAT` defaults to binary; set it to `json` only when
 you explicitly want JSON workspace files. The local Docker service stores these
 workspace files under its configured workspace root; this is checked local
