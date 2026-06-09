@@ -144,6 +144,10 @@ scoped guarantee is intentionally boring: after a successful autocommit write
 returns, the write is present in either the append log or a checkpoint on a
 single local filesystem, assuming one writer owns the session/store. Direct
 low-level workspace state mutations are not claimed to autocommit.
+Interactive CLI `session.autocommit --json|--bin <path>` checkpoints the current
+session immediately and may replace an existing target. Use `session.load` or
+startup `--load` to resume existing data, and keep separate backups for
+important local files.
 
 For future direction, see [docs/cli-roadmap.md](docs/cli-roadmap.md). Detailed
 command walkthroughs are moving toward tutorial docs rather than living in the
