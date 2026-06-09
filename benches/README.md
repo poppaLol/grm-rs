@@ -308,6 +308,8 @@ python3 scripts/cloud_benchmark.py local-grpc-mtls \
 
 The runner records source, machine, toolchain, benchmark-line, TLS, persistence,
 dataset, and target-isolation metadata beside an isolated Criterion directory.
+Successful runs also emit `report.md` for PR/website use and `report.json` for
+future automated rendering.
 See
 [Repeatable Cloud And VPS Benchmarks](../docs/perf/repeatable-cloud-benchmarks.md)
 for machine selection, safety requirements, output layout, and interpretation.
