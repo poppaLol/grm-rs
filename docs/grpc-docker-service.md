@@ -62,6 +62,24 @@ Stop the foreground container from another shell with:
 docker stop grm
 ```
 
+## Automated Docker Hub Publishing
+
+GitHub Actions publishes `lauriebart/grm` through
+`.github/workflows/docker-publish.yml`. Configure these repository settings:
+
+- Actions variable `DOCKERHUB_USERNAME`: `lauriebart`
+- Actions secret `DOCKERHUB_TOKEN`: a Docker Hub access token with permission
+  to push `lauriebart/grm`
+
+The workflow builds and smoke-runs the container before logging in and pushing.
+A push to `main` updates `latest` and publishes an immutable `sha-<commit>` tag.
+A Git tag such as `grm-v0.1.0` publishes `0.1.0` and the immutable SHA tag.
+The workflow can also be started manually from GitHub Actions.
+
+Use a Docker Hub access token rather than storing the account password. The
+token is a repository secret and must never be committed to this repository or
+printed by workflow steps.
+
 ## Build With Docker Compose
 
 Contributors can build the service from the current checkout:
