@@ -1,4 +1,4 @@
-FROM rust:1.88.0-slim-bookworm AS builder
+FROM rust:1.88.0-slim-trixie AS builder
 
 ENV RUSTUP_TOOLCHAIN=1.88.0
 
@@ -8,7 +8,7 @@ COPY . .
 
 RUN cargo build -p grm-service-api --release --bin grm-local-workspace-server
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 COPY --from=builder /src/target/release/grm-local-workspace-server /usr/local/bin/grm-local-workspace-server
 
