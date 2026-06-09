@@ -267,6 +267,18 @@ After that, successful schema changes and data mutations are written to the
 autocommit target. Use `session.autocommit status` to inspect it and
 `session.autocommit off` to disable it.
 
+Enabling autocommit interactively immediately checkpoints the current in-memory
+session to the target path. If that path already contains a session, its current
+checkpoint and append log may be replaced. To resume an existing session, load
+it explicitly instead:
+
+```text
+session.load --json test-dbs/tutorial-session.json
+```
+
+For important local data, keep a separate backup as you would for any
+application-managed document file.
+
 You can also opt into autocommit when opening an existing session:
 
 ```bash
