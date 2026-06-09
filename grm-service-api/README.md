@@ -47,7 +47,7 @@ tested.
 Run the local workspace shell and generated-client walkthrough with:
 
 ```bash
-cargo run -p grm-service-api --example local_workspace_server -- 127.0.0.1:50051 /tmp/grm-service-workspaces
+cargo run -p grm-service-api --bin grm-local-workspace-server -- 127.0.0.1:50051 /tmp/grm-service-workspaces
 cargo run -p grm-service-api --example local_workspace_client -- http://127.0.0.1:50051 demo-workspace
 ```
 

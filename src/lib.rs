@@ -13,9 +13,11 @@ pub mod runtime;
 pub use backend::{
     AccessPath, BackendCapabilities, BackendIdType, BackendIdentity, CypherQuery, ExecutionPlan,
     GraphBackend, GraphPersistence, GraphTx, InMemoryBackend, IndexEntity, IndexKind,
-    IndexMetadata, Neo4jBackend, Neo4jConfig, Neo4jTx, PlanStep, PlanStepKind, StoredNode,
-    StoredRel, graph_query_to_cypher, system_index_catalog,
+    IndexMetadata, PlanStep, PlanStepKind, StoredNode, StoredRel, graph_query_to_cypher,
+    system_index_catalog,
 };
+#[cfg(feature = "neo4j")]
+pub use backend::{Neo4jBackend, Neo4jConfig, Neo4jTx};
 pub use client::{GraphClient, GraphPersistenceAccess};
 pub use decode::{DecodeFromRow, ResultShape, labels_match, node, rel};
 pub use dsl::{
@@ -46,6 +48,7 @@ pub use runtime::{
     TraversalReturn, TraversalStepRequest, Workspace, apply_session_batch,
 };
 
+#[cfg(feature = "neo4j")]
 pub async fn connect_neo4j_backend(config: Neo4jConfig) -> Result<Neo4jBackend> {
     Neo4jBackend::connect(config).await
 }
