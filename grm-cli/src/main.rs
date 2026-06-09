@@ -1460,60 +1460,71 @@ mod tests {
         );
         let mut output = Vec::new();
         session
-            .handle_command(&mut output, "model.define User userId name:string:required")
+            .handle_command(
+                &mut output,
+                "model.define User userId name:string:required",
+                false,
+            )
             .await
             .unwrap();
         session
             .handle_command(
                 &mut output,
                 "model.define Post postId title:string:required",
+                false,
             )
             .await
             .unwrap();
         session
             .handle_command(
                 &mut output,
-                "link.define Authored User Post authoredId year:int:required",
+                "link.define AUTHORED User Post authoredId year:int:required",
+                false,
             )
             .await
             .unwrap();
         session
-            .handle_command(&mut output, "let alice = node.create User name=Ada")
-            .await
-            .unwrap();
-        session
-            .handle_command(&mut output, "let post = node.create Post title=Notes")
+            .handle_command(&mut output, "let alice = node.create User name=Ada", false)
             .await
             .unwrap();
         session
             .handle_command(
                 &mut output,
-                "edge.create Authored from=alice to=post year=2026",
+                "let post = node.create Post title=Notes",
+                false,
             )
             .await
             .unwrap();
         session
-            .handle_command(&mut output, "node.find User name=Ada")
+            .handle_command(
+                &mut output,
+                "edge.create AUTHORED from=alice to=post year=2026",
+                false,
+            )
             .await
             .unwrap();
         session
-            .handle_command(&mut output, "edge.find Authored from=alice")
+            .handle_command(&mut output, "node.find User name=Ada", false)
             .await
             .unwrap();
         session
-            .handle_command(&mut output, "node.create Post title=alice")
+            .handle_command(&mut output, "edge.find AUTHORED from=alice", false)
             .await
             .unwrap();
         session
-            .handle_command(&mut output, "node.find Post title=alice")
+            .handle_command(&mut output, "node.create Post title=alice", false)
             .await
             .unwrap();
         session
-            .handle_command(&mut output, "session.describe")
+            .handle_command(&mut output, "node.find Post title=alice", false)
             .await
             .unwrap();
         session
-            .handle_command(&mut output, "session.help")
+            .handle_command(&mut output, "session.describe", false)
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "session.help", false)
             .await
             .unwrap();
 
@@ -1526,13 +1537,13 @@ mod tests {
         assert!(output.contains("Defined node model"));
         assert!(output.contains("Node User id=1 {name=Ada}"));
         assert!(output.contains("Node Post id=3 {title=alice}"));
-        assert!(output.contains("Edge Authored id=1 from=1 to=2 {year=2026}"));
+        assert!(output.contains("Edge AUTHORED id=1 from=1 to=2 {year=2026}"));
         assert!(output.contains("Session Summary"));
         assert!(output.contains("Stored rows: 3 nodes, 1 edges"));
         assert!(output.contains("+------+----------+-------+"));
         assert!(output.contains("| node | User     | 1     |"));
         assert!(output.contains("| node | Post     | 2     |"));
-        assert!(output.contains("| edge | Authored | 1     |"));
+        assert!(output.contains("| edge | AUTHORED | 1     |"));
         assert!(output.contains("Backend: gRPC workspace storage"));
         assert!(output.contains("Mode: create"));
         assert!(output.contains("Persistence format: binary (default)"));
