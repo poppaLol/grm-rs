@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
@@ -8,12 +8,12 @@ use grm_rs::{
     CliSession, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
     EdgeFindRequest, EdgeUpdateRequest, ExplainRequest, FieldSpec, FieldValueType,
     NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, ProfileRequest,
-    QueryRequest, RuntimeNodeModel, RuntimeRelModel, StoredNode, StoredRel,
+    QueryRequest, QueryTerm, RuntimeNodeModel, RuntimeRelModel, StoredNode, StoredRel,
 };
 use grm_service_api::{
     DurabilityFormat, GrpcClientTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceMode, proto,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupLoadFormat {
@@ -425,6 +425,14 @@ struct ServiceSessionInfo {
     format_explicit: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceOutputFormat {
+    Default,
+    Jsonl,
+    Table,
+    Graph,
+}
+
 impl<'a> ServiceCliSession<'a> {
     fn new(
         client: &'a mut GrpcWorkspaceClient,
@@ -498,18 +506,25 @@ impl<'a> ServiceCliSession<'a> {
                 write_node(writer, &node, &self.colors)?;
             }
             SessionCommand::NodeFind { model_name, terms } => {
+                let format = service_output_format(&terms)?;
+                if format == ServiceOutputFormat::Graph {
+                    return Err(grm_rs::GrmError::NotSupported(
+                        "format=graph is not supported in gRPC CLI mode because the service response does not currently include traversal path rows",
+                    ));
+                }
                 let request = NodeFindRequest::from_adapter_query_terms(model_name, terms)?;
                 let found = self
                     .client
                     .find_node_results(request)
                     .await
                     .map_err(service_error)?;
-                for node in found.nodes {
-                    write_node(writer, &node, &self.colors)?;
-                }
-                for edge in found.edges {
-                    write_edge(writer, &edge, &self.colors)?;
-                }
+                write_service_find_results(
+                    writer,
+                    &found.nodes,
+                    &found.edges,
+                    format,
+                    &self.colors,
+                )?;
             }
             SessionCommand::NodeUpdate {
                 model_name,
@@ -558,6 +573,12 @@ impl<'a> ServiceCliSession<'a> {
                 write_edge(writer, &edge, &self.colors)?;
             }
             SessionCommand::EdgeFind { model_name, terms } => {
+                let format = service_output_format(&terms)?;
+                if format == ServiceOutputFormat::Graph {
+                    return Err(grm_rs::GrmError::NotSupported(
+                        "format=graph is only supported for graph-shaped node.find results and is not available in gRPC CLI mode",
+                    ));
+                }
                 let request = EdgeFindRequest::from_adapter_filter_values(
                     model_name,
                     terms_to_json_filters(terms, &self.bindings, true)?,
@@ -567,9 +588,7 @@ impl<'a> ServiceCliSession<'a> {
                     .find_edges(request)
                     .await
                     .map_err(service_error)?;
-                for edge in found.edges {
-                    write_edge(writer, &edge, &self.colors)?;
-                }
+                write_service_find_results(writer, &[], &found.edges, format, &self.colors)?;
             }
             SessionCommand::EdgeUpdate {
                 model_name,
@@ -883,7 +902,7 @@ fn write_service_help<W: Write>(writer: &mut W, colors: &CliColors) -> grm_rs::R
     )?;
     writeln!(
         writer,
-        "  {} <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [via=<out|in|both>:<LinkName|*>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]",
+        "  {} <ModelName> [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [via=<out|in|both>:<LinkName|*>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end|edge] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table]",
         colors.property_name("node.find")
     )?;
     writeln!(
@@ -903,7 +922,7 @@ fn write_service_help<W: Write>(writer: &mut W, colors: &CliColors) -> grm_rs::R
     )?;
     writeln!(
         writer,
-        "  {} <LinkName> [from=<id|binding>] [to=<id|binding>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]",
+        "  {} <LinkName> [from=<id|binding>] [to=<id|binding>] [field=value|field!=value|field>value|field>=value|field<value|field<=value|field~value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>] [format=default|jsonl|table]",
         colors.property_name("edge.find")
     )?;
     writeln!(
@@ -1010,6 +1029,159 @@ fn write_edge<W: Write>(
     Ok(())
 }
 
+fn service_output_format(terms: &[QueryTerm]) -> grm_rs::Result<ServiceOutputFormat> {
+    let Some(raw) = terms
+        .iter()
+        .find(|term| term.key == "format")
+        .map(|term| term.value.as_str())
+    else {
+        return Ok(ServiceOutputFormat::Default);
+    };
+    match raw {
+        "default" => Ok(ServiceOutputFormat::Default),
+        "jsonl" => Ok(ServiceOutputFormat::Jsonl),
+        "table" => Ok(ServiceOutputFormat::Table),
+        "graph" => Ok(ServiceOutputFormat::Graph),
+        _ => Err(grm_rs::GrmError::Constraint(
+            "format must be one of: default, jsonl, table, graph".into(),
+        )),
+    }
+}
+
+fn write_service_find_results<W: Write>(
+    writer: &mut W,
+    nodes: &[StoredNode],
+    edges: &[StoredRel],
+    format: ServiceOutputFormat,
+    colors: &CliColors,
+) -> grm_rs::Result<()> {
+    match format {
+        ServiceOutputFormat::Default => {
+            for node in nodes {
+                write_node(writer, node, colors)?;
+            }
+            for edge in edges {
+                write_edge(writer, edge, colors)?;
+            }
+        }
+        ServiceOutputFormat::Jsonl => {
+            for node in nodes {
+                writeln!(
+                    writer,
+                    "{}",
+                    json!({
+                        "kind": "node",
+                        "model": node.labels.first().cloned().unwrap_or_default(),
+                        "id": node.id,
+                        "labels": node.labels,
+                        "props": node.props,
+                    })
+                )?;
+            }
+            for edge in edges {
+                writeln!(
+                    writer,
+                    "{}",
+                    json!({
+                        "kind": "edge",
+                        "model": edge.rel_type,
+                        "id": edge.id,
+                        "from": edge.from,
+                        "to": edge.to,
+                        "type": edge.rel_type,
+                        "props": edge.props,
+                    })
+                )?;
+            }
+        }
+        ServiceOutputFormat::Table => {
+            if !nodes.is_empty() {
+                write_service_node_table(writer, nodes, colors)?;
+            }
+            if !edges.is_empty() {
+                write_service_edge_table(writer, edges, colors)?;
+            }
+            if nodes.is_empty() && edges.is_empty() {
+                writeln!(writer, "No results.")?;
+            }
+        }
+        ServiceOutputFormat::Graph => {
+            return Err(grm_rs::GrmError::NotSupported(
+                "format=graph is not supported by flat service find responses",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_service_node_table<W: Write>(
+    writer: &mut W,
+    nodes: &[StoredNode],
+    colors: &CliColors,
+) -> grm_rs::Result<()> {
+    let property_names = nodes
+        .iter()
+        .flat_map(|node| node.props.keys().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut headers = vec!["id".to_string(), "labels".to_string()];
+    headers.extend(property_names.iter().cloned());
+    let header_refs = headers.iter().map(String::as_str).collect::<Vec<_>>();
+    let header_kinds =
+        std::iter::repeat_n(TableHeaderKind::Property, headers.len()).collect::<Vec<_>>();
+    let rows = nodes
+        .iter()
+        .map(|node| {
+            let mut row = vec![node.id.to_string(), node.labels.join(",")];
+            row.extend(
+                property_names
+                    .iter()
+                    .map(|name| service_table_value(node.props.get(name), colors)),
+            );
+            row
+        })
+        .collect::<Vec<_>>();
+    write_cli_table(writer, &header_refs, &header_kinds, &rows, colors)
+}
+
+fn write_service_edge_table<W: Write>(
+    writer: &mut W,
+    edges: &[StoredRel],
+    colors: &CliColors,
+) -> grm_rs::Result<()> {
+    let property_names = edges
+        .iter()
+        .flat_map(|edge| edge.props.keys().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut headers = vec![
+        "id".to_string(),
+        "from".to_string(),
+        "to".to_string(),
+        "type".to_string(),
+    ];
+    headers.extend(property_names.iter().cloned());
+    let header_refs = headers.iter().map(String::as_str).collect::<Vec<_>>();
+    let header_kinds =
+        std::iter::repeat_n(TableHeaderKind::Property, headers.len()).collect::<Vec<_>>();
+    let rows = edges
+        .iter()
+        .map(|edge| {
+            let mut row = vec![
+                edge.id.to_string(),
+                edge.from.to_string(),
+                edge.to.to_string(),
+                colors.type_name(&edge.rel_type),
+            ];
+            row.extend(
+                property_names
+                    .iter()
+                    .map(|name| service_table_value(edge.props.get(name), colors)),
+            );
+            row
+        })
+        .collect::<Vec<_>>();
+    write_cli_table(writer, &header_refs, &header_kinds, &rows, colors)
+}
+
 fn write_service_explain<W: Write>(
     writer: &mut W,
     explain: &proto::ExplainResponse,
@@ -1067,6 +1239,12 @@ fn scalar_display(value: &Value, colors: &CliColors) -> String {
         Value::String(value) => colors.string_value(value),
         _ => value.to_string(),
     }
+}
+
+fn service_table_value(value: Option<&Value>, colors: &CliColors) -> String {
+    value
+        .map(|value| scalar_display(value, colors))
+        .unwrap_or_default()
 }
 
 fn write_cli_table<W: Write>(
@@ -1508,9 +1686,42 @@ mod tests {
             .await
             .unwrap();
         session
+            .handle_command(&mut output, "node.find User name=Ada format=jsonl", false)
+            .await
+            .unwrap();
+        session
+            .handle_command(&mut output, "node.find User name=Ada format=table", false)
+            .await
+            .unwrap();
+        session
             .handle_command(&mut output, "edge.find AUTHORED from=alice", false)
             .await
             .unwrap();
+        session
+            .handle_command(
+                &mut output,
+                "edge.find AUTHORED from=alice format=jsonl",
+                false,
+            )
+            .await
+            .unwrap();
+        session
+            .handle_command(
+                &mut output,
+                "edge.find AUTHORED from=alice format=table",
+                false,
+            )
+            .await
+            .unwrap();
+        let graph_error = session
+            .handle_command(&mut output, "node.find User name=Ada format=graph", false)
+            .await
+            .unwrap_err();
+        assert!(
+            graph_error
+                .to_string()
+                .contains("does not currently include traversal path rows")
+        );
         session
             .handle_command(&mut output, "node.create Post title=alice", false)
             .await
@@ -1536,8 +1747,16 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("Defined node model"));
         assert!(output.contains("Node User id=1 {name=Ada}"));
+        assert!(output.contains(
+            r#"{"id":1,"kind":"node","labels":["User"],"model":"User","props":{"name":"Ada"}}"#
+        ));
+        assert!(output.contains("| id | labels | name |"));
         assert!(output.contains("Node Post id=3 {title=alice}"));
         assert!(output.contains("Edge AUTHORED id=1 from=1 to=2 {year=2026}"));
+        assert!(output.contains(
+            r#"{"from":1,"id":1,"kind":"edge","model":"AUTHORED","props":{"year":2026},"to":2,"type":"AUTHORED"}"#
+        ));
+        assert!(output.contains("| id | from | to | type     | year |"));
         assert!(output.contains("Session Summary"));
         assert!(output.contains("Stored rows: 3 nodes, 1 edges"));
         assert!(output.contains("+------+----------+-------+"));

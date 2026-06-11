@@ -316,7 +316,7 @@ async fn grpc_service_session_node_find_supports_traversal_terms() {
             &endpoint,
             "cli-traversal-smoke",
             Some("create"),
-            "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Ada\nnode.create Post title=Traversal\nedge.create Authored from=1 to=2 year=2026\nnode.find User name=Ada via=out:Authored:Post end.title=Traversal edge.year=2026 return=end order=title:asc limit=1 offset=0\nnode.find User name=Ada via=out:Authored:Post return=edge\nsession.explain node.find User name=Ada via=out:Authored:Post end.title=Traversal\nsession.profile node.find User name=Ada via=out:Authored:Post end.title=Traversal\nsession.explain edge.find Authored from=1\nsession.profile edge.find Authored from=1\nsession.exit\n",
+            "model.define User userId name:string:required\nmodel.define Post postId title:string:required\nlink.define Authored User Post authoredId year:int:required\nnode.create User name=Ada\nnode.create Post title=Traversal\nedge.create Authored from=1 to=2 year=2026\nnode.find User name=Ada via=out:Authored:Post end.title=Traversal edge.year=2026 return=end order=title:asc limit=1 offset=0\nnode.find User name=Ada format=jsonl\nnode.find User name=Ada format=table\nnode.find User name=Ada via=out:Authored:Post return=edge\nedge.find Authored from=1 format=jsonl\nedge.find Authored from=1 format=table\nsession.explain node.find User name=Ada via=out:Authored:Post end.title=Traversal\nsession.profile node.find User name=Ada via=out:Authored:Post end.title=Traversal\nsession.explain edge.find Authored from=1\nsession.profile edge.find Authored from=1\nsession.exit\n",
         )
     })
     .await
@@ -331,7 +331,15 @@ async fn grpc_service_session_node_find_supports_traversal_terms() {
     assert!(stdout.contains("Mode: create"));
     assert!(stdout.contains("Persistence format: binary (default)"));
     assert!(stdout.contains("Node Post id=2 {title=Traversal}"));
+    assert!(stdout.contains(
+        r#"{"id":1,"kind":"node","labels":["User"],"model":"User","props":{"name":"Ada"}}"#
+    ));
+    assert!(stdout.contains("| id | labels | name |"));
     assert!(stdout.contains("Edge Authored id=1 from=1 to=2 {year=2026}"));
+    assert!(stdout.contains(
+        r#"{"from":1,"id":1,"kind":"edge","model":"Authored","props":{"year":2026},"to":2,"type":"Authored"}"#
+    ));
+    assert!(stdout.contains("| id | from | to | type     | year |"));
     assert!(stdout.contains("Current logical plan for node.find"));
     assert!(stdout.contains("Profile for node.find"));
     assert!(stdout.contains("Current logical plan for edge.find"));
