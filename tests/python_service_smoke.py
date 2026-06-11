@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from grm_rs import ServiceSession
+from grm_rs import ServiceSession, WorkspaceGraphSession
 
 
 def free_port() -> int:
@@ -42,8 +42,8 @@ def main() -> None:
                 "run",
                 "-p",
                 "grm-service-api",
-                "--example",
-                "local_workspace_server",
+                "--bin",
+                "grm-local-workspace-server",
                 "--",
                 f"127.0.0.1:{port}",
                 str(root),
@@ -59,6 +59,7 @@ def main() -> None:
                 workspace_ref="python-service-smoke",
                 mode="create",
             )
+            assert isinstance(session, WorkspaceGraphSession)
             session.model_create(
                 "User",
                 "userId",
