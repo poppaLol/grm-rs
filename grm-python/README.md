@@ -10,13 +10,13 @@ sharing and GitHub Release testing before any public PyPI upload.
 Install from a wheel file:
 
 ```bash
-python -m pip install ./dist/grm_rs-0.1.0a6-*.whl
+python -m pip install ./dist/grm_rs-0.1.0a7-*.whl
 ```
 
 Or install from an authenticated GitHub Release asset URL:
 
 ```bash
-python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.1.0a6/<wheel-file>.whl"
+python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.1.0a7/<wheel-file>.whl"
 ```
 
 The distribution package is named `grm-rs`; the import package is `grm_rs`.
@@ -41,7 +41,11 @@ for private sharing and pre-release options.
 ## Example
 
 ```python
-from grm_rs import Session
+from grm_rs import GraphId, Session, WorkspaceGraphSession
+
+
+def add_user(session: WorkspaceGraphSession, name: str) -> GraphId:
+    return session.node_create("User", {"name": name})["id"]
 
 session = Session()
 session.model_create(
@@ -74,6 +78,9 @@ post = session.node_create("Post", {"title": "Hello"})
 edge = session.edge_create("AUTHORED", alice["id"], post["id"], {"year": 2024})
 users = session.node_find("User", {"name": "Alice"})
 ```
+
+The same `add_user` function accepts `ServiceSession`; applications do not need
+to define a local protocol or import generated protobuf classes.
 
 Traversal queries mirror CLI `node.find ... via=...` semantics with structured
 Python inputs:

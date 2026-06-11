@@ -1,14 +1,21 @@
 import json
+from importlib import resources
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from grm_rs import GrmError, Session
+import grm_rs
+from grm_rs import GrmError, Session, WorkspaceGraphSession
 
 
 def main() -> None:
+    package_files = resources.files(grm_rs)
+    assert package_files.joinpath("py.typed").is_file()
+    assert package_files.joinpath("_grm_rs.pyi").is_file()
+
     with TemporaryDirectory() as tmpdir:
         autocommit_path = Path(tmpdir) / "session.json"
         session = Session(autocommit=True, autocommit_path=str(autocommit_path))
+        assert isinstance(session, WorkspaceGraphSession)
 
         assert session.autocommit is True
         assert session.autocommit_format == "json"
