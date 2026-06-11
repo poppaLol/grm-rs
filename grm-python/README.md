@@ -1,8 +1,8 @@
 # grm-rs Python bindings
 
 This crate packages a first-pass Python API for the `grm-rs` runtime session surface.
-It includes the embedded/local `Session` API and a service-backed
-`ServiceSession` API for the checked gRPC workspace subset.
+It includes embedded `Session`, service-backed `ServiceSession`, and direct
+`Neo4jSession` implementations of a portable synchronous `GraphSession` core.
 
 The current Python package is a pre-release. It is meant for private wheel
 sharing and GitHub Release testing before any public PyPI upload.
@@ -41,10 +41,10 @@ for private sharing and pre-release options.
 ## Example
 
 ```python
-from grm_rs import GraphId, Session, WorkspaceGraphSession
+from grm_rs import GraphId, GraphSession, Session
 
 
-def add_user(session: WorkspaceGraphSession, name: str) -> GraphId:
+def add_user(session: GraphSession, name: str) -> GraphId:
     return session.node_create("User", {"name": name})["id"]
 
 session = Session()
@@ -79,8 +79,54 @@ edge = session.edge_create("AUTHORED", alice["id"], post["id"], {"year": 2024})
 users = session.node_find("User", {"name": "Alice"})
 ```
 
-The same `add_user` function accepts `ServiceSession`; applications do not need
-to define a local protocol or import generated protobuf classes.
+The same `add_user` function accepts `Session`, `ServiceSession`, or
+`Neo4jSession`; applications do not need to redeclare the session API.
+
+## Portable Store Injection
+
+Application stores can depend on `GraphSession` and receive either backend:
+
+```python
+from grm_rs import GraphSession, Neo4jSession, ServiceSession
+
+
+class UserStore:
+    def __init__(self, graph: GraphSession) -> None:
+        self.graph = graph
+
+    def find_named(self, name: str):
+        return self.graph.node_find("User", {"name": name})
+
+
+graph: GraphSession
+if use_neo4j:
+    graph = Neo4jSession(uri=uri, user=user, password=password)
+else:
+    graph = ServiceSession(endpoint=endpoint, workspace_ref="demo", mode="open")
+
+users = UserStore(graph).find_named("Ada")
+```
+
+The portable core has compatible schema inspection, CRUD/find, and atomic
+batch semantics. `GraphId` is opaque application-facing identity: code may pass
+returned IDs back to the same graph session, but must not assume physical ID
+preservation when moving data between backends.
+
+| Capability | Portable `GraphSession` | Workspace only | Neo4j native |
+| --- | --- | --- | --- |
+| Schema define/list | yes | yes | yes, GRM-owned session metadata |
+| Node/edge CRUD and simple find | yes | yes | yes |
+| Atomic batch writes | yes | yes | yes, one Neo4j transaction |
+| Non-atomic batch writes | no | yes | no |
+| Traversal-shaped `node_find` | no | yes | no |
+| Explain/profile, indexes, import/export | no | yes | no |
+| Native Cypher via `execute_query` | no | no | yes |
+
+Use `session.capabilities()` for lightweight discovery. The stable capability
+names currently include `graph`, `atomic_batch`, `non_atomic_batch`,
+`workspace`, `traversal`, `explain_profile`, `persistence`, and
+`neo4j_native_query`; applications should test membership rather than assume
+every session has optional methods.
 
 Traversal queries mirror CLI `node.find ... via=...` semantics with structured
 Python inputs:
@@ -145,6 +191,13 @@ result = session.batch(
     response="detailed",
 )
 ```
+
+The portable `GraphSession.batch()` contract is atomic-only and therefore has
+no `atomic` argument. For Neo4j it stages GRM schema changes, executes all graph
+writes in one backend transaction, and installs staged schema only after
+commit. A failed operation rolls back graph writes and discards staged schema.
+Workspace sessions additionally implement `WorkspaceBatchCapability`, whose
+`atomic=False` mode is intentionally outside the portable contract.
 
 Use `save_json` / `load_json` or `save_binary` / `load_binary` for local
 workspace snapshots. Use `export_json`, `export_dict`, and `import_json` for

@@ -1,6 +1,6 @@
 # Python API Expansion Toward Neo4j
 
-Status: started
+Status: portable graph-session core implemented
 
 ## Goal
 
@@ -47,7 +47,7 @@ session = await grm_rs.AsyncSession.neo4j(
 
 Async-first live backend session for Neo4j and other networked backends.
 
-The first implementation step uses:
+The current implementation provides:
 
 ```python
 session = await grm_rs.AsyncNeo4jSession.connect(
@@ -57,9 +57,9 @@ session = await grm_rs.AsyncNeo4jSession.connect(
 )
 ```
 
-This is currently an async convenience wrapper over the blocking
-`grm_rs.Neo4jSession` extension class. It keeps the Python API shape moving in
-the async direction while the Rust backend and transaction contract settle.
+`AsyncNeo4jSession` remains an async convenience wrapper over the blocking
+extension class, with the same schema inspection, CRUD/find, atomic batch, and
+native query methods.
 
 ```python
 session = grm_rs.Session.neo4j(
@@ -85,19 +85,44 @@ Keep local snapshot persistence distinct from backend durability.
 For Neo4j, write durability should come from backend transactions, not local
 snapshot autocommit.
 
-## Required Rust Work
+## Implemented Shared Core
+
+Schema-aware Neo4j CRUD, simple find, edge lookup, validation, and atomic batch
+orchestration now live in the shared Rust runtime Neo4j module. MCP and Python
+call that implementation. Adapter-only filter parsing stays at the adapter
+edge, while structured runtime requests remain the operation contract.
+
+`GraphSession` is the portable synchronous Python protocol. It includes:
+
+- node and link model create/list
+- node and edge create/find/update/delete
+- atomic-only batch writes
+- opaque `GraphId` values and capability discovery
+
+`WorkspaceGraphSession` adds traversal and explain/profile capabilities.
+Its `WorkspaceBatchCapability` also adds non-atomic batching; the portable
+`GraphSession.batch()` signature deliberately does not accept `atomic=False`.
+`Neo4jGraphSession` adds native `execute_query`; native Cypher is intentionally
+outside the portable contract.
+
+Neo4j schema memory remains GRM-owned session/catalog state and is not written
+into the user's graph. Atomic batches stage schema changes and install them only
+after the single Neo4j transaction commits.
+
+## Remaining Rust Work
 
 Before Python can write directly to Neo4j:
 
 1. Add a minimal `Neo4jBackend` implementing `GraphBackend` and `GraphTx`. (started)
-2. Expose a first Python Neo4j session surface. (started)
+2. Expose a first Python Neo4j session surface. (complete)
 3. Make `SessionState` backend-pluggable instead of hard-wired to
    `GraphClient<InMemoryBackend>`.
-4. Define backend capability reporting so Python can expose supported features
-   clearly.
+4. Evolve the lightweight Python capability names into richer backend/runtime
+   capability descriptions when a concrete consumer requires them.
 5. Clean up backend identity enough for Python to handle non-`i64` IDs without
    leaking backend internals.
-6. Share CRUD and query behavior tests across the in-memory and Neo4j backends.
+6. Broaden backend conformance testing beyond the focused portable-session
+   coverage when semantics genuinely align.
 
 ## First Python Milestone
 
@@ -121,3 +146,25 @@ without committing to every future query feature at once.
 - Do not expose Rust generic or macro-heavy APIs directly to Python users.
 - Do not treat GitHub Release wheels as a stable public package contract.
 - Do not hide network IO behind local-file `autocommit` semantics.
+
+## External Verification
+
+With a dedicated Neo4j test endpoint:
+
+```bash
+NEO4J_URI=... NEO4J_USER=... NEO4J_PASSWORD=... \
+  cargo test --test neo4j_bolt_smoke shared_neo4j -- --ignored --nocapture
+```
+
+After `maturin develop`, the Python live-backend smoke remains:
+
+```bash
+NEO4J_URI=... NEO4J_USER=... NEO4J_PASSWORD=... \
+  python tests/python_neo4j_smoke.py
+```
+
+The local gRPC binding test is:
+
+```bash
+cargo test -p grm-rs-python --lib
+```

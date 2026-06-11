@@ -4,8 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use grm_rs::dsl::{Direction, GraphQuery, HopMatch, MatchClause, NodeMatch, Return, VarId};
 use grm_rs::{
-    CompareOp, GraphBackend, GraphTx, Neo4jBackend, Neo4jConfig, PropertyFilter,
-    graph_query_to_cypher,
+    CompareOp, EdgeCreateRequest, EdgeFindRequest, GraphBackend, GraphClient, GraphTx,
+    Neo4jBackend, Neo4jConfig, NodeCreateRequest, NodeFindRequest, PropertyFilter, RuntimeField,
+    RuntimeNodeModel, RuntimeRelModel, RuntimeValueType, SessionBatchDefineNodeParams,
+    SessionBatchFieldParam, SessionBatchNodeCreateParams, SessionBatchOp, SessionBatchParams,
+    SessionBatchResponse, SessionState, apply_neo4j_batch, graph_query_to_cypher,
+    neo4j_edge_create, neo4j_edge_find, neo4j_node_create, neo4j_node_find,
 };
 use neo4rs::{Graph, Node, Query, query};
 use serde_json::{Value, json};
@@ -114,6 +118,191 @@ async fn neo4j_backend_persists_nodes_and_relationships() {
 
     let graph = connect_graph().await;
     cleanup_smoke_graph(&graph, &smoke_id).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated Neo4j test endpoint and NEO4J_* env vars"]
+async fn shared_neo4j_session_lists_schema_and_finds_edges() {
+    let backend = connect_backend().await;
+    let client = GraphClient::new(backend.clone());
+    let smoke_id = unique_smoke_id();
+    let mut state = SessionState::new();
+    register_portable_schema(&mut state);
+
+    assert_eq!(state.model_list().len(), 2);
+    assert_eq!(state.rel_model_list().len(), 1);
+
+    let user = neo4j_node_create(
+        &client,
+        &state,
+        NodeCreateRequest {
+            model: "PortableSmokeUser".into(),
+            props: BTreeMap::from([("smoke_id".into(), json!(smoke_id.clone()))]),
+        },
+    )
+    .await
+    .expect("create portable user");
+    let post = neo4j_node_create(
+        &client,
+        &state,
+        NodeCreateRequest {
+            model: "PortableSmokePost".into(),
+            props: BTreeMap::from([("smoke_id".into(), json!(smoke_id.clone()))]),
+        },
+    )
+    .await
+    .expect("create portable post");
+    let edge = neo4j_edge_create(
+        &client,
+        &state,
+        EdgeCreateRequest {
+            model: "PORTABLE_SMOKE_LINK".into(),
+            from: user.id,
+            to: post.id,
+            props: BTreeMap::from([("smoke_id".into(), json!(smoke_id.clone()))]),
+        },
+    )
+    .await
+    .expect("create portable edge");
+
+    let found_users = neo4j_node_find(
+        &client,
+        &state,
+        NodeFindRequest::from_adapter_filter_values(
+            "PortableSmokeUser",
+            BTreeMap::from([("userId".into(), json!(user.id))]),
+        )
+        .expect("build node alias find"),
+    )
+    .await
+    .expect("find portable user by model id alias");
+    assert_eq!(found_users.len(), 1);
+    assert_eq!(found_users[0].id, user.id);
+
+    let found = neo4j_edge_find(
+        &client,
+        &state,
+        EdgeFindRequest::from_adapter_filter_values(
+            "PORTABLE_SMOKE_LINK",
+            BTreeMap::from([
+                ("linkId".into(), json!(edge.id)),
+                ("from".into(), json!(user.id)),
+                ("to".into(), json!(post.id)),
+            ]),
+        )
+        .expect("build edge find"),
+    )
+    .await
+    .expect("find portable edge");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, edge.id);
+
+    backend
+        .execute_query(
+            "MATCH (n {smoke_id: $smoke_id}) DETACH DELETE n",
+            json!({ "smoke_id": smoke_id }),
+        )
+        .await
+        .expect("clean portable smoke graph");
+}
+
+#[tokio::test]
+#[ignore = "requires a dedicated Neo4j test endpoint and NEO4J_* env vars"]
+async fn shared_neo4j_atomic_batch_rolls_back_graph_and_schema() {
+    let backend = connect_backend().await;
+    let client = GraphClient::new(backend.clone());
+    let smoke_id = unique_smoke_id();
+    let mut state = SessionState::new();
+    let outcome = apply_neo4j_batch(
+        &client,
+        &mut state,
+        SessionBatchParams {
+            atomic: true,
+            allow_deletes: false,
+            response: SessionBatchResponse::Detailed,
+            ops: vec![
+                SessionBatchOp::SchemaDefineNode(SessionBatchDefineNodeParams {
+                    name: "RolledBackSmoke".into(),
+                    id_field: "nodeId".into(),
+                    fields: vec![SessionBatchFieldParam {
+                        name: "smoke_id".into(),
+                        value_type: "string".into(),
+                        required: true,
+                    }],
+                }),
+                SessionBatchOp::NodeCreate(SessionBatchNodeCreateParams {
+                    model: "RolledBackSmoke".into(),
+                    props: BTreeMap::from([("smoke_id".into(), json!(smoke_id.clone()))]),
+                    local_ref: None,
+                }),
+                SessionBatchOp::NodeCreate(SessionBatchNodeCreateParams {
+                    model: "RolledBackSmoke".into(),
+                    props: BTreeMap::new(),
+                    local_ref: None,
+                }),
+            ],
+        },
+    )
+    .await
+    .expect("apply failing atomic batch");
+
+    assert_eq!(outcome.value["applied"], json!(false));
+    assert!(outcome.schema_ops.is_empty());
+    assert!(state.catalog().get_node_model("RolledBackSmoke").is_none());
+    let result = backend
+        .execute_query(
+            "MATCH (n {smoke_id: $smoke_id}) RETURN count(n)",
+            json!({ "smoke_id": smoke_id }),
+        )
+        .await
+        .expect("count rolled-back nodes");
+    let Some(grm_rs::KernelValue::Scalar(count)) = result.rows[0].values.values().next() else {
+        panic!("expected scalar rollback count");
+    };
+    assert_eq!(count, &json!(0));
+}
+
+fn register_portable_schema(state: &mut SessionState) {
+    let smoke_field = || RuntimeField {
+        name: "smoke_id".into(),
+        value_type: RuntimeValueType::String,
+        required: true,
+    };
+    state
+        .register_model(
+            RuntimeNodeModel::new(
+                "PortableSmokeUser",
+                "userId",
+                state.node_id_type(),
+                vec![smoke_field()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    state
+        .register_model(
+            RuntimeNodeModel::new(
+                "PortableSmokePost",
+                "postId",
+                state.node_id_type(),
+                vec![smoke_field()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    state
+        .register_rel_model(
+            RuntimeRelModel::new(
+                "PORTABLE_SMOKE_LINK",
+                "PortableSmokeUser",
+                "PortableSmokePost",
+                "linkId",
+                state.rel_id_type(),
+                vec![smoke_field()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
 }
 
 fn one_hop_query(smoke_id: &str) -> GraphQuery {

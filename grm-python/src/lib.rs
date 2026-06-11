@@ -6,16 +6,18 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend, GraphTx};
+use grm_rs::backend::{BackendIdType, BackendIdentity, GraphBackend};
 use grm_rs::{
-    apply_session_batch, DefineEdgeRequest, DefineNodeRequest, DurabilityFormat, DurableOperation,
-    EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeResponse, EdgeUpdateRequest,
-    ExplainRequest, FieldSpec, FieldValueType, GraphClient, Neo4jBackend, Neo4jConfig,
-    NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeResponse, NodeUpdateRequest,
-    OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate, QueryRequest,
-    QueryTerm, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest, RuntimeResponse,
-    RuntimeValueType, SessionBatchParams, SessionFindResult, SessionModelCatalog, SessionState,
-    StoredNode, StoredRel, TraversalDirection, TraversalReturn, TraversalStepRequest,
+    apply_neo4j_batch, apply_session_batch, neo4j_edge_create, neo4j_edge_delete, neo4j_edge_find,
+    neo4j_edge_update, neo4j_node_create, neo4j_node_delete, neo4j_node_find, neo4j_node_update,
+    DefineEdgeRequest, DefineNodeRequest, DurabilityFormat, DurableOperation, EdgeCreateRequest,
+    EdgeDeleteRequest, EdgeFindRequest, EdgeResponse, EdgeUpdateRequest, ExplainRequest, FieldSpec,
+    FieldValueType, GraphClient, Neo4jBackend, Neo4jConfig, NodeCreateRequest, NodeDeleteRequest,
+    NodeFindRequest, NodeResponse, NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp,
+    ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, RuntimeRequest, RuntimeResponse, RuntimeValueType, SessionBatchParams,
+    SessionFindResult, SessionState, StoredNode, StoredRel, TraversalDirection, TraversalReturn,
+    TraversalStepRequest,
 };
 use grm_service_api::{GrpcClientTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceMode};
 use pyo3::create_exception;
@@ -35,7 +37,7 @@ struct PySession {
 #[pyclass(name = "Neo4jSession")]
 struct PyNeo4jSession {
     client: GraphClient<Neo4jBackend>,
-    catalog: SessionModelCatalog,
+    state: SessionState,
 }
 
 #[pyclass(name = "ServiceSession")]
@@ -112,6 +114,18 @@ impl PySession {
 
     fn rel_id_type(&self) -> &'static str {
         backend_id_type_name(self.state.rel_id_type())
+    }
+
+    fn capabilities(&self) -> Vec<&'static str> {
+        vec![
+            "graph",
+            "workspace",
+            "atomic_batch",
+            "non_atomic_batch",
+            "traversal",
+            "explain_profile",
+            "persistence",
+        ]
     }
 
     fn model_create(
@@ -699,6 +713,17 @@ impl PyServiceSession {
         "int"
     }
 
+    fn capabilities(&self) -> Vec<&'static str> {
+        vec![
+            "graph",
+            "workspace",
+            "atomic_batch",
+            "non_atomic_batch",
+            "traversal",
+            "explain_profile",
+        ]
+    }
+
     fn model_create(
         &mut self,
         _py: Python<'_>,
@@ -1053,7 +1078,7 @@ impl PyNeo4jSession {
         )?;
         Ok(Self {
             client: GraphClient::new(backend),
-            catalog: SessionModelCatalog::new(),
+            state: SessionState::new(),
         })
     }
 
@@ -1063,6 +1088,10 @@ impl PyNeo4jSession {
 
     fn rel_id_type(&self) -> &'static str {
         backend_id_type_name(self.client.backend().rel_id_type())
+    }
+
+    fn capabilities(&self) -> Vec<&'static str> {
+        vec!["graph", "atomic_batch", "neo4j_native_query"]
     }
 
     #[pyo3(signature = (query_text, params=None))]
@@ -1090,7 +1119,7 @@ impl PyNeo4jSession {
             parse_fields(fields)?,
         )
         .map_err(grm_err)?;
-        self.catalog.register_node_model(model).map_err(grm_err)
+        self.state.register_model(model).map_err(grm_err)
     }
 
     fn link_create(
@@ -1101,10 +1130,10 @@ impl PyNeo4jSession {
         id_field: &str,
         fields: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        if self.catalog.get_node_model(from_model).is_none() {
+        if self.state.catalog().get_node_model(from_model).is_none() {
             return Err(grm_err(grm_rs::GrmError::NotFound));
         }
-        if self.catalog.get_node_model(to_model).is_none() {
+        if self.state.catalog().get_node_model(to_model).is_none() {
             return Err(grm_err(grm_rs::GrmError::NotFound));
         }
         let model = RuntimeRelModel::new(
@@ -1116,7 +1145,23 @@ impl PyNeo4jSession {
             parse_fields(fields)?,
         )
         .map_err(grm_err)?;
-        self.catalog.register_rel_model(model).map_err(grm_err)
+        self.state.register_rel_model(model).map_err(grm_err)
+    }
+
+    fn model_list(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let items = PyList::empty_bound(py);
+        for model in self.state.model_list() {
+            items.append(runtime_node_model_to_py(py, model)?)?;
+        }
+        Ok(items.into())
+    }
+
+    fn link_list(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let items = PyList::empty_bound(py);
+        for model in self.state.rel_model_list() {
+            items.append(runtime_rel_model_to_py(py, model)?)?;
+        }
+        Ok(items.into())
     }
 
     #[pyo3(signature = (model_name, values=None))]
@@ -1126,24 +1171,17 @@ impl PyNeo4jSession {
         model_name: &str,
         values: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
-        let model = self
-            .catalog
-            .get_node_model(model_name)
-            .ok_or_else(|| grm_err(grm_rs::GrmError::NotFound))?
-            .clone();
-        let raw_values = extract_string_map(values)?;
-        let props = model
-            .validate_instance_input(&raw_values)
-            .map_err(grm_err)?;
-        let node = block_on(py, async {
-            let mut tx = self.client.transaction().await?;
-            let node = tx
-                .tx_mut()?
-                .create_node(vec![model.label.clone()], props)
-                .await?;
-            tx.commit().await?;
-            Ok(node)
-        })?;
+        let node = block_on(
+            py,
+            neo4j_node_create(
+                &self.client,
+                &self.state,
+                NodeCreateRequest {
+                    model: model_name.to_string(),
+                    props: extract_json_map(values)?,
+                },
+            ),
+        )?;
         stored_node_to_py(py, &node)
     }
 
@@ -1154,43 +1192,14 @@ impl PyNeo4jSession {
         model_name: &str,
         filters: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
-        let model = self
-            .catalog
-            .get_node_model(model_name)
-            .ok_or_else(|| grm_err(grm_rs::GrmError::NotFound))?
-            .clone();
-        let raw_filters = extract_string_map(filters)?;
-        if raw_filters.len() != 1 {
-            return Err(PyTypeError::new_err(
-                "Neo4jSession.node_find currently expects exactly one property filter",
-            ));
-        }
-        let (field_name, raw_value) = raw_filters
-            .iter()
-            .next()
-            .expect("single filter checked above");
-        let field = model.field(field_name).ok_or_else(|| {
-            grm_err(grm_rs::GrmError::Constraint(format!(
-                "unknown field '{}' for model '{}'",
-                field_name, model.name
-            )))
-        })?;
-        let value = field.value_type.parse_value(raw_value).map_err(grm_err)?;
-
-        let nodes = block_on(py, async {
-            let mut tx = self.client.transaction().await?;
-            let nodes = tx
-                .tx_mut()?
-                .find_nodes_by_property(field_name, &value)
-                .await?;
-            tx.rollback().await?;
-            Ok(nodes)
-        })?;
+        let request = NodeFindRequest::from_adapter_filter_values(
+            model_name.to_string(),
+            extract_json_map(filters)?,
+        )
+        .map_err(grm_err)?;
+        let nodes = block_on(py, neo4j_node_find(&self.client, &self.state, request))?;
         let items = PyList::empty_bound(py);
-        for node in nodes
-            .into_iter()
-            .filter(|node| node.labels.iter().any(|label| label == &model.label))
-        {
+        for node in nodes {
             items.append(stored_node_to_py(py, &node)?)?;
         }
         Ok(items.into())
@@ -1205,31 +1214,141 @@ impl PyNeo4jSession {
         to_id: &Bound<'_, PyAny>,
         values: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyObject> {
-        let model = self
-            .catalog
-            .get_rel_model(model_name)
-            .ok_or_else(|| grm_err(grm_rs::GrmError::NotFound))?
-            .clone();
         let from_id = python_value_to_string(from_id)?
             .parse::<i64>()
             .map_err(|_| PyTypeError::new_err("from_id must be an int for Neo4jSession"))?;
         let to_id = python_value_to_string(to_id)?
             .parse::<i64>()
             .map_err(|_| PyTypeError::new_err("to_id must be an int for Neo4jSession"))?;
-        let raw_values = extract_string_map(values)?;
-        let props = model
-            .validate_instance_input(&raw_values)
-            .map_err(grm_err)?;
-        let rel = block_on(py, async {
-            let mut tx = self.client.transaction().await?;
-            let rel = tx
-                .tx_mut()?
-                .create_relationship(from_id, to_id, &model.rel_type, props)
-                .await?;
-            tx.commit().await?;
-            Ok(rel)
-        })?;
+        let rel = block_on(
+            py,
+            neo4j_edge_create(
+                &self.client,
+                &self.state,
+                EdgeCreateRequest {
+                    model: model_name.to_string(),
+                    from: from_id,
+                    to: to_id,
+                    props: extract_json_map(values)?,
+                },
+            ),
+        )?;
         stored_rel_to_py(py, &rel)
+    }
+
+    #[pyo3(signature = (model_name, node_id, values=None))]
+    fn node_update(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        node_id: i64,
+        values: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let node = block_on(
+            py,
+            neo4j_node_update(
+                &self.client,
+                &self.state,
+                NodeUpdateRequest {
+                    model: model_name.to_string(),
+                    id: node_id,
+                    props: extract_json_map(values)?,
+                },
+            ),
+        )?;
+        stored_node_to_py(py, &node)
+    }
+
+    fn node_delete(&self, py: Python<'_>, model_name: &str, node_id: i64) -> PyResult<()> {
+        block_on(
+            py,
+            neo4j_node_delete(
+                &self.client,
+                &self.state,
+                NodeDeleteRequest {
+                    model: model_name.to_string(),
+                    id: node_id,
+                },
+            ),
+        )
+    }
+
+    #[pyo3(signature = (model_name, filters=None))]
+    fn edge_find(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        filters: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let request = EdgeFindRequest::from_adapter_filter_values(
+            model_name.to_string(),
+            extract_json_map(filters)?,
+        )
+        .map_err(grm_err)?;
+        let edges = block_on(py, neo4j_edge_find(&self.client, &self.state, request))?;
+        let items = PyList::empty_bound(py);
+        for edge in edges {
+            items.append(stored_rel_to_py(py, &edge)?)?;
+        }
+        Ok(items.into())
+    }
+
+    #[pyo3(signature = (model_name, edge_id, values=None))]
+    fn edge_update(
+        &self,
+        py: Python<'_>,
+        model_name: &str,
+        edge_id: i64,
+        values: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<PyObject> {
+        let edge = block_on(
+            py,
+            neo4j_edge_update(
+                &self.client,
+                &self.state,
+                EdgeUpdateRequest {
+                    model: model_name.to_string(),
+                    id: edge_id,
+                    props: extract_json_map(values)?,
+                },
+            ),
+        )?;
+        stored_rel_to_py(py, &edge)
+    }
+
+    fn edge_delete(&self, py: Python<'_>, model_name: &str, edge_id: i64) -> PyResult<()> {
+        block_on(
+            py,
+            neo4j_edge_delete(
+                &self.client,
+                &self.state,
+                EdgeDeleteRequest {
+                    model: model_name.to_string(),
+                    id: edge_id,
+                },
+            ),
+        )
+    }
+
+    #[pyo3(signature = (ops, *, atomic=true, response="summary", allow_deletes=false))]
+    fn batch(
+        &mut self,
+        py: Python<'_>,
+        ops: &Bound<'_, PyAny>,
+        atomic: bool,
+        response: &str,
+        allow_deletes: bool,
+    ) -> PyResult<PyObject> {
+        let params_value = Value::Object(serde_json::Map::from_iter([
+            ("ops".to_string(), py_any_to_json_value(ops)?),
+            ("atomic".to_string(), Value::Bool(atomic)),
+            ("response".to_string(), Value::String(response.to_string())),
+            ("allow_deletes".to_string(), Value::Bool(allow_deletes)),
+        ]));
+        let params: SessionBatchParams = serde_json::from_value(params_value)
+            .map_err(|err| PyTypeError::new_err(format!("invalid batch parameters: {err}")))?;
+        let outcome = block_on(py, apply_neo4j_batch(&self.client, &mut self.state, params))?;
+        json_value_to_py(py, &outcome.value)
     }
 }
 

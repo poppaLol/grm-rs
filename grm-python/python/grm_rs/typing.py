@@ -299,10 +299,16 @@ class SchemaCapability(Protocol):
     ) -> None: ...
 
 
-class WorkspaceSchemaCapability(SchemaCapability, Protocol):
+class SchemaInspectionCapability(Protocol):
     def model_list(self) -> List[NodeModelDescription]: ...
 
     def link_list(self) -> List[LinkModelDescription]: ...
+
+
+class WorkspaceSchemaCapability(
+    SchemaCapability, SchemaInspectionCapability, Protocol
+):
+    pass
 
 
 class GraphCreateCapability(Protocol):
@@ -319,7 +325,7 @@ class GraphCreateCapability(Protocol):
     ) -> Edge: ...
 
 
-class WorkspaceCrudCapability(GraphCreateCapability, Protocol):
+class GraphCrudCapability(GraphCreateCapability, Protocol):
     def node_update(
         self, model_name: str, node_id: GraphId, values: Optional[PropertyMap] = None
     ) -> Node: ...
@@ -335,6 +341,16 @@ class WorkspaceCrudCapability(GraphCreateCapability, Protocol):
     def edge_find(
         self, model_name: str, filters: Optional[FilterMap] = None
     ) -> List[Edge]: ...
+
+
+class GraphFindCapability(Protocol):
+    def node_find(
+        self, model_name: str, filters: Optional[FilterMap] = None
+    ) -> List[GraphEntity]: ...
+
+
+class WorkspaceCrudCapability(GraphCrudCapability, Protocol):
+    pass
 
 
 class WorkspaceTraversalCapability(Protocol):
@@ -353,7 +369,17 @@ class WorkspaceTraversalCapability(Protocol):
     ) -> List[GraphEntity]: ...
 
 
-class WorkspaceBatchCapability(Protocol):
+class AtomicBatchCapability(Protocol):
+    def batch(
+        self,
+        ops: Sequence[BatchOperation],
+        *,
+        response: BatchResponseMode = "summary",
+        allow_deletes: bool = False,
+    ) -> BatchResult: ...
+
+
+class WorkspaceBatchCapability(AtomicBatchCapability, Protocol):
     def batch(
         self,
         ops: Sequence[BatchOperation],
@@ -362,6 +388,33 @@ class WorkspaceBatchCapability(Protocol):
         response: BatchResponseMode = "summary",
         allow_deletes: bool = False,
     ) -> BatchResult: ...
+
+
+class CapabilityDiscovery(Protocol):
+    def capabilities(self) -> List[str]: ...
+
+
+class Neo4jNativeQueryCapability(Protocol):
+    def execute_query(
+        self, query_text: str, params: Optional[JsonObject] = None
+    ) -> int: ...
+
+
+@runtime_checkable
+class GraphSession(
+    CapabilityDiscovery,
+    SchemaCapability,
+    SchemaInspectionCapability,
+    GraphCrudCapability,
+    GraphFindCapability,
+    AtomicBatchCapability,
+    Protocol,
+):
+    """Portable synchronous graph-session core shared by workspace and Neo4j."""
+
+    def node_id_type(self) -> IdType: ...
+
+    def rel_id_type(self) -> IdType: ...
 
 
 class WorkspaceExplainProfileCapability(Protocol):
@@ -396,61 +449,45 @@ class WorkspaceExplainProfileCapability(Protocol):
 
 @runtime_checkable
 class WorkspaceGraphSession(
-    WorkspaceSchemaCapability,
-    WorkspaceCrudCapability,
-    WorkspaceTraversalCapability,
+    GraphSession,
     WorkspaceBatchCapability,
+    WorkspaceTraversalCapability,
     WorkspaceExplainProfileCapability,
     Protocol,
 ):
     """Shared synchronous workspace contract implemented by Session and ServiceSession."""
 
-
-@runtime_checkable
-class Neo4jGraphSession(Protocol):
-    def node_id_type(self) -> Literal["int"]: ...
-
-    def rel_id_type(self) -> Literal["int"]: ...
-
-    def model_create(
-        self, name: str, id_field: str, fields: Sequence[FieldDefinition]
-    ) -> None: ...
-
-    def link_create(
-        self,
-        name: str,
-        from_model: str,
-        to_model: str,
-        id_field: str,
-        fields: Sequence[FieldDefinition],
-    ) -> None: ...
-
-    def execute_query(
-        self, query_text: str, params: Optional[JsonObject] = None
-    ) -> int: ...
-
-    def node_create(
-        self, model_name: str, values: Optional[PropertyMap] = None
-    ) -> Node: ...
-
     def node_find(
-        self, model_name: str, filters: Optional[FilterMap] = None
-    ) -> List[Node]: ...
-
-    def edge_create(
         self,
         model_name: str,
-        from_id: int,
-        to_id: int,
-        values: Optional[PropertyMap] = None,
-    ) -> Edge: ...
+        filters: Optional[FilterMap] = None,
+        *,
+        via: Optional[Sequence[TraversalStep]] = None,
+        end_filters: Optional[FilterMap] = None,
+        edge_filters: Optional[FilterMap] = None,
+        return_: Optional[TraversalReturn] = None,
+        order: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> List[GraphEntity]: ...
+
+
+@runtime_checkable
+class Neo4jGraphSession(GraphSession, Neo4jNativeQueryCapability, Protocol):
+    """Portable graph core plus explicitly Neo4j-native query access."""
 
 
 @runtime_checkable
 class AsyncNeo4jGraphSession(Protocol):
+    def capabilities(self) -> List[str]: ...
+
     async def model_create(
         self, name: str, id_field: str, fields: Sequence[FieldDefinition]
     ) -> None: ...
+
+    async def model_list(self) -> List[NodeModelDescription]: ...
+
+    async def link_list(self) -> List[LinkModelDescription]: ...
 
     async def link_create(
         self,
@@ -473,6 +510,12 @@ class AsyncNeo4jGraphSession(Protocol):
         self, model_name: str, filters: Optional[FilterMap] = None
     ) -> List[Node]: ...
 
+    async def node_update(
+        self, model_name: str, node_id: GraphId, values: Optional[PropertyMap] = None
+    ) -> Node: ...
+
+    async def node_delete(self, model_name: str, node_id: GraphId) -> None: ...
+
     async def edge_create(
         self,
         model_name: str,
@@ -480,6 +523,24 @@ class AsyncNeo4jGraphSession(Protocol):
         to_id: int,
         values: Optional[PropertyMap] = None,
     ) -> Edge: ...
+
+    async def edge_find(
+        self, model_name: str, filters: Optional[FilterMap] = None
+    ) -> List[Edge]: ...
+
+    async def edge_update(
+        self, model_name: str, edge_id: GraphId, values: Optional[PropertyMap] = None
+    ) -> Edge: ...
+
+    async def edge_delete(self, model_name: str, edge_id: GraphId) -> None: ...
+
+    async def batch(
+        self,
+        ops: Sequence[BatchOperation],
+        *,
+        response: BatchResponseMode = "summary",
+        allow_deletes: bool = False,
+    ) -> BatchResult: ...
 
     def node_id_type(self) -> Literal["int"]: ...
 

@@ -5,6 +5,7 @@ from grm_rs import (
     AsyncNeo4jSession,
     BatchOperation,
     FieldDefinition,
+    GraphSession,
     Neo4jGraphSession,
     Neo4jSession,
     ServiceSession,
@@ -34,9 +35,19 @@ def use_workspace(session: WorkspaceGraphSession) -> int:
         }
     ]
     result = session.batch(operations)
+    session.batch([], atomic=False)
     session.explain_node_find("User", {"id": node["id"]})
     session.profile_node_find("User", {"id": node["id"]})
     return result["operation_count"]
+
+
+def use_portable(session: GraphSession) -> int:
+    session.model_create("PortableUser", "userId", FIELDS)
+    session.model_list()
+    node = session.node_create("PortableUser", {"name": "Ada"})
+    session.node_find("PortableUser", {"id": node["id"]})
+    session.node_update("PortableUser", node["id"], {"name": "Grace"})
+    return session.batch([])["operation_count"]
 
 
 embedded = Session()
@@ -46,9 +57,12 @@ service = ServiceSession(
 )
 use_workspace(embedded)
 use_workspace(service)
+use_portable(service)
 
 neo4j = Neo4jSession(uri="bolt://localhost:7687", user="neo4j", password="password")
 sync_neo4j: Neo4jGraphSession = neo4j
+portable_neo4j: GraphSession = neo4j
+use_portable(portable_neo4j)
 sync_neo4j.execute_query(
     "RETURN $payload",
     {"payload": {"items": [1, None, "typed"]}},
