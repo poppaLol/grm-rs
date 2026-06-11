@@ -576,6 +576,13 @@ async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
     .await;
 
     assert_eq!(result["applied"], json!(true));
+    assert_eq!(result["backend"]["mode"], json!("neo4j"));
+    assert!(
+        result["backend"]["atomicity"]
+            .as_str()
+            .unwrap()
+            .contains("one transaction")
+    );
     assert_eq!(result["counts"]["node_create"]["GrmMcpSmokeUser"], json!(1));
     assert_eq!(
         result["counts"]["edge_create"]["GRM_MCP_SMOKE_AUTHORED"],

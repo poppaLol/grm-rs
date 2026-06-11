@@ -40,8 +40,8 @@ def main() -> None:
         '"None"',
         '"list[str]"',
         '"dict[str, bool]"',
+        'Unexpected keyword argument "atomic"',
         "WorkspaceGraphSession",
-        "node_update",
         "profile_node_find",
     ):
         if expected not in output:

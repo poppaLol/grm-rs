@@ -1,4 +1,4 @@
-from grm_rs import AsyncNeo4jSession, Neo4jSession, WorkspaceGraphSession
+from grm_rs import AsyncNeo4jSession, GraphSession, Neo4jSession, WorkspaceGraphSession
 
 
 def needs_workspace(session: WorkspaceGraphSession) -> None:
@@ -15,9 +15,13 @@ def rejects_structured_graph_values(session: WorkspaceGraphSession) -> None:
     session.node_find("User", {"metadata": {"active": True}})
 
 
+def rejects_non_atomic_portable_batch(session: GraphSession) -> None:
+    session.batch([], atomic=False)
+
+
 neo4j = Neo4jSession(uri="bolt://localhost:7687", user="neo4j", password="password")
 needs_workspace(neo4j)
-neo4j.node_update("User", 1, {"name": "Ada"})
+neo4j.profile_node_find("User")
 
 
 async def unsupported_async(session: AsyncNeo4jSession) -> None:

@@ -2,14 +2,13 @@ use std::collections::BTreeMap;
 use std::io::Cursor;
 
 use grm_rs::{
-    CliSession, DefineEdgeRequest, DefineNodeRequest, DurableOperation, EdgeCreateRequest,
-    EdgeDeleteRequest, EdgeFindRequest, EdgeResponse, EdgeUpdateRequest, FieldSpec, FieldValueType,
-    GraphTx, GrmError, KernelValue, Neo4jTx, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest,
-    NodeResponse, NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp, PropertyPredicate,
-    QueryRequest, RuntimeField, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest, RuntimeResponse,
-    RuntimeValueType, SessionBatchEndpoint, SessionBatchFieldParam, SessionBatchOp,
-    SessionBatchParams, SessionBatchResponse, StoredNode, StoredRel, apply_session_batch,
-    client::Transaction,
+    CliSession, DefineEdgeRequest, DefineNodeRequest, EdgeCreateRequest, EdgeDeleteRequest,
+    EdgeFindRequest, EdgeResponse, EdgeUpdateRequest, FieldSpec, FieldValueType, GrmError,
+    NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeResponse, NodeUpdateRequest,
+    QueryRequest, RuntimeNodeModel, RuntimeRelModel, RuntimeRequest, RuntimeResponse,
+    SessionBatchParams, apply_neo4j_batch, apply_session_batch, neo4j_edge_create,
+    neo4j_edge_delete, neo4j_edge_find, neo4j_edge_update, neo4j_node_create, neo4j_node_delete,
+    neo4j_node_find, neo4j_node_update,
     runtime::{SessionCommand, parse_command_line},
 };
 use rmcp::handler::server::wrapper::Parameters;
@@ -136,6 +135,7 @@ impl GrmMcpServer {
             )?));
         }
         if self.is_neo4j() {
+            let _schema_write = self.neo4j_schema_write.lock().await;
             let mut state = self.state.lock().await;
             let outcome = state
                 .apply_define_node(DefineNodeRequest {
@@ -180,6 +180,7 @@ impl GrmMcpServer {
             )?));
         }
         if self.is_neo4j() {
+            let _schema_write = self.neo4j_schema_write.lock().await;
             let mut state = self.state.lock().await;
             let outcome = state
                 .apply_define_edge(DefineEdgeRequest {
@@ -723,454 +724,167 @@ impl GrmMcpServer {
 
 impl GrmMcpServer {
     async fn neo4j_batch(&self, params: SessionBatchParams) -> grm_rs::Result<Value> {
-        if !params.atomic {
-            return Err(GrmError::NotSupported(
-                "Neo4j grm_batch currently requires atomic=true; graph writes are committed only after every supported operation succeeds",
-            ));
+        let _schema_write = self.neo4j_schema_write.lock().await;
+        let mut staged = {
+            let state = self.state.lock().await;
+            state.snapshot()
+        };
+        let outcome = apply_neo4j_batch(self.neo4j_client()?, &mut staged, params).await?;
+        if outcome.value["applied"] == json!(true) {
+            let mut state = self.state.lock().await;
+            *state = staged;
+            self.append_schema_template_ops(&state, &outcome.schema_ops)?;
         }
-
-        let mut state = self.state.lock().await;
-        let mut staged = state.snapshot();
-        let mut refs = BTreeMap::<String, i64>::new();
-        let mut schema_ops = Vec::new();
-        let mut summary = Neo4jBatchSummary::new(
-            true,
-            matches!(params.response, SessionBatchResponse::Detailed),
-            params.ops.len(),
-        );
-        let mut tx = self.neo4j_client()?.transaction().await?;
-
-        for (index, op) in params.ops.into_iter().enumerate() {
-            if let Err(err) = ensure_neo4j_batch_op_supported(&op) {
-                let _ = tx.rollback().await;
-                return Err(GrmError::Constraint(err));
-            }
-            if op.is_delete() && !params.allow_deletes {
-                let _ = tx.rollback().await;
-                summary.record_error(
-                    index,
-                    format!("{} requires allow_deletes=true on grm_batch", op.op_name()),
-                );
-                return Ok(summary.into_value());
-            }
-
-            let op_name = op.op_name();
-            let result = match op {
-                SessionBatchOp::SchemaDefineNode(params) => (|| {
-                    let model = RuntimeNodeModel::new(
-                        params.name.clone(),
-                        params.id_field,
-                        staged.node_id_type(),
-                        parse_batch_fields(params.fields)?,
-                    )?;
-                    staged.register_model(model.clone())?;
-                    schema_ops.push(DurableOperation::RegisterNodeModel { model });
-                    Ok(Neo4jBatchApplied {
-                        op: op_name,
-                        model: params.name,
-                        id: None,
-                        local_ref: None,
-                    })
-                })(),
-                SessionBatchOp::SchemaDefineEdge(params) => (|| {
-                    let model = RuntimeRelModel::new(
-                        params.name.clone(),
-                        params.from_model,
-                        params.to_model,
-                        params.id_field,
-                        staged.rel_id_type(),
-                        parse_batch_fields(params.fields)?,
-                    )?;
-                    staged.register_rel_model(model.clone())?;
-                    schema_ops.push(DurableOperation::RegisterRelModel { model });
-                    Ok(Neo4jBatchApplied {
-                        op: op_name,
-                        model: params.name,
-                        id: None,
-                        local_ref: None,
-                    })
-                })(),
-                SessionBatchOp::NodeCreate(params) => {
-                    if let Some(local_ref) = &params.local_ref {
-                        if refs.contains_key(local_ref) {
-                            Err(GrmError::Constraint(format!(
-                                "duplicate batch ref '{local_ref}'"
-                            )))
-                        } else {
-                            create_neo4j_batch_node(&mut tx, &staged, &mut refs, params, op_name)
-                                .await
-                        }
-                    } else {
-                        create_neo4j_batch_node(&mut tx, &staged, &mut refs, params, op_name).await
-                    }
-                }
-                SessionBatchOp::EdgeCreate(params) => {
-                    create_neo4j_batch_edge(&mut tx, &staged, &refs, params, op_name).await
-                }
-                SessionBatchOp::NodeUpdate(params) => {
-                    update_neo4j_batch_node(&mut tx, &staged, params, op_name).await
-                }
-                SessionBatchOp::NodeDelete(params) => {
-                    delete_neo4j_batch_node(&mut tx, &staged, params, op_name).await
-                }
-                SessionBatchOp::EdgeUpdate(params) => {
-                    update_neo4j_batch_edge(&mut tx, &staged, params, op_name).await
-                }
-                SessionBatchOp::EdgeDelete(params) => {
-                    delete_neo4j_batch_edge(&mut tx, &staged, params, op_name).await
-                }
-            };
-
-            let applied = match result {
-                Ok(applied) => applied,
-                Err(err) => {
-                    let _ = tx.rollback().await;
-                    summary.record_error(index, err.to_string());
-                    return Ok(summary.into_value());
-                }
-            };
-            summary.record(applied);
-        }
-
-        tx.commit().await?;
-        *state = staged;
-        self.append_schema_template_ops(&state, &schema_ops)?;
-        Ok(summary.into_value())
+        Ok(with_neo4j_batch_backend(outcome.value))
     }
 
     async fn neo4j_node_create(&self, params: NodeCreateParams) -> grm_rs::Result<Value> {
-        let raw = value_map_to_raw(params.props)?;
-        let (label, props) = {
+        let state = {
             let state = self.state.lock().await;
-            let model = state
-                .catalog()
-                .get_node_model(&params.model)
-                .ok_or_else(|| missing_node_schema(&params.model))?
-                .clone();
-            (model.label.clone(), model.validate_instance_input(&raw)?)
+            state.snapshot()
         };
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        let node = tx.tx_mut()?.create_node(vec![label], props).await?;
-        tx.commit().await?;
+        let node = neo4j_node_create(
+            self.neo4j_client()?,
+            &state,
+            NodeCreateRequest {
+                model: params.model,
+                props: params.props,
+            },
+        )
+        .await?;
         serde_json::to_value(node).map_err(json_error)
     }
 
     async fn neo4j_node_update(&self, params: NodeUpdateParams) -> grm_rs::Result<Value> {
-        let raw = value_map_to_raw(params.props)?;
-        let (model_name, label, props) = {
+        let state = {
             let state = self.state.lock().await;
-            let model = state
-                .catalog()
-                .get_node_model(&params.model)
-                .ok_or_else(|| missing_node_schema(&params.model))?
-                .clone();
-            let props = node_update_props(&model, &raw)?;
-            (model.name.clone(), model.label.clone(), props)
+            state.snapshot()
         };
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        let updated = update_neo4j_node(&mut tx, params.id, &model_name, &label, props).await?;
-        tx.commit().await?;
+        let updated = neo4j_node_update(
+            self.neo4j_client()?,
+            &state,
+            NodeUpdateRequest {
+                model: params.model,
+                id: params.id,
+                props: params.props,
+            },
+        )
+        .await?;
         serde_json::to_value(updated).map_err(json_error)
     }
 
     async fn neo4j_node_delete(&self, params: NodeDeleteParams) -> grm_rs::Result<Value> {
-        let (model_name, label) = {
+        let state = {
             let state = self.state.lock().await;
-            let model = state
-                .catalog()
-                .get_node_model(&params.model)
-                .ok_or_else(|| missing_node_schema(&params.model))?
-                .clone();
-            (model.name.clone(), model.label.clone())
+            state.snapshot()
         };
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        delete_neo4j_node(&mut tx, params.id, &model_name, &label).await?;
-        tx.commit().await?;
+        neo4j_node_delete(
+            self.neo4j_client()?,
+            &state,
+            NodeDeleteRequest {
+                model: params.model.clone(),
+                id: params.id,
+            },
+        )
+        .await?;
         Ok(json!({ "deleted": true, "model": params.model, "id": params.id }))
     }
 
     async fn neo4j_edge_create(&self, params: EdgeCreateParams) -> grm_rs::Result<Value> {
-        let raw = value_map_to_raw(params.props)?;
-        let (model, from_label, to_label, props) = {
+        let state = {
             let state = self.state.lock().await;
-            let model = state
-                .catalog()
-                .get_rel_model(&params.model)
-                .ok_or_else(|| missing_edge_schema(&params.model))?
-                .clone();
-            let from_label = state
-                .catalog()
-                .get_node_model(&model.from_model)
-                .ok_or_else(|| missing_node_schema(&model.from_model))?
-                .label
-                .clone();
-            let to_label = state
-                .catalog()
-                .get_node_model(&model.to_model)
-                .ok_or_else(|| missing_node_schema(&model.to_model))?
-                .label
-                .clone();
-            let props = model.validate_instance_input(&raw)?;
-            (model, from_label, to_label, props)
+            state.snapshot()
         };
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        let from_node = tx
-            .tx_mut()?
-            .find_node_by_id(params.from)
-            .await?
-            .ok_or_else(|| {
-                GrmError::Constraint(format!("from node '{}' was not found", params.from))
-            })?;
-        if !from_node.labels.iter().any(|label| label == &from_label) {
-            return Err(GrmError::Constraint(format!(
-                "from node '{}' does not match model '{}'",
-                params.from, model.from_model
-            )));
-        }
-        let to_node = tx
-            .tx_mut()?
-            .find_node_by_id(params.to)
-            .await?
-            .ok_or_else(|| {
-                GrmError::Constraint(format!("to node '{}' was not found", params.to))
-            })?;
-        if !to_node.labels.iter().any(|label| label == &to_label) {
-            return Err(GrmError::Constraint(format!(
-                "to node '{}' does not match model '{}'",
-                params.to, model.to_model
-            )));
-        }
-
-        let edge = tx
-            .tx_mut()?
-            .create_relationship(params.from, params.to, &model.rel_type, props)
-            .await?;
-        tx.commit().await?;
+        let edge = neo4j_edge_create(
+            self.neo4j_client()?,
+            &state,
+            EdgeCreateRequest {
+                model: params.model,
+                from: params.from,
+                to: params.to,
+                props: params.props,
+            },
+        )
+        .await?;
         serde_json::to_value(edge).map_err(json_error)
     }
 
     async fn neo4j_edge_update(&self, params: EdgeUpdateParams) -> grm_rs::Result<Value> {
-        let raw = value_map_to_raw(params.props)?;
-        let (model_name, rel_type, props) = {
+        let state = {
             let state = self.state.lock().await;
-            let model = state
-                .catalog()
-                .get_rel_model(&params.model)
-                .ok_or_else(|| missing_edge_schema(&params.model))?
-                .clone();
-            let props = edge_update_props(&model, &raw)?;
-            (model.name.clone(), model.rel_type.clone(), props)
+            state.snapshot()
         };
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        let updated = update_neo4j_edge(&mut tx, params.id, &model_name, &rel_type, props).await?;
-        tx.commit().await?;
+        let updated = neo4j_edge_update(
+            self.neo4j_client()?,
+            &state,
+            EdgeUpdateRequest {
+                model: params.model,
+                id: params.id,
+                props: params.props,
+            },
+        )
+        .await?;
         serde_json::to_value(updated).map_err(json_error)
     }
 
     async fn neo4j_edge_delete(&self, params: EdgeDeleteParams) -> grm_rs::Result<Value> {
-        let (model_name, rel_type) = {
+        let state = {
             let state = self.state.lock().await;
-            let model = state
-                .catalog()
-                .get_rel_model(&params.model)
-                .ok_or_else(|| missing_edge_schema(&params.model))?
-                .clone();
-            (model.name.clone(), model.rel_type.clone())
+            state.snapshot()
         };
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        delete_neo4j_edge(&mut tx, params.id, &model_name, &rel_type).await?;
-        tx.commit().await?;
+        neo4j_edge_delete(
+            self.neo4j_client()?,
+            &state,
+            EdgeDeleteRequest {
+                model: params.model.clone(),
+                id: params.id,
+            },
+        )
+        .await?;
         Ok(json!({ "deleted": true, "model": params.model, "id": params.id }))
     }
 
     async fn neo4j_node_find(&self, params: NodeFindParams) -> grm_rs::Result<Value> {
-        let (request, label, predicates, order, id_field_name) = {
+        let state = {
             let state = self.state.lock().await;
+            state.snapshot()
+        };
+        let request = {
             let model = state
                 .catalog()
                 .get_node_model(&params.model)
-                .ok_or_else(|| missing_node_schema(&params.model))?
-                .clone();
-            let request = parse_neo4j_node_find_request(params, &model)?;
-            reject_neo4j_node_find_traversal(&request)?;
-            let predicates = typed_predicates(&request.predicates, &model.fields, &model.name)?;
-            validate_node_order_fields(&request.order, &model)?;
-            (
-                request.clone(),
-                model.label.clone(),
-                predicates,
-                request.order.clone(),
-                model.id_field_name.clone(),
-            )
+                .ok_or_else(|| missing_node_schema(&params.model))?;
+            parse_neo4j_node_find_request(params, model)?
         };
-
-        let mut clauses = vec![format!("MATCH (n:{})", cypher_name(&label))];
-        let mut params_json = serde_json::Map::new();
-        let mut cypher_predicates = Vec::new();
-        if let Some(id) = request.id {
-            cypher_predicates.push("id(n) = $grm_id".to_string());
-            params_json.insert("grm_id".to_string(), Value::from(id));
-        }
-        for (index, (predicate, value)) in predicates.into_iter().enumerate() {
-            cypher_predicates.push(format!(
-                "n.{} {} $p{index}",
-                cypher_name(&predicate.field),
-                cypher_predicate_op(predicate.op)
-            ));
-            params_json.insert(format!("p{index}"), value);
-        }
-        if !cypher_predicates.is_empty() {
-            clauses.push(format!("WHERE {}", cypher_predicates.join(" AND ")));
-        }
-        clauses.push("RETURN n".to_string());
-        if !order.is_empty() {
-            let terms = order
-                .into_iter()
-                .map(|spec| {
-                    format!(
-                        "{} {}",
-                        cypher_node_order_expression(&spec, &id_field_name),
-                        cypher_order_direction(spec.direction)
-                    )
-                })
-                .collect::<Vec<_>>();
-            clauses.push(format!("ORDER BY {}", terms.join(", ")));
-        }
-        if let Some(offset) = request.offset {
-            clauses.push("SKIP $grm_offset".to_string());
-            params_json.insert("grm_offset".to_string(), Value::from(offset as i64));
-        }
-        if let Some(limit) = request.limit {
-            clauses.push("LIMIT $grm_limit".to_string());
-            params_json.insert("grm_limit".to_string(), Value::from(limit as i64));
-        }
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        let result = tx
-            .tx_mut()?
-            .execute_query(&clauses.join(" "), Value::Object(params_json))
-            .await?;
-        tx.commit().await?;
-
-        let nodes = result
-            .rows
-            .into_iter()
-            .filter_map(|row| row.values.into_values().next())
-            .map(|value| match value {
-                KernelValue::Node(node) => Ok(StoredNode {
-                    id: node.id,
-                    labels: node.labels,
-                    props: node.props,
-                }),
-                _ => Err(GrmError::Mapping(
-                    "Neo4j node find returned a non-node value".into(),
-                )),
-            })
-            .collect::<grm_rs::Result<Vec<_>>>()?;
-        Ok(json!({ "model": request.model, "nodes": nodes }))
+        let model_name = request.model.clone();
+        let nodes = neo4j_node_find(self.neo4j_client()?, &state, request).await?;
+        Ok(json!({ "model": model_name, "nodes": nodes }))
     }
 
     async fn neo4j_edge_find(&self, params: EdgeFindParams) -> grm_rs::Result<Value> {
-        let (request, rel_type, edge_predicates, order, id_field_name) = {
+        let state = {
             let state = self.state.lock().await;
+            state.snapshot()
+        };
+        let request = {
             let model = state
                 .catalog()
                 .get_rel_model(&params.model)
-                .ok_or_else(|| missing_edge_schema(&params.model))?
-                .clone();
-            let request = parse_neo4j_edge_find_request(params, &model)?;
-            let predicates = typed_predicates(&request.predicates, &model.fields, &model.name)?;
-            validate_edge_order_fields(&request.order, &model)?;
-            (
-                request.clone(),
-                model.rel_type.clone(),
-                predicates,
-                request.order.clone(),
-                model.id_field_name.clone(),
-            )
+                .ok_or_else(|| missing_edge_schema(&params.model))?;
+            parse_neo4j_edge_find_request(params, model)?
         };
-
-        let mut clauses = vec![format!("MATCH ()-[r:{}]->()", cypher_name(&rel_type))];
-        let mut params_json = serde_json::Map::new();
-        let mut predicates = Vec::new();
-        if let Some(id) = request.id {
-            predicates.push("id(r) = $grm_id".to_string());
-            params_json.insert("grm_id".to_string(), Value::from(id));
-        }
-        if let Some(id) = request.from {
-            predicates.push("id(startNode(r)) = $from_id".to_string());
-            params_json.insert("from_id".to_string(), Value::from(id));
-        }
-        if let Some(id) = request.to {
-            predicates.push("id(endNode(r)) = $to_id".to_string());
-            params_json.insert("to_id".to_string(), Value::from(id));
-        }
-        for (index, (predicate, value)) in edge_predicates.into_iter().enumerate() {
-            predicates.push(format!(
-                "r.{} {} $p{index}",
-                cypher_name(&predicate.field),
-                cypher_predicate_op(predicate.op)
-            ));
-            params_json.insert(format!("p{index}"), value);
-        }
-        if !predicates.is_empty() {
-            clauses.push(format!("WHERE {}", predicates.join(" AND ")));
-        }
-        clauses.push("RETURN r".to_string());
-        if !order.is_empty() {
-            let terms = order
-                .into_iter()
-                .map(|spec| {
-                    format!(
-                        "{} {}",
-                        cypher_edge_order_expression(&spec, &id_field_name),
-                        cypher_order_direction(spec.direction)
-                    )
-                })
-                .collect::<Vec<_>>();
-            clauses.push(format!("ORDER BY {}", terms.join(", ")));
-        }
-        if let Some(offset) = request.offset {
-            clauses.push("SKIP $grm_offset".to_string());
-            params_json.insert("grm_offset".to_string(), Value::from(offset as i64));
-        }
-        if let Some(limit) = request.limit {
-            clauses.push("LIMIT $grm_limit".to_string());
-            params_json.insert("grm_limit".to_string(), Value::from(limit as i64));
-        }
-
-        let mut tx = self.neo4j_client()?.transaction().await?;
-        let result = tx
-            .tx_mut()?
-            .execute_query(&clauses.join(" "), Value::Object(params_json))
-            .await?;
-        tx.commit().await?;
-
-        let edges = result
-            .rows
-            .into_iter()
-            .filter_map(|row| row.values.into_values().next())
-            .map(|value| match value {
-                KernelValue::Rel(rel) => Ok(StoredRel {
-                    id: rel.id,
-                    rel_type: rel.ty,
-                    from: rel.from,
-                    to: rel.to,
-                    props: rel.props,
-                }),
-                _ => Err(GrmError::Mapping(
-                    "Neo4j edge find returned a non-edge value".into(),
-                )),
-            })
-            .collect::<grm_rs::Result<Vec<_>>>()?;
-        Ok(json!({ "model": request.model, "edges": edges }))
+        let model_name = request.model.clone();
+        let edges = neo4j_edge_find(self.neo4j_client()?, &state, request).await?;
+        Ok(json!({ "model": model_name, "edges": edges }))
     }
+}
+
+fn with_neo4j_batch_backend(mut value: Value) -> Value {
+    value["backend"] = json!({
+        "mode": "neo4j",
+        "atomicity": "Neo4j graph writes are committed in one transaction after all supported operations succeed; session-local schema metadata is staged and installed after commit."
+    });
+    value
 }
 
 fn parse_neo4j_node_find_request(
@@ -1229,126 +943,6 @@ fn merge_model_id_alias(
     }
 }
 
-fn reject_neo4j_node_find_traversal(request: &NodeFindRequest) -> grm_rs::Result<()> {
-    if request.traversals.is_empty()
-        && request.end_predicates.is_empty()
-        && request.edge_predicates.is_empty()
-        && request.return_mode.is_none()
-    {
-        return Ok(());
-    }
-    Err(GrmError::NotSupported(
-        "Neo4j MCP mode supports simple grm_node_find only; traversal queries are not supported yet",
-    ))
-}
-
-fn typed_predicates(
-    predicates: &[PropertyPredicate],
-    fields: &[RuntimeField],
-    model_name: &str,
-) -> grm_rs::Result<Vec<(PropertyPredicate, Value)>> {
-    let mut typed = Vec::new();
-    for predicate in predicates {
-        let Some(field) = fields.iter().find(|field| field.name == predicate.field) else {
-            return Err(GrmError::Constraint(format!(
-                "unknown field '{}' for model '{model_name}'",
-                predicate.field
-            )));
-        };
-        if predicate.op == PredicateOp::Contains
-            && !matches!(field.value_type, RuntimeValueType::String)
-        {
-            return Err(GrmError::Constraint(format!(
-                "contains filter '{}' requires a string field",
-                predicate.field
-            )));
-        }
-        let raw = value_map_to_raw(BTreeMap::from([(
-            predicate.field.clone(),
-            predicate.value.clone(),
-        )]))?;
-        let raw_value = raw.get(&predicate.field).ok_or_else(|| {
-            GrmError::Mapping(format!(
-                "missing parsed value for field '{}'",
-                predicate.field
-            ))
-        })?;
-        typed.push((predicate.clone(), field.value_type.parse_value(raw_value)?));
-    }
-    Ok(typed)
-}
-
-fn validate_node_order_fields(order: &[OrderSpec], model: &RuntimeNodeModel) -> grm_rs::Result<()> {
-    for spec in order {
-        if spec.field == "id" || spec.field == model.id_field_name {
-            continue;
-        }
-        if model.field(&spec.field).is_none() {
-            return Err(GrmError::Constraint(format!(
-                "unknown order field '{}' for model '{}'",
-                spec.field, model.name
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_edge_order_fields(order: &[OrderSpec], model: &RuntimeRelModel) -> grm_rs::Result<()> {
-    for spec in order {
-        if spec.field == "id"
-            || spec.field == model.id_field_name
-            || spec.field == "from"
-            || spec.field == "to"
-        {
-            continue;
-        }
-        if model.field(&spec.field).is_none() {
-            return Err(GrmError::Constraint(format!(
-                "unknown order field '{}' for link '{}'",
-                spec.field, model.name
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn cypher_node_order_expression(spec: &OrderSpec, id_field_name: &str) -> String {
-    if spec.field == "id" || spec.field == id_field_name {
-        "id(n)".to_string()
-    } else {
-        format!("n.{}", cypher_name(&spec.field))
-    }
-}
-
-fn cypher_edge_order_expression(spec: &OrderSpec, id_field_name: &str) -> String {
-    match spec.field.as_str() {
-        "id" => "id(r)".to_string(),
-        "from" => "id(startNode(r))".to_string(),
-        "to" => "id(endNode(r))".to_string(),
-        field if field == id_field_name => "id(r)".to_string(),
-        _ => format!("r.{}", cypher_name(&spec.field)),
-    }
-}
-
-fn cypher_predicate_op(op: PredicateOp) -> &'static str {
-    match op {
-        PredicateOp::Eq => "=",
-        PredicateOp::Ne => "<>",
-        PredicateOp::Gt => ">",
-        PredicateOp::Ge => ">=",
-        PredicateOp::Lt => "<",
-        PredicateOp::Le => "<=",
-        PredicateOp::Contains => "CONTAINS",
-    }
-}
-
-fn cypher_order_direction(direction: OrderDirection) -> &'static str {
-    match direction {
-        OrderDirection::Asc => "ASC",
-        OrderDirection::Desc => "DESC",
-    }
-}
-
 fn parse_named_id_filter(raw: &BTreeMap<String, String>, key: &str) -> grm_rs::Result<Option<i64>> {
     raw.get(key)
         .map(|value| {
@@ -1357,437 +951,6 @@ fn parse_named_id_filter(raw: &BTreeMap<String, String>, key: &str) -> grm_rs::R
             })
         })
         .transpose()
-}
-
-struct Neo4jBatchApplied {
-    op: &'static str,
-    model: String,
-    id: Option<i64>,
-    local_ref: Option<String>,
-}
-
-struct Neo4jBatchSummary {
-    applied: bool,
-    atomic: bool,
-    detailed: bool,
-    operation_count: usize,
-    counts: BTreeMap<String, BTreeMap<String, usize>>,
-    errors: Vec<Value>,
-    ids: Vec<Value>,
-}
-
-impl Neo4jBatchSummary {
-    fn new(atomic: bool, detailed: bool, operation_count: usize) -> Self {
-        Self {
-            applied: true,
-            atomic,
-            detailed,
-            operation_count,
-            counts: BTreeMap::new(),
-            errors: Vec::new(),
-            ids: Vec::new(),
-        }
-    }
-
-    fn record(&mut self, applied: Neo4jBatchApplied) {
-        *self
-            .counts
-            .entry(applied.op.to_string())
-            .or_default()
-            .entry(applied.model.clone())
-            .or_default() += 1;
-
-        if self.detailed {
-            if let Some(id) = applied.id {
-                let mut value = json!({
-                    "op": applied.op,
-                    "model": applied.model,
-                    "id": id,
-                });
-                if let Some(local_ref) = applied.local_ref {
-                    value["ref"] = json!(local_ref);
-                }
-                self.ids.push(value);
-            }
-        }
-    }
-
-    fn record_error(&mut self, index: usize, message: String) {
-        self.applied = false;
-        self.errors.push(json!({
-            "index": index,
-            "message": message,
-            "recovery": "Call grm_schema_list, define or reconstruct session-local runtime schema first, then retry the Neo4j batch."
-        }));
-    }
-
-    fn into_value(self) -> Value {
-        let mut value = json!({
-            "applied": self.applied,
-            "atomic": self.atomic,
-            "operation_count": self.operation_count,
-            "counts": self.counts,
-            "errors": self.errors,
-            "backend": {
-                "mode": "neo4j",
-                "atomicity": "Neo4j graph writes are committed in one transaction after all supported operations succeed; session-local schema metadata is staged and installed after commit."
-            }
-        });
-        if self.detailed {
-            value["ids"] = json!(self.ids);
-        }
-        value
-    }
-}
-
-fn ensure_neo4j_batch_op_supported(op: &SessionBatchOp) -> Result<(), String> {
-    match op {
-        SessionBatchOp::SchemaDefineNode(_)
-        | SessionBatchOp::SchemaDefineEdge(_)
-        | SessionBatchOp::NodeCreate(_)
-        | SessionBatchOp::NodeUpdate(_)
-        | SessionBatchOp::NodeDelete(_)
-        | SessionBatchOp::EdgeCreate(_)
-        | SessionBatchOp::EdgeUpdate(_)
-        | SessionBatchOp::EdgeDelete(_) => Ok(()),
-    }
-}
-
-async fn update_neo4j_batch_node(
-    tx: &mut Transaction<Neo4jTx>,
-    state: &grm_rs::SessionState,
-    params: grm_rs::SessionBatchNodeUpdateParams,
-    op_name: &'static str,
-) -> grm_rs::Result<Neo4jBatchApplied> {
-    let raw = value_map_to_raw(params.props)?;
-    let model = state
-        .catalog()
-        .get_node_model(&params.model)
-        .ok_or_else(|| missing_node_schema(&params.model))?
-        .clone();
-    let props = node_update_props(&model, &raw)?;
-    let node = update_neo4j_node(tx, params.id, &model.name, &model.label, props).await?;
-    Ok(Neo4jBatchApplied {
-        op: op_name,
-        model: params.model,
-        id: Some(node.id),
-        local_ref: None,
-    })
-}
-
-async fn delete_neo4j_batch_node(
-    tx: &mut Transaction<Neo4jTx>,
-    state: &grm_rs::SessionState,
-    params: grm_rs::SessionBatchNodeDeleteParams,
-    op_name: &'static str,
-) -> grm_rs::Result<Neo4jBatchApplied> {
-    let model = state
-        .catalog()
-        .get_node_model(&params.model)
-        .ok_or_else(|| missing_node_schema(&params.model))?
-        .clone();
-    delete_neo4j_node(tx, params.id, &model.name, &model.label).await?;
-    Ok(Neo4jBatchApplied {
-        op: op_name,
-        model: params.model,
-        id: Some(params.id),
-        local_ref: None,
-    })
-}
-
-async fn update_neo4j_batch_edge(
-    tx: &mut Transaction<Neo4jTx>,
-    state: &grm_rs::SessionState,
-    params: grm_rs::SessionBatchEdgeUpdateParams,
-    op_name: &'static str,
-) -> grm_rs::Result<Neo4jBatchApplied> {
-    let raw = value_map_to_raw(params.props)?;
-    let model = state
-        .catalog()
-        .get_rel_model(&params.model)
-        .ok_or_else(|| missing_edge_schema(&params.model))?
-        .clone();
-    let props = edge_update_props(&model, &raw)?;
-    let edge = update_neo4j_edge(tx, params.id, &model.name, &model.rel_type, props).await?;
-    Ok(Neo4jBatchApplied {
-        op: op_name,
-        model: params.model,
-        id: Some(edge.id),
-        local_ref: None,
-    })
-}
-
-async fn delete_neo4j_batch_edge(
-    tx: &mut Transaction<Neo4jTx>,
-    state: &grm_rs::SessionState,
-    params: grm_rs::SessionBatchEdgeDeleteParams,
-    op_name: &'static str,
-) -> grm_rs::Result<Neo4jBatchApplied> {
-    let model = state
-        .catalog()
-        .get_rel_model(&params.model)
-        .ok_or_else(|| missing_edge_schema(&params.model))?
-        .clone();
-    delete_neo4j_edge(tx, params.id, &model.name, &model.rel_type).await?;
-    Ok(Neo4jBatchApplied {
-        op: op_name,
-        model: params.model,
-        id: Some(params.id),
-        local_ref: None,
-    })
-}
-
-async fn update_neo4j_node(
-    tx: &mut Transaction<Neo4jTx>,
-    id: i64,
-    model_name: &str,
-    label: &str,
-    props: BTreeMap<String, Value>,
-) -> grm_rs::Result<StoredNode> {
-    let existing = tx
-        .tx_mut()?
-        .find_node_by_id(id)
-        .await?
-        .ok_or_else(|| GrmError::Constraint(format!("node '{id}' was not found")))?;
-    if !existing.labels.iter().any(|candidate| candidate == label) {
-        return Err(GrmError::Constraint(format!(
-            "node '{id}' does not match model '{model_name}'"
-        )));
-    }
-    tx.tx_mut()?
-        .update_node(id, props)
-        .await?
-        .ok_or_else(|| GrmError::Constraint(format!("node '{id}' was not found")))
-}
-
-async fn delete_neo4j_node(
-    tx: &mut Transaction<Neo4jTx>,
-    id: i64,
-    model_name: &str,
-    label: &str,
-) -> grm_rs::Result<()> {
-    let existing = tx
-        .tx_mut()?
-        .find_node_by_id(id)
-        .await?
-        .ok_or_else(|| GrmError::Constraint(format!("node '{id}' was not found")))?;
-    if !existing.labels.iter().any(|candidate| candidate == label) {
-        return Err(GrmError::Constraint(format!(
-            "node '{id}' does not match model '{model_name}'"
-        )));
-    }
-    tx.tx_mut()?.delete_node(id).await
-}
-
-async fn update_neo4j_edge(
-    tx: &mut Transaction<Neo4jTx>,
-    id: i64,
-    model_name: &str,
-    rel_type: &str,
-    props: BTreeMap<String, Value>,
-) -> grm_rs::Result<StoredRel> {
-    find_neo4j_edge(tx, id, rel_type)
-        .await?
-        .ok_or_else(|| GrmError::Constraint(format!("edge '{id}' was not found")))?;
-    tx.tx_mut()?
-        .update_relationship(id, props)
-        .await?
-        .ok_or_else(|| GrmError::Constraint(format!("edge '{id}' was not found")))
-        .and_then(|edge| {
-            if edge.rel_type == rel_type {
-                Ok(edge)
-            } else {
-                Err(GrmError::Constraint(format!(
-                    "edge '{id}' does not match model '{model_name}'"
-                )))
-            }
-        })
-}
-
-async fn delete_neo4j_edge(
-    tx: &mut Transaction<Neo4jTx>,
-    id: i64,
-    model_name: &str,
-    rel_type: &str,
-) -> grm_rs::Result<()> {
-    find_neo4j_edge(tx, id, rel_type).await?.ok_or_else(|| {
-        GrmError::Constraint(format!(
-            "edge '{id}' was not found for model '{model_name}'"
-        ))
-    })?;
-    tx.tx_mut()?.delete_relationship(id).await
-}
-
-async fn find_neo4j_edge(
-    tx: &mut Transaction<Neo4jTx>,
-    id: i64,
-    rel_type: &str,
-) -> grm_rs::Result<Option<StoredRel>> {
-    let result = tx
-        .tx_mut()?
-        .execute_query(
-            &format!(
-                "MATCH ()-[r:{}]->() WHERE id(r) = $grm_id RETURN r",
-                cypher_name(rel_type)
-            ),
-            json!({ "grm_id": id }),
-        )
-        .await?;
-    result
-        .rows
-        .into_iter()
-        .next()
-        .and_then(|row| row.values.into_values().next())
-        .map(|value| match value {
-            KernelValue::Rel(rel) => Ok(StoredRel {
-                id: rel.id,
-                rel_type: rel.ty,
-                from: rel.from,
-                to: rel.to,
-                props: rel.props,
-            }),
-            _ => Err(GrmError::Mapping(
-                "Neo4j edge lookup returned a non-edge value".into(),
-            )),
-        })
-        .transpose()
-}
-
-fn node_update_props(
-    model: &RuntimeNodeModel,
-    raw: &BTreeMap<String, String>,
-) -> grm_rs::Result<BTreeMap<String, Value>> {
-    model_update_props(&model.fields, &model.name, raw, &[&model.id_field_name])
-}
-
-fn edge_update_props(
-    model: &RuntimeRelModel,
-    raw: &BTreeMap<String, String>,
-) -> grm_rs::Result<BTreeMap<String, Value>> {
-    model_update_props(
-        &model.fields,
-        &model.name,
-        raw,
-        &[&model.id_field_name, "from", "to"],
-    )
-}
-
-fn model_update_props(
-    fields: &[RuntimeField],
-    model_name: &str,
-    raw: &BTreeMap<String, String>,
-    special_keys: &[&str],
-) -> grm_rs::Result<BTreeMap<String, Value>> {
-    let mut parsed = BTreeMap::new();
-    for (key, value) in raw {
-        if key == "id" || special_keys.iter().any(|special| key == special) {
-            continue;
-        }
-        let Some(field) = fields.iter().find(|field| field.name == *key) else {
-            return Err(GrmError::Constraint(format!(
-                "unknown field '{key}' for model '{model_name}'"
-            )));
-        };
-        parsed.insert(key.clone(), field.value_type.parse_value(value)?);
-    }
-    Ok(parsed)
-}
-
-async fn create_neo4j_batch_node(
-    tx: &mut Transaction<Neo4jTx>,
-    state: &grm_rs::SessionState,
-    refs: &mut BTreeMap<String, i64>,
-    params: grm_rs::SessionBatchNodeCreateParams,
-    op_name: &'static str,
-) -> grm_rs::Result<Neo4jBatchApplied> {
-    let raw = value_map_to_raw(params.props)?;
-    let model = state
-        .catalog()
-        .get_node_model(&params.model)
-        .ok_or_else(|| missing_node_schema(&params.model))?
-        .clone();
-    let props = model.validate_instance_input(&raw)?;
-    let node = tx
-        .tx_mut()?
-        .create_node(vec![model.label.clone()], props)
-        .await?;
-    if let Some(local_ref) = &params.local_ref {
-        refs.insert(local_ref.clone(), node.id);
-    }
-    Ok(Neo4jBatchApplied {
-        op: op_name,
-        model: params.model,
-        id: Some(node.id),
-        local_ref: params.local_ref,
-    })
-}
-
-async fn create_neo4j_batch_edge(
-    tx: &mut Transaction<Neo4jTx>,
-    state: &grm_rs::SessionState,
-    refs: &BTreeMap<String, i64>,
-    params: grm_rs::SessionBatchEdgeCreateParams,
-    op_name: &'static str,
-) -> grm_rs::Result<Neo4jBatchApplied> {
-    let from = resolve_neo4j_batch_endpoint(&params.from, refs, "from")?;
-    let to = resolve_neo4j_batch_endpoint(&params.to, refs, "to")?;
-    let raw = value_map_to_raw(params.props)?;
-    let (model, from_label, to_label, props) =
-        validated_neo4j_edge_create(state, &params.model, raw)?;
-
-    let from_node = tx
-        .tx_mut()?
-        .find_node_by_id(from)
-        .await?
-        .ok_or_else(|| GrmError::Constraint(format!("from node '{from}' was not found")))?;
-    if !from_node.labels.iter().any(|label| label == &from_label) {
-        return Err(GrmError::Constraint(format!(
-            "from node '{from}' does not match model '{}'",
-            model.from_model
-        )));
-    }
-    let to_node = tx
-        .tx_mut()?
-        .find_node_by_id(to)
-        .await?
-        .ok_or_else(|| GrmError::Constraint(format!("to node '{to}' was not found")))?;
-    if !to_node.labels.iter().any(|label| label == &to_label) {
-        return Err(GrmError::Constraint(format!(
-            "to node '{to}' does not match model '{}'",
-            model.to_model
-        )));
-    }
-
-    let edge = tx
-        .tx_mut()?
-        .create_relationship(from, to, &model.rel_type, props)
-        .await?;
-    Ok(Neo4jBatchApplied {
-        op: op_name,
-        model: params.model,
-        id: Some(edge.id),
-        local_ref: None,
-    })
-}
-
-fn parse_batch_fields(fields: Vec<SessionBatchFieldParam>) -> grm_rs::Result<Vec<RuntimeField>> {
-    fields
-        .into_iter()
-        .map(|field| {
-            let value_type =
-                RuntimeValueType::parse_keyword(&field.value_type).ok_or_else(|| {
-                    GrmError::Constraint(format!(
-                        "unsupported field type '{}', expected one of: string, int, float, bool",
-                        field.value_type
-                    ))
-                })?;
-            Ok(RuntimeField {
-                name: field.name,
-                value_type,
-                required: field.required,
-            })
-        })
-        .collect()
 }
 
 fn field_params_to_specs(fields: Vec<crate::schema::FieldParam>) -> grm_rs::Result<Vec<FieldSpec>> {
@@ -1819,47 +982,6 @@ fn field_value_type(raw: &str) -> Option<FieldValueType> {
     }
 }
 
-fn resolve_neo4j_batch_endpoint(
-    endpoint: &SessionBatchEndpoint,
-    refs: &BTreeMap<String, i64>,
-    field: &str,
-) -> grm_rs::Result<i64> {
-    match endpoint {
-        SessionBatchEndpoint::Id(id) => Ok(*id),
-        SessionBatchEndpoint::Ref(local_ref) => refs.get(local_ref).copied().ok_or_else(|| {
-            GrmError::Constraint(format!(
-                "{field} ref '{local_ref}' was not created earlier in this batch"
-            ))
-        }),
-    }
-}
-
-fn validated_neo4j_edge_create(
-    state: &grm_rs::SessionState,
-    model_name: &str,
-    raw: BTreeMap<String, String>,
-) -> grm_rs::Result<(RuntimeRelModel, String, String, BTreeMap<String, Value>)> {
-    let model = state
-        .catalog()
-        .get_rel_model(model_name)
-        .ok_or_else(|| missing_edge_schema(model_name))?
-        .clone();
-    let from_label = state
-        .catalog()
-        .get_node_model(&model.from_model)
-        .ok_or_else(|| missing_node_schema(&model.from_model))?
-        .label
-        .clone();
-    let to_label = state
-        .catalog()
-        .get_node_model(&model.to_model)
-        .ok_or_else(|| missing_node_schema(&model.to_model))?
-        .label
-        .clone();
-    let props = model.validate_instance_input(&raw)?;
-    Ok((model, from_label, to_label, props))
-}
-
 fn missing_node_schema(model: &str) -> GrmError {
     GrmError::Constraint(format!(
         "node model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_node or grm_batch schema_define_node before creating or finding typed Neo4j data"
@@ -1870,10 +992,6 @@ fn missing_edge_schema(model: &str) -> GrmError {
     GrmError::Constraint(format!(
         "edge model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_edge or grm_batch schema_define_edge before creating or finding typed Neo4j data"
     ))
-}
-
-fn cypher_name(name: &str) -> String {
-    format!("`{}`", name.replace('`', "``"))
 }
 
 #[tool_handler]
@@ -2013,7 +1131,7 @@ fn compact_query_doc() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grm_rs::BackendIdType;
+    use grm_rs::{BackendIdType, PredicateOp, RuntimeField, RuntimeValueType};
 
     fn user_model() -> RuntimeNodeModel {
         RuntimeNodeModel::new(
@@ -2032,22 +1150,6 @@ mod tests {
                     required: true,
                 },
             ],
-        )
-        .unwrap()
-    }
-
-    fn authored_model() -> RuntimeRelModel {
-        RuntimeRelModel::new(
-            "Authored",
-            "User",
-            "Post",
-            "authoredId",
-            BackendIdType::Int64,
-            vec![RuntimeField {
-                name: "year".into(),
-                value_type: RuntimeValueType::Int,
-                required: true,
-            }],
         )
         .unwrap()
     }
@@ -2083,67 +1185,21 @@ mod tests {
     }
 
     #[test]
-    fn neo4j_find_rejects_unknown_predicate_and_order_fields() {
-        let model = user_model();
-        let request = NodeFindRequest::from_adapter_filter_values(
-            "User",
-            BTreeMap::from([("limit".into(), json!(1))]),
-        )
-        .unwrap();
-        assert!(typed_predicates(&request.predicates, &model.fields, &model.name).is_ok());
+    fn neo4j_batch_response_preserves_backend_metadata() {
+        let value = with_neo4j_batch_backend(json!({
+            "applied": true,
+            "atomic": true,
+            "operation_count": 0,
+            "counts": {},
+            "errors": [],
+        }));
 
-        let bad_order = NodeFindRequest::from_adapter_filter_values(
-            "User",
-            BTreeMap::from([("order".into(), json!("missing:asc"))]),
-        )
-        .unwrap();
-        let err = validate_node_order_fields(&bad_order.order, &model).unwrap_err();
-        assert!(err.to_string().contains("unknown order field 'missing'"));
-    }
-
-    #[test]
-    fn neo4j_order_validation_matches_runtime_special_fields() {
-        let node_model = user_model();
-        let node_order = NodeFindRequest::from_adapter_filter_values(
-            "User",
-            BTreeMap::from([("order".into(), json!("id:asc,userId:desc,name:asc"))]),
-        )
-        .unwrap();
-        validate_node_order_fields(&node_order.order, &node_model).unwrap();
-        assert_eq!(
-            cypher_node_order_expression(&node_order.order[0], &node_model.id_field_name),
-            "id(n)"
-        );
-        assert_eq!(
-            cypher_node_order_expression(&node_order.order[1], &node_model.id_field_name),
-            "id(n)"
-        );
-
-        let edge_model = authored_model();
-        let edge_order = EdgeFindRequest::from_adapter_filter_values(
-            "Authored",
-            BTreeMap::from([(
-                "order".into(),
-                json!("id:asc,authoredId:desc,from:asc,to:desc,year:asc"),
-            )]),
-        )
-        .unwrap();
-        validate_edge_order_fields(&edge_order.order, &edge_model).unwrap();
-        assert_eq!(
-            cypher_edge_order_expression(&edge_order.order[0], &edge_model.id_field_name),
-            "id(r)"
-        );
-        assert_eq!(
-            cypher_edge_order_expression(&edge_order.order[1], &edge_model.id_field_name),
-            "id(r)"
-        );
-        assert_eq!(
-            cypher_edge_order_expression(&edge_order.order[2], &edge_model.id_field_name),
-            "id(startNode(r))"
-        );
-        assert_eq!(
-            cypher_edge_order_expression(&edge_order.order[3], &edge_model.id_field_name),
-            "id(endNode(r))"
+        assert_eq!(value["backend"]["mode"], json!("neo4j"));
+        assert!(
+            value["backend"]["atomicity"]
+                .as_str()
+                .unwrap()
+                .contains("one transaction")
         );
     }
 }

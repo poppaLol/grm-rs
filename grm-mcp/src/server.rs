@@ -17,6 +17,7 @@ use crate::tools::to_mcp_error;
 #[derive(Clone)]
 pub struct GrmMcpServer {
     pub(crate) state: Arc<Mutex<SessionState>>,
+    pub(crate) neo4j_schema_write: Arc<Mutex<()>>,
     pub(crate) neo4j: Option<GraphClient<Neo4jBackend>>,
     pub(crate) service: Option<ServiceMcpBackend>,
     pub(crate) schema_template_source: Option<PathBuf>,
@@ -53,6 +54,7 @@ impl GrmMcpServer {
 
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
+            neo4j_schema_write: Arc::new(Mutex::new(())),
             neo4j: None,
             service: None,
             schema_template_source: None,
@@ -97,6 +99,7 @@ impl GrmMcpServer {
         let backend = Neo4jBackend::connect(config).await?;
         Ok(Self {
             state: Arc::new(Mutex::new(state)),
+            neo4j_schema_write: Arc::new(Mutex::new(())),
             neo4j: Some(GraphClient::new(backend)),
             service: None,
             schema_template_source,
@@ -144,6 +147,7 @@ impl GrmMcpServer {
             ServiceMcpBackend::connect(endpoint, workspace_ref, mode, format, tls).await?;
         Ok(Self {
             state: Arc::new(Mutex::new(SessionState::new())),
+            neo4j_schema_write: Arc::new(Mutex::new(())),
             neo4j: None,
             service: Some(service),
             schema_template_source: None,
