@@ -3,14 +3,16 @@ import subprocess
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 
-from grm_rs import ServiceSession, WorkspaceGraphSession
+from grm_rs import Edge, ServiceSession, WorkspaceGraphSession
 
 
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+        address = cast(tuple[str, int], sock.getsockname())
+        return address[1]
 
 
 def wait_for_service(endpoint: str, workspace_ref: str) -> None:
@@ -101,10 +103,13 @@ def main() -> None:
                 return_="edge",
             )
             assert len(authored_edges) == 1
-            assert authored_edges[0]["type"] == "Authored"
-            assert authored_edges[0]["from"] == ada["id"]
-            assert authored_edges[0]["to"] == post["id"]
-            assert authored_edges[0]["props"]["year"] == 2026
+            authored_entity = authored_edges[0]
+            assert "type" in authored_entity
+            authored_edge = cast(Edge, authored_entity)
+            assert authored_edge["type"] == "Authored"
+            assert authored_edge["from"] == ada["id"]
+            assert authored_edge["to"] == post["id"]
+            assert authored_edge["props"]["year"] == 2026
             explain = session.explain_node_find(
                 "User",
                 {"name": "Ada"},

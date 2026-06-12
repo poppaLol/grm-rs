@@ -1,6 +1,6 @@
 import asyncio
 from functools import partial
-from typing import List, Literal, Optional, Sequence
+from typing import List, Literal, Optional, Sequence, cast
 
 from ._grm_rs import Neo4jSession
 from .typing import (
@@ -86,9 +86,10 @@ class AsyncNeo4jSession:
     async def node_find(
         self, model_name: str, filters: Optional[FilterMap] = None
     ) -> List[Node]:
-        return await asyncio.to_thread(
+        entities = await asyncio.to_thread(
             partial(self._session.node_find, model_name, filters),
         )
+        return cast(List[Node], entities)
 
     async def edge_create(
         self,
@@ -139,7 +140,6 @@ class AsyncNeo4jSession:
             partial(
                 self._session.batch,
                 ops,
-                atomic=True,
                 response=response,
                 allow_deletes=allow_deletes,
             )

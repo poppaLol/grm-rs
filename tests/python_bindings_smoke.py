@@ -2,6 +2,7 @@ import json
 from importlib import resources
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any, cast
 
 import grm_rs
 from grm_rs import GrmError, Session, WorkspaceGraphSession
@@ -58,9 +59,13 @@ def main() -> None:
         )
 
         assert autocommit_path.exists()
-        assert session.model_show("User")["id_field"] == "userId"
+        user_model = session.model_show("User")
+        assert user_model is not None
+        assert user_model["id_field"] == "userId"
         assert len(session.model_list()) == 2
-        assert session.link_show("Authored")["from_model"] == "User"
+        authored_link = session.link_show("Authored")
+        assert authored_link is not None
+        assert authored_link["from_model"] == "User"
         assert len(session.link_list()) == 2
 
         user = session.node_create("User", {"name": "Alice", "age": 42})
@@ -103,8 +108,12 @@ def main() -> None:
         imported.import_json(str(export_path))
         assert import_autocommit_path.exists()
         assert len(imported.model_list()) == 2
-        assert imported.model_show("User")["id_field"] == "userId"
-        assert imported.link_show("Authored")["from_model"] == "User"
+        imported_user_model = imported.model_show("User")
+        assert imported_user_model is not None
+        assert imported_user_model["id_field"] == "userId"
+        imported_authored_link = imported.link_show("Authored")
+        assert imported_authored_link is not None
+        assert imported_authored_link["from_model"] == "User"
         assert imported.node_find("User", {"name": "Alice"})[0]["props"]["age"] == 42
         assert imported.edge_find("Authored", {"from": user["id"]})[0]["props"]["year"] == 2024
 
@@ -182,9 +191,11 @@ def main() -> None:
         assert batch_result["applied"] is True
         assert batch_result["counts"]["node_create"]["BatchUser"] == 1
         assert batch_result["counts"]["edge_create"]["BatchAuthored"] == 1
-        assert len(batch_result["ids"]) == 3
+        assert "ids" in batch_result
+        batch_ids = batch_result["ids"]
+        assert len(batch_ids) == 3
         assert {"alice", "post"}.issubset(
-            {item.get("ref") for item in batch_result["ids"]}
+            {item.get("ref") for item in batch_ids}
         )
         assert len(batch_session.edge_find("BatchAuthored", {"year": 2026})) == 1
         assert '"Batch"' in Path(f"{batch_autocommit_path}.log").read_text()
@@ -336,16 +347,23 @@ def main() -> None:
         assert explain["command"] == "node.find"
         assert explain["target"] == "User"
         assert any("ExpandOut" in step for step in explain["plan"]["steps"])
+        assert "details" in explain["plan"]
+        plan_details = explain["plan"]["details"]
         assert any(
             step["kind"] == "ExpandOut"
             and step["access_path"] == "outgoing_adjacency"
             and step["index"] == "system.edge.outgoing_adjacency"
-            for step in explain["plan"]["details"]
+            for step in plan_details
         )
         assert "Return Node" in explain["plan"]["text"]
 
         indexes = session.indexes()
-        assert any(index["name"] == "system.node.property" for index in indexes["indexes"])
+        index_entries = indexes.get("indexes")
+        assert isinstance(index_entries, list)
+        assert any(
+            isinstance(index, dict) and index.get("name") == "system.node.property"
+            for index in index_entries
+        )
 
         profile = session.profile_node_find("User", {"name": "Alice"})
         assert profile["command"] == "node.find"
@@ -353,7 +371,9 @@ def main() -> None:
         assert profile["result_rows"] == 1
         assert isinstance(profile["elapsed"]["micros"], int)
         assert isinstance(profile["elapsed"]["display"], str)
-        assert len(profile["per_step_metrics"]) >= 2
+        per_step_metrics = profile["per_step_metrics"]
+        assert per_step_metrics is not None
+        assert len(per_step_metrics) >= 2
 
         edge_profile = session.profile_edge_find("Authored", {"from": user["id"]})
         assert edge_profile["command"] == "edge.find"
@@ -377,7 +397,8 @@ def main() -> None:
         assert len(session.node_find("Document", {"format": "jsonl"}, limit=1)) == 1
 
         try:
-            session.node_find("User", via=[{"dir": "out", "model": "Post"}])
+            incomplete_via = cast(Any, [{"dir": "out", "model": "Post"}])
+            session.node_find("User", via=incomplete_via)
             raise AssertionError("node_find should reject incomplete traversal dicts")
         except TypeError as exc:
             assert "via entries require key 'link'" in str(exc)
