@@ -1,8 +1,9 @@
 import asyncio
 import os
 import time
+from typing import Literal
 
-from grm_rs import AsyncNeo4jSession
+from grm_rs import AsyncNeo4jSession, FieldDefinition
 
 
 def require_env(name: str) -> str:
@@ -12,8 +13,12 @@ def require_env(name: str) -> str:
     return value
 
 
-def field(name: str, value_type: str = "string", required: bool = True):
-    return {"name": name, "type": value_type, "required": required}
+def field(
+    name: str,
+    value_type: Literal["string", "int", "float", "bool"] = "string",
+    required: bool = True,
+) -> FieldDefinition:
+    return FieldDefinition(name=name, type=value_type, required=required)
 
 
 async def define_schema(session: AsyncNeo4jSession) -> None:
@@ -208,7 +213,9 @@ async def main() -> None:
     ]
     print("verified persisted query_playground nodes from a fresh Python Neo4j session")
     print("inspect in Neo4j Browser with:")
-    print(f"MATCH p=(n {{smoke_id: '{smoke_id}'}})-[r]-(m {{smoke_id: '{smoke_id}'}}) RETURN p")
+    print(
+        f"MATCH p=(n {{smoke_id: '{smoke_id}'}})-[r]-(m {{smoke_id: '{smoke_id}'}}) RETURN p"
+    )
     print("cleanup with:")
     print(f"MATCH (n {{smoke_id: '{smoke_id}'}}) DETACH DELETE n")
 
