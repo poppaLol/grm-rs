@@ -57,6 +57,13 @@ jobs:
         if: runner.os == 'Linux'
         run: maturin sdist --manifest-path grm-python/Cargo.toml --out dist
 
+      - name: Verify wheel license
+        run: python scripts/verify_python_distribution.py --dist dist --artifact wheel
+
+      - name: Verify source distribution license
+        if: runner.os == 'Linux'
+        run: python scripts/verify_python_distribution.py --dist dist --artifact sdist
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

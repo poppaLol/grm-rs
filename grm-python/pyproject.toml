@@ -8,6 +8,7 @@ version = "0.1.0a7"
 description = "Pre-release Python bindings for grm-rs runtime graph sessions."
 readme = "README.md"
 requires-python = ">=3.9"
+license = "Apache-2.0"
 
 [project.optional-dependencies]
 typecheck = ["mypy>=1.10,<2"]
@@ -16,6 +17,7 @@ typecheck = ["mypy>=1.10,<2"]
 python-source = "python"
 module-name = "grm_rs._grm_rs"
 features = ["extension-module"]
+include = [{ path = "python/grm_rs/LICENSE", format = "wheel" }]
 
 [tool.mypy]
 python_version = "3.9"
