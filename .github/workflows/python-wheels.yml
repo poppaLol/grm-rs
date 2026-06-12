@@ -17,7 +17,7 @@ on:
         description: "Release tag to use when publish_release is enabled"
         required: true
         type: string
-        default: "grm-python-v0.1.0a7"
+        default: "grm-python-v0.1.0a8"
 
 permissions:
   contents: read
