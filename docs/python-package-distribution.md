@@ -1,7 +1,8 @@
 # Python Package Distribution
 
-The Python package is currently intended for pre-release sharing, not public
-PyPI publication.
+The Python package is published as an alpha pre-release for public evaluation,
+tutorials, and early application development. Alpha releases may change API or
+backend capability details between versions.
 
 ## Package Names
 
@@ -15,8 +16,11 @@ Pip uses `==` for versions:
 python -m pip install grm-rs==0.1.0a7
 ```
 
-That command only works after the package is published to an index. For private
-pre-release use, install a wheel file or a GitHub Release asset instead.
+To install the latest available pre-release without naming its version:
+
+```bash
+python -m pip install --pre grm-rs
+```
 
 ## Build A Local Wheel
 
@@ -33,17 +37,14 @@ Then install the wheel into a virtualenv:
 python -m pip install ./dist/grm_rs-0.1.0a7-*.whl
 ```
 
-## Share Without Public PyPI
+## Alternative Distribution
 
-Good early options:
+During release development, packages can also be distributed as wheel files or
+GitHub prerelease assets:
 
-1. Share wheel files directly with a small group.
-2. Attach wheel files to a GitHub prerelease.
-3. Use a private package index later if repeated installs become painful.
-
-For a private GitHub repository, release assets are only available to users with
-repository access. For a public repository, GitHub Release assets are public, so
-do not use public releases for private package sharing.
+1. Install a locally built wheel.
+2. Download a wheel from a GitHub prerelease.
+3. Publish first to TestPyPI when validating release automation.
 
 ## GitHub Release Pre-Releases
 
@@ -60,17 +61,34 @@ Users can install a downloaded wheel file:
 python -m pip install ./grm_rs-0.1.0a7-*.whl
 ```
 
-Or, if they have access to the release asset URL:
+Or install directly from a release asset URL:
 
 ```bash
 python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.1.0a7/<wheel-file>.whl"
 ```
 
-## Public PyPI Later
+## PyPI Release Checks
 
-Before publishing publicly, decide:
+Before publishing each alpha:
 
-- whether the public package name should stay `grm-rs`
-- whether `0.1.0a7` has enough install smoke coverage across platforms
-- whether the README is ready for people outside the project
-- whether the package should publish to TestPyPI first
+- build and verify wheels on each supported platform
+- build and verify the source distribution
+- confirm the Apache 2.0 license text is included
+- install the candidate into a clean environment and run the Python smoke tests
+- publish to TestPyPI first when changing release automation
+
+## Trusted Publishing
+
+The `Python Wheels` GitHub Actions workflow can publish verified artifacts to
+PyPI without a stored API token. Run it manually from `main` with
+`publish_pypi` enabled.
+
+Configure the PyPI trusted publisher with:
+
+- owner: `poppaLol`
+- repository: `grm-rs`
+- workflow: `python-wheels.yml`
+- environment: `pypi`
+
+The workflow requests GitHub's OIDC identity only in the publish job and uses
+the `pypa/gh-action-pypi-publish` action to upload the distributions.

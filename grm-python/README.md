@@ -4,19 +4,20 @@ This crate packages a first-pass Python API for the `grm-rs` runtime session sur
 It includes embedded `Session`, service-backed `ServiceSession`, and direct
 `Neo4jSession` implementations of a portable synchronous `GraphSession` core.
 
-The current Python package is a pre-release. It is meant for private wheel
-sharing and GitHub Release testing before any public PyPI upload.
+The Python package is an alpha pre-release. Its API and supported backend
+capabilities may change between alpha versions, but it is published for public
+evaluation, tutorials, and early application development.
 
-Install from a wheel file:
+Install the latest published alpha from PyPI:
 
 ```bash
-python -m pip install ./dist/grm_rs-0.1.0a7-*.whl
+python -m pip install --pre grm-rs
 ```
 
-Or install from an authenticated GitHub Release asset URL:
+Pin a specific release when reproducibility matters:
 
 ```bash
-python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.1.0a7/<wheel-file>.whl"
+python -m pip install grm-rs==0.1.0a7
 ```
 
 The distribution package is named `grm-rs`; the import package is `grm_rs`.
@@ -36,7 +37,7 @@ maturin build --manifest-path grm-python/Cargo.toml --release --out dist
 ```
 
 See [`../docs/python-package-distribution.md`](../docs/python-package-distribution.md)
-for private sharing and pre-release options.
+for local builds and release details.
 
 ## Example
 
