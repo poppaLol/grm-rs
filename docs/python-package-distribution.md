@@ -8,12 +8,12 @@ backend capability details between versions.
 
 - Distribution name: `grm-rs`
 - Import name: `grm_rs`
-- Current Python version: `0.1.0a7`
+- Current Python version: `0.1.0a8`
 
 Pip uses `==` for versions:
 
 ```bash
-python -m pip install grm-rs==0.1.0a7
+python -m pip install grm-rs==0.1.0a8
 ```
 
 To install the latest available pre-release without naming its version:
@@ -34,7 +34,7 @@ maturin build --manifest-path grm-python/Cargo.toml --release --out dist
 Then install the wheel into a virtualenv:
 
 ```bash
-python -m pip install ./dist/grm_rs-0.1.0a7-*.whl
+python -m pip install ./dist/grm_rs-0.1.0a8-*.whl
 ```
 
 ## Alternative Distribution
@@ -52,19 +52,19 @@ Use the manual `Python Wheels` GitHub Actions workflow to build wheels. It can
 either upload build artifacts only, or create/update a draft prerelease such as:
 
 ```text
-grm-python-v0.1.0a7
+grm-python-v0.1.0a8
 ```
 
 Users can install a downloaded wheel file:
 
 ```bash
-python -m pip install ./grm_rs-0.1.0a7-*.whl
+python -m pip install ./grm_rs-0.1.0a8-*.whl
 ```
 
 Or install directly from a release asset URL:
 
 ```bash
-python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.1.0a7/<wheel-file>.whl"
+python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.1.0a8/<wheel-file>.whl"
 ```
 
 ## PyPI Release Checks
