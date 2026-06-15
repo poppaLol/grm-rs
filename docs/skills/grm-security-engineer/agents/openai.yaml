@@ -1,0 +1,4 @@
+interface:
+  display_name: "GRM Security Engineer"
+  short_description: "Review GRM security code against project memory"
+  default_prompt: "Use $grm-security-engineer to review this security-facing GRM change against the live threat, requirement, control, and decision graph."

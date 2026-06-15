@@ -1,0 +1,4 @@
+interface:
+  display_name: "GRM Project Constraints"
+  short_description: "Apply GRM decisions policies and constraints"
+  default_prompt: "Use $grm-project-constraints to inspect the live GRM constraints and evaluate this proposed change."

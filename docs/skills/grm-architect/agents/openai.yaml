@@ -1,0 +1,4 @@
+interface:
+  display_name: "GRM Architect"
+  short_description: "Assess GRM architecture and service boundaries"
+  default_prompt: "Use $grm-architect to assess this GRM change against the live architecture graph and implementation."
