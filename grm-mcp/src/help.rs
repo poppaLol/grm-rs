@@ -19,7 +19,7 @@ Neo4j mode note:
 - GRM_SCHEMA_TEMPLATE is an optional server startup environment variable, not a tool call. When set by the operator, it points at a local GRM JSON session file used as durable schema memory while Neo4j stores graph data.
 - If the file is missing, startup creates a fresh schema memory file. If it exists, startup recovers runtime schema from it. Invalid files fail startup loudly.
 - On startup, call grm_schema_list and inspect grm://backend/status and grm://graph/summary. If schema_template_loaded is true, verify the recovered models before writing. If schema is empty, ask whether to define a fresh schema or reconstruct one from project docs.
-- Neo4j mode supports grm_batch for schema_define_node, schema_define_edge, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and graph summary counts for the current session-local runtime schema. Snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
+- Neo4j mode supports grm_schema_checkpoint to fold schema-memory append-log records into the configured GRM_SCHEMA_TEMPLATE base file. It also supports grm_batch for schema_define_node, schema_define_edge, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and graph summary counts for the current session-local runtime schema. General snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
 
 Schema richness vs sparseness:
 - Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.
@@ -61,6 +61,7 @@ pub fn help_index() -> Value {
             "purpose": "Persist and recover session-local runtime schema metadata for Neo4j mode using a local GRM JSON session file.",
             "missing_file_behavior": "If the file is missing, the server starts fresh and creates it. Later schema definitions are appended to that local file.",
             "existing_file_behavior": "If the file exists, the server recovers schema memory from it. Invalid or inconsistent files fail startup.",
+            "checkpoint_behavior": "grm_schema_checkpoint folds the current runtime schema into the configured base file and clears the schema-memory append log without modifying Neo4j graph data.",
             "does_not": [
                 "create Neo4j nodes",
                 "create Neo4j relationships",
@@ -73,7 +74,8 @@ pub fn help_index() -> Value {
                 "If schema_template_loaded is true, compare the recovered node and edge models with the intended write.",
                 "If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory.",
                 "If runtime_schema_empty is true, ask whether to define schema with grm_schema_define_node/grm_schema_define_edge or grm_batch.",
-                "Only write after the runtime schema contains the target models and fields."
+                "Only write after the runtime schema contains the target models and fields.",
+                "Call grm_schema_checkpoint when an explicit schema-memory compaction is wanted."
             ]
         },
         "resources": [
@@ -87,7 +89,7 @@ pub fn help_index() -> Value {
         ],
         "tool_categories": {
             "help": ["grm_help", "grm_tool_help"],
-            "schema": ["grm_schema_list", "grm_schema_define_node", "grm_schema_define_edge", "grm_index_list"],
+            "schema": ["grm_schema_list", "grm_schema_checkpoint", "grm_schema_define_node", "grm_schema_define_edge", "grm_index_list"],
             "batch": ["grm_batch"],
             "nodes": ["grm_node_create", "grm_node_update", "grm_node_delete", "grm_node_find"],
             "edges": ["grm_edge_create", "grm_edge_update", "grm_edge_delete", "grm_edge_find"],
@@ -143,6 +145,25 @@ pub fn tool_help(name: &str) -> Option<Value> {
             ],
             "example": {},
             "related": ["grm://schema", "grm://backend/status", "grm_help"]
+        }),
+        "grm_schema_checkpoint" => json!({
+            "tool": "grm_schema_checkpoint",
+            "purpose": "Fold Neo4j session-local runtime schema memory into the configured GRM_SCHEMA_TEMPLATE base checkpoint and clear its append log.",
+            "before_calling": [
+                "Use only in Neo4j MCP mode.",
+                "Confirm grm://backend/status reports schema_template_persistence_enabled=true."
+            ],
+            "notes": [
+                "This checkpoints runtime schema metadata only.",
+                "It does not create, update, delete, compact, or otherwise modify Neo4j graph data.",
+                "Schema definitions are already durable in the append log before this tool is called."
+            ],
+            "example": {},
+            "common_errors": [
+                recovery("only supported in Neo4j MCP mode", "Start grm-mcp with GRM_BACKEND=neo4j."),
+                recovery("requires GRM_SCHEMA_TEMPLATE", "Configure GRM_SCHEMA_TEMPLATE before starting grm-mcp.")
+            ],
+            "related": ["grm_schema_list", "grm://backend/status"]
         }),
         "grm_index_list" => json!({
             "tool": "grm_index_list",
@@ -540,6 +561,7 @@ pub fn known_tools() -> Vec<&'static str> {
         "grm_help",
         "grm_tool_help",
         "grm_schema_list",
+        "grm_schema_checkpoint",
         "grm_index_list",
         "grm_batch",
         "grm_schema_define_node",

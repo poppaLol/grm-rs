@@ -85,6 +85,7 @@ relationships, and it does not persist schema metadata into Neo4j.
 Neo4j mode is intentionally narrow. It supports:
 
 - `grm_schema_list`
+- `grm_schema_checkpoint`
 - `grm_batch` for `schema_define_node`, `schema_define_edge`, `node_create`,
   `node_update`, `node_delete`, `edge_create`, `edge_update`, and `edge_delete`
 - `grm_schema_define_node`
@@ -129,6 +130,9 @@ Agent/tool flow after startup:
 6. Only then write graph data with `grm_batch`, `grm_node_create`,
    `grm_node_update`, `grm_node_delete`, `grm_edge_create`, `grm_edge_update`,
    or `grm_edge_delete`.
+7. Optionally call `grm_schema_checkpoint` to fold the schema-memory append log
+   into the `GRM_SCHEMA_TEMPLATE` base file. This compacts only local runtime
+   schema memory and does not modify Neo4j graph data.
 
 For autonomous schema-design tasks, grant that permission in the task prompt
 rather than relying on the conservative built-in help text. For example:

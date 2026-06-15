@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use grm_rs::{
-    DurableOperation, GraphClient, GrmError, Neo4jBackend, Neo4jConfig, Result as GrmResult,
-    SessionState,
+    DurabilityFormat, DurableOperation, GraphClient, GrmError, Neo4jBackend, Neo4jConfig,
+    Result as GrmResult, SessionState,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -182,7 +182,7 @@ impl GrmMcpServer {
         self.is_neo4j().then(|| {
             McpError::internal_error(
                 format!(
-                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, simple grm_node_find, and simple grm_edge_find"
+                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_checkpoint, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, simple grm_node_find, and simple grm_edge_find"
                 ),
                 None,
             )
@@ -372,6 +372,10 @@ impl GrmMcpServer {
         Ok(())
     }
 
+    pub(crate) fn checkpoint_schema_template(&self, state: &SessionState) -> GrmResult<Value> {
+        checkpoint_schema_memory(state, self.schema_template_source.as_ref())
+    }
+
     pub(crate) async fn persist_export(&self, state: &SessionState) -> GrmResult<()> {
         let Some(path) = &self.export_json else {
             return Ok(());
@@ -429,6 +433,7 @@ fn neo4j_backend_status_value(
             "note": "Runtime schema metadata is session-local; GRM_SCHEMA_TEMPLATE can back it with a local GRM session file while Neo4j stores graph data.",
             "supported_tools": [
                 "grm_schema_list",
+                "grm_schema_checkpoint",
                 "grm_schema_define_node",
                 "grm_schema_define_edge",
                 "grm_batch",
@@ -477,6 +482,26 @@ fn initialize_schema_memory(path: Option<&std::path::Path>) -> GrmResult<(Sessio
     }
 }
 
+fn checkpoint_schema_memory(state: &SessionState, path: Option<&PathBuf>) -> GrmResult<Value> {
+    let path = path.ok_or_else(|| {
+        GrmError::Constraint(
+            "grm_schema_checkpoint requires GRM_SCHEMA_TEMPLATE to be configured".into(),
+        )
+    })?;
+    let node_models = state.catalog().list_node_models().len();
+    let edge_models = state.catalog().list_rel_models().len();
+
+    state.checkpoint_durable(DurabilityFormat::Json, path)?;
+
+    Ok(json!({
+        "checkpointed": true,
+        "path": path.display().to_string(),
+        "node_models": node_models,
+        "edge_models": edge_models,
+        "runtime_schema_model_count": node_models + edge_models,
+    }))
+}
+
 fn required_env(name: &str) -> GrmResult<String> {
     std::env::var(name)
         .map_err(|_| GrmError::Constraint(format!("{name} must be set for this MCP backend mode")))
@@ -497,7 +522,9 @@ fn optional_path_env(name: &str) -> GrmResult<Option<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
-    use grm_rs::{BackendIdType, DurableOperation, RuntimeNodeModel};
+    use grm_rs::{
+        BackendIdType, DefineNodeRequest, DurableOperation, RuntimeNodeModel, SessionState,
+    };
     use serde_json::json;
 
     use crate::{GrmMcpServer, StartupOptions};
@@ -538,6 +565,12 @@ mod tests {
         assert_eq!(
             status["backend"]["schema_memory_source"],
             json!("project-memory-schema.json")
+        );
+        assert!(
+            status["backend"]["supported_tools"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("grm_schema_checkpoint"))
         );
         assert!(
             status["backend"]["supported_tools"]
@@ -608,5 +641,46 @@ mod tests {
 
         assert!(loaded);
         assert!(recovered.model("RoadmapItem").is_some());
+    }
+
+    #[test]
+    fn schema_memory_checkpoint_folds_log_into_base_file() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let path = tempdir.path().join("schema-memory.json");
+        let (mut state, loaded) = super::initialize_schema_memory(Some(&path)).unwrap();
+        assert!(!loaded);
+
+        let outcome = state
+            .apply_define_node(DefineNodeRequest {
+                name: "RoadmapItem".into(),
+                id_field: "roadmapItemId".into(),
+                fields: Vec::new(),
+            })
+            .unwrap();
+        state
+            .append_durable_operation(&path, &outcome.durable_op)
+            .unwrap();
+        assert!(path.with_extension("json.log").exists());
+
+        let result = super::checkpoint_schema_memory(&state, Some(&path)).unwrap();
+
+        assert_eq!(result["checkpointed"], json!(true));
+        assert_eq!(result["node_models"], json!(1));
+        assert!(!path.with_extension("json.log").exists());
+        let base = std::fs::read_to_string(&path).unwrap();
+        assert!(base.contains("RoadmapItem"));
+
+        let (recovered, loaded) = super::initialize_schema_memory(Some(&path)).unwrap();
+        assert!(loaded);
+        assert!(recovered.model("RoadmapItem").is_some());
+    }
+
+    #[test]
+    fn schema_memory_checkpoint_requires_configured_path() {
+        let err = super::checkpoint_schema_memory(&SessionState::new(), None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires GRM_SCHEMA_TEMPLATE to be configured")
+        );
     }
 }
