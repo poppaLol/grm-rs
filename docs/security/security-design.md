@@ -109,14 +109,12 @@ flowchart TB
     Client -->|request| TLS
     Peer --> Normalize
     Evidence --> StorageEntry
+    Evidence -. verified response .-> Client
 ```
 
 The canonical secured service path remains the workspace-scoped typed
 `ExecuteWorkspace` path. Direct RPC aliases and future gateways must enter the
 same pipeline and must not create alternate authorization or audit behavior.
-After evidence is produced, the service returns the verified response to the
-client; that return edge is omitted from the diagram to preserve its
-top-to-bottom layout.
 
 ## Deployment Profiles
 
