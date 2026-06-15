@@ -64,7 +64,11 @@ impl GrpcBenchServer {
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
             .unwrap();
         let addr = listener.local_addr().unwrap();
-        let service = GrpcWorkspaceService::with_local_workspace_root(root.path()).into_server();
+        let service = GrpcWorkspaceService::with_local_workspace_root(
+            root.path(),
+            grm_service_api::ServiceSecurityConfig::anonymous_local(),
+        )
+        .into_server();
         let (certificates, server_tls, client_tls) = match transport {
             TransportMode::Insecure => (None, None, None),
             TransportMode::MutualTls => {

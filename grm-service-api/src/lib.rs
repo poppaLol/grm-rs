@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tonic::metadata::MetadataMap;
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint, Identity, ServerTlsConfig,
 };
@@ -49,6 +50,7 @@ pub const GRM_SERVICE_TLS_CLIENT_KEY_ENV: &str = "GRM_SERVICE_TLS_CLIENT_KEY";
 pub const GRM_SERVICE_TLS_SERVER_CERT_ENV: &str = "GRM_SERVICE_TLS_SERVER_CERT";
 pub const GRM_SERVICE_TLS_SERVER_KEY_ENV: &str = "GRM_SERVICE_TLS_SERVER_KEY";
 pub const GRM_SERVICE_TLS_CLIENT_CA_CERT_ENV: &str = "GRM_SERVICE_TLS_CLIENT_CA_CERT";
+pub const GRM_ACTOR_ID_METADATA: &str = "x-grm-actor-id";
 
 #[derive(Debug)]
 pub enum GrpcTlsConfigError {
@@ -1179,28 +1181,296 @@ fn validate_workspace_ref(workspace: &WorkspaceRef) -> WorkspaceServiceResult<()
     Ok(())
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceSecurityProfile {
+    AnonymousLocal,
+    Secured,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportPeer {
+    pub remote_address: Option<String>,
+    pub client_certificate_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Principal {
+    pub issuer: String,
+    pub subject: String,
+    pub authentication_method: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorAssertion {
+    pub actor_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DelegatedActor {
+    pub actor_id: String,
+    pub delegation_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAction {
+    WorkspaceCreate,
+    WorkspaceOpen,
+    WorkspaceClose,
+    SchemaDefine,
+    SchemaInspect,
+    NodeCreate,
+    NodeRead,
+    NodeUpdate,
+    NodeDelete,
+    EdgeCreate,
+    EdgeRead,
+    EdgeUpdate,
+    EdgeDelete,
+    Query,
+    Traverse,
+    Explain,
+    Profile,
+    BatchApply,
+    IndexInspect,
+    WorkspaceInspect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityResourceKind {
+    Workspace,
+    NodeModel,
+    EdgeModel,
+    OperationFamily,
+    IndexCatalog,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityResource {
+    pub workspace: String,
+    pub kind: SecurityResourceKind,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityOperation {
+    pub action: SecurityAction,
+    pub resource: SecurityResource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityRequestContext {
+    pub transport_peer: TransportPeer,
+    pub authenticated_principal: Option<Principal>,
+    pub asserted_actor: Option<ActorAssertion>,
+    pub delegated_actor: Option<DelegatedActor>,
+    pub workspace: String,
+    pub operations: Vec<SecurityOperation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationReason {
+    AnonymousLocalProfile,
+    ExplicitPolicyAllow,
+    NoMatchingPermission,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationDecision {
+    Allow { reason: AuthorizationReason },
+    Deny { reason: AuthorizationReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthenticationError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyEvaluationError;
+
+pub trait ApplicationAuthenticator: Send + Sync {
+    fn authenticate(
+        &self,
+        transport_peer: &TransportPeer,
+        metadata: &MetadataMap,
+    ) -> Result<Option<Principal>, AuthenticationError>;
+}
+
+pub trait AuthorizationPolicy: Send + Sync {
+    fn evaluate(
+        &self,
+        context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError>;
+}
+
+struct NoApplicationAuthenticator;
+
+impl ApplicationAuthenticator for NoApplicationAuthenticator {
+    fn authenticate(
+        &self,
+        _transport_peer: &TransportPeer,
+        _metadata: &MetadataMap,
+    ) -> Result<Option<Principal>, AuthenticationError> {
+        Ok(None)
+    }
+}
+
+struct AnonymousLocalPolicy;
+
+impl AuthorizationPolicy for AnonymousLocalPolicy {
+    fn evaluate(
+        &self,
+        _context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError> {
+        Ok(AuthorizationDecision::Allow {
+            reason: AuthorizationReason::AnonymousLocalProfile,
+        })
+    }
+}
+
+struct DefaultDenyPolicy;
+
+impl AuthorizationPolicy for DefaultDenyPolicy {
+    fn evaluate(
+        &self,
+        _context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError> {
+        Ok(AuthorizationDecision::Deny {
+            reason: AuthorizationReason::NoMatchingPermission,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct ServiceSecurityConfig {
+    profile: ServiceSecurityProfile,
+    authenticator: Arc<dyn ApplicationAuthenticator>,
+    policy: Arc<dyn AuthorizationPolicy>,
+    max_batch_operations: usize,
+}
+
+impl ServiceSecurityConfig {
+    pub fn anonymous_local() -> Self {
+        Self {
+            profile: ServiceSecurityProfile::AnonymousLocal,
+            authenticator: Arc::new(NoApplicationAuthenticator),
+            policy: Arc::new(AnonymousLocalPolicy),
+            max_batch_operations: usize::MAX,
+        }
+    }
+
+    pub fn secured() -> Self {
+        Self {
+            profile: ServiceSecurityProfile::Secured,
+            authenticator: Arc::new(NoApplicationAuthenticator),
+            policy: Arc::new(DefaultDenyPolicy),
+            max_batch_operations: 128,
+        }
+    }
+
+    pub fn with_authenticator(mut self, authenticator: Arc<dyn ApplicationAuthenticator>) -> Self {
+        self.authenticator = authenticator;
+        self
+    }
+
+    pub fn with_policy(mut self, policy: Arc<dyn AuthorizationPolicy>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub fn with_max_batch_operations(mut self, max_batch_operations: usize) -> Self {
+        self.max_batch_operations = max_batch_operations;
+        self
+    }
+}
+
+#[derive(Clone)]
 pub struct GrpcWorkspaceService {
     inner: Arc<Mutex<InProcessWorkspaceService>>,
+    security: ServiceSecurityConfig,
 }
 
 impl GrpcWorkspaceService {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(security: ServiceSecurityConfig) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(InProcessWorkspaceService::new())),
+            security,
+        }
     }
 
-    pub fn with_local_workspace_root(root: impl Into<PathBuf>) -> Self {
-        Self::from_in_process(InProcessWorkspaceService::with_local_workspace_root(root))
+    pub fn with_local_workspace_root(
+        root: impl Into<PathBuf>,
+        security: ServiceSecurityConfig,
+    ) -> Self {
+        Self::from_in_process(
+            InProcessWorkspaceService::with_local_workspace_root(root),
+            security,
+        )
     }
 
-    pub fn from_in_process(service: InProcessWorkspaceService) -> Self {
+    pub fn from_in_process(
+        service: InProcessWorkspaceService,
+        security: ServiceSecurityConfig,
+    ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(service)),
+            security,
         }
     }
 
     pub fn into_server(self) -> GrmServiceServer<Self> {
         GrmServiceServer::new(self)
+    }
+
+    fn request_security_inputs<T>(
+        &self,
+        request: &Request<T>,
+    ) -> Result<(TransportPeer, Option<Principal>, Option<ActorAssertion>), SecurityEnforcementError>
+    {
+        let transport_peer = TransportPeer {
+            remote_address: request.remote_addr().map(|address| address.to_string()),
+            client_certificate_present: request
+                .peer_certs()
+                .is_some_and(|certificates| !certificates.is_empty()),
+        };
+        let asserted_actor = actor_assertion(request.metadata())
+            .map_err(|_| SecurityEnforcementError::InvalidActorAssertion)?;
+        let authenticated_principal = self
+            .security
+            .authenticator
+            .authenticate(&transport_peer, request.metadata())
+            .map_err(|_| SecurityEnforcementError::AuthenticationFailed)?;
+        if self.security.profile == ServiceSecurityProfile::Secured
+            && authenticated_principal.is_none()
+        {
+            return Err(SecurityEnforcementError::MissingPrincipal);
+        }
+        Ok((transport_peer, authenticated_principal, asserted_actor))
+    }
+
+    fn authorize(
+        &self,
+        transport_peer: TransportPeer,
+        authenticated_principal: Option<Principal>,
+        asserted_actor: Option<ActorAssertion>,
+        workspace: String,
+        operations: Vec<SecurityOperation>,
+    ) -> Result<(), SecurityEnforcementError> {
+        let context = SecurityRequestContext {
+            transport_peer,
+            authenticated_principal,
+            asserted_actor,
+            delegated_actor: None,
+            workspace,
+            operations,
+        };
+        match self
+            .security
+            .policy
+            .evaluate(&context)
+            .map_err(|_| SecurityEnforcementError::PolicyEvaluationFailed)?
+        {
+            AuthorizationDecision::Allow { .. } => Ok(()),
+            AuthorizationDecision::Deny { .. } => Err(SecurityEnforcementError::Denied),
+        }
     }
 }
 
@@ -1210,7 +1480,27 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCreateRequest>,
     ) -> Result<Response<proto::WorkspaceCreateResponse>, Status> {
-        let request = request.into_inner().try_into().map_err(proto_status)?;
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request)
+            .map_err(security_status)?;
+        let request: WorkspaceCreateRequest =
+            request.into_inner().try_into().map_err(proto_status)?;
+        let workspace = request
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.id.clone())
+            .unwrap_or_else(|| "new-workspace".into());
+        self.authorize(
+            transport_peer,
+            authenticated_principal,
+            asserted_actor,
+            workspace.clone(),
+            vec![workspace_security_operation(
+                SecurityAction::WorkspaceCreate,
+                &workspace,
+            )],
+        )
+        .map_err(security_status)?;
         let response = self
             .inner
             .lock()
@@ -1232,7 +1522,33 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceOpenRequest>,
     ) -> Result<Response<proto::WorkspaceOpenResponse>, Status> {
-        let request = request.into_inner().try_into().map_err(proto_status)?;
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request)
+            .map_err(security_status)?;
+        let request: WorkspaceOpenRequest =
+            request.into_inner().try_into().map_err(proto_status)?;
+        let workspace = request
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.id.clone())
+            .or_else(|| {
+                request
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.id.clone())
+            })
+            .unwrap_or_else(|| "unknown-workspace".into());
+        self.authorize(
+            transport_peer,
+            authenticated_principal,
+            asserted_actor,
+            workspace.clone(),
+            vec![workspace_security_operation(
+                SecurityAction::WorkspaceOpen,
+                &workspace,
+            )],
+        )
+        .map_err(security_status)?;
         let response = self
             .inner
             .lock()
@@ -1254,10 +1570,31 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceRuntimeRequest>,
     ) -> Result<Response<proto::WorkspaceRuntimeResponse>, Status> {
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request)
+            .map_err(security_status)?;
         let request: WorkspaceRuntimeRequest =
             request.into_inner().try_into().map_err(proto_status)?;
         let mut service = self.inner.lock().await;
         let workspace = service.workspace_log_name(&request.handle);
+        if self.security.profile == ServiceSecurityProfile::Secured {
+            validate_secured_operation_scope(&request.request)
+                .map_err(|_| Status::invalid_argument("secured traversal requires edge_model"))?;
+        }
+        let operations = security_operations(&request.request, &workspace);
+        self.authorize(
+            transport_peer,
+            authenticated_principal,
+            asserted_actor,
+            workspace.clone(),
+            operations,
+        )
+        .map_err(security_status)?;
+        service
+            .workspace(&request.handle)
+            .map_err(workspace_status)?;
+        enforce_security_limits(&request.request, self.security.max_batch_operations)
+            .map_err(|_| Status::resource_exhausted("batch operation limit exceeded"))?;
         let response = service
             .execute_runtime(request)
             .await
@@ -1273,10 +1610,27 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCloseRequest>,
     ) -> Result<Response<proto::WorkspaceCloseResponse>, Status> {
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request)
+            .map_err(security_status)?;
         let request: WorkspaceCloseRequest =
             request.into_inner().try_into().map_err(proto_status)?;
         let mut service = self.inner.lock().await;
         let workspace = service.workspace_log_name(&request.handle);
+        self.authorize(
+            transport_peer,
+            authenticated_principal,
+            asserted_actor,
+            workspace.clone(),
+            vec![workspace_security_operation(
+                SecurityAction::WorkspaceClose,
+                &workspace,
+            )],
+        )
+        .map_err(security_status)?;
+        service
+            .workspace(&request.handle)
+            .map_err(workspace_status)?;
         let response = service.close_workspace(request).map_err(workspace_status)?;
         drop(service);
         log_workspace_lifecycle(&workspace, "workspace.close");
@@ -1581,6 +1935,344 @@ fn log_workspace_lifecycle(workspace: &str, operation: &'static str) {
         }
         .render(workspace)
     );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecurityEnforcementError {
+    InvalidActorAssertion,
+    AuthenticationFailed,
+    MissingPrincipal,
+    PolicyEvaluationFailed,
+    Denied,
+}
+
+fn security_status(error: SecurityEnforcementError) -> Status {
+    match error {
+        SecurityEnforcementError::InvalidActorAssertion => {
+            Status::invalid_argument("actor assertion metadata is not valid ASCII")
+        }
+        SecurityEnforcementError::AuthenticationFailed => {
+            Status::unauthenticated("application authentication failed")
+        }
+        SecurityEnforcementError::MissingPrincipal => {
+            Status::unauthenticated("authenticated application principal required")
+        }
+        SecurityEnforcementError::PolicyEvaluationFailed => {
+            Status::unavailable("authorization policy evaluation failed")
+        }
+        SecurityEnforcementError::Denied => Status::permission_denied("authorization denied"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActorAssertionError {
+    InvalidAscii,
+}
+
+fn actor_assertion(metadata: &MetadataMap) -> Result<Option<ActorAssertion>, ActorAssertionError> {
+    metadata
+        .get(GRM_ACTOR_ID_METADATA)
+        .map(|value| {
+            value
+                .to_str()
+                .map(|actor_id| ActorAssertion {
+                    actor_id: actor_id.to_owned(),
+                })
+                .map_err(|_| ActorAssertionError::InvalidAscii)
+        })
+        .transpose()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecurityLimitError {
+    BatchOperationCount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecurityScopeError {
+    ImplicitTraversalEdge,
+}
+
+fn validate_secured_operation_scope(request: &ServiceRequest) -> Result<(), SecurityScopeError> {
+    let traversals = match request {
+        ServiceRequest::FindNodes(request) => Some(request.traversals.as_slice()),
+        ServiceRequest::Query(request) => query_traversals(&request.query),
+        ServiceRequest::Explain(request) => query_traversals(&request.query.query),
+        ServiceRequest::Profile(request) => query_traversals(&request.query.query),
+        _ => None,
+    };
+    if traversals.is_some_and(|steps| steps.iter().any(|step| step.edge_model.is_none())) {
+        return Err(SecurityScopeError::ImplicitTraversalEdge);
+    }
+    Ok(())
+}
+
+fn query_traversals(query: &Query) -> Option<&[TraversalStep]> {
+    match query {
+        Query::NodeFind(request) => Some(&request.traversals),
+        Query::Traversal(request) => Some(&request.root.traversals),
+        Query::EdgeFind(_) => None,
+    }
+}
+
+fn enforce_security_limits(
+    request: &ServiceRequest,
+    max_batch_operations: usize,
+) -> Result<(), SecurityLimitError> {
+    if let ServiceRequest::ApplyBatch(batch) = request
+        && batch.ops.len() > max_batch_operations
+    {
+        return Err(SecurityLimitError::BatchOperationCount);
+    }
+    Ok(())
+}
+
+fn security_operations(request: &ServiceRequest, workspace: &str) -> Vec<SecurityOperation> {
+    let operation = |action, kind, model: Option<&str>| SecurityOperation {
+        action,
+        resource: SecurityResource {
+            workspace: workspace.to_owned(),
+            kind,
+            model: model.map(str::to_owned),
+        },
+    };
+
+    match request {
+        ServiceRequest::DefineNode(request) => vec![operation(
+            SecurityAction::SchemaDefine,
+            SecurityResourceKind::NodeModel,
+            Some(&request.name),
+        )],
+        ServiceRequest::DefineEdge(request) => vec![operation(
+            SecurityAction::SchemaDefine,
+            SecurityResourceKind::EdgeModel,
+            Some(&request.name),
+        )],
+        ServiceRequest::SchemaList(_) => vec![operation(
+            SecurityAction::SchemaInspect,
+            SecurityResourceKind::Workspace,
+            None,
+        )],
+        ServiceRequest::CreateNode(request) => vec![operation(
+            SecurityAction::NodeCreate,
+            SecurityResourceKind::NodeModel,
+            Some(&request.model),
+        )],
+        ServiceRequest::UpdateNode(request) => vec![operation(
+            SecurityAction::NodeUpdate,
+            SecurityResourceKind::NodeModel,
+            Some(&request.model),
+        )],
+        ServiceRequest::DeleteNode(request) => vec![operation(
+            SecurityAction::NodeDelete,
+            SecurityResourceKind::NodeModel,
+            Some(&request.model),
+        )],
+        ServiceRequest::FindNodes(request) => {
+            node_find_security_operations(&request.model, &request.traversals, workspace, false)
+        }
+        ServiceRequest::CreateEdge(request) => vec![operation(
+            SecurityAction::EdgeCreate,
+            SecurityResourceKind::EdgeModel,
+            Some(&request.model),
+        )],
+        ServiceRequest::UpdateEdge(request) => vec![operation(
+            SecurityAction::EdgeUpdate,
+            SecurityResourceKind::EdgeModel,
+            Some(&request.model),
+        )],
+        ServiceRequest::DeleteEdge(request) => vec![operation(
+            SecurityAction::EdgeDelete,
+            SecurityResourceKind::EdgeModel,
+            Some(&request.model),
+        )],
+        ServiceRequest::FindEdges(request) => vec![operation(
+            SecurityAction::EdgeRead,
+            SecurityResourceKind::EdgeModel,
+            Some(&request.model),
+        )],
+        ServiceRequest::Query(request) => {
+            query_security_operations(&request.query, workspace, SecurityAction::Query)
+        }
+        ServiceRequest::Explain(request) => {
+            query_security_operations(&request.query.query, workspace, SecurityAction::Explain)
+        }
+        ServiceRequest::Profile(request) => {
+            query_security_operations(&request.query.query, workspace, SecurityAction::Profile)
+        }
+        ServiceRequest::ApplyBatch(batch) => {
+            let mut operations = vec![operation(
+                SecurityAction::BatchApply,
+                SecurityResourceKind::OperationFamily,
+                None,
+            )];
+            operations.extend(
+                batch
+                    .ops
+                    .iter()
+                    .map(|batch_operation| batch_security_operation(batch_operation, workspace)),
+            );
+            operations
+        }
+        ServiceRequest::IndexList(_) => vec![operation(
+            SecurityAction::IndexInspect,
+            SecurityResourceKind::IndexCatalog,
+            None,
+        )],
+        ServiceRequest::Summary(_) => vec![operation(
+            SecurityAction::WorkspaceInspect,
+            SecurityResourceKind::Workspace,
+            None,
+        )],
+        ServiceRequest::Save(_)
+        | ServiceRequest::Load(_)
+        | ServiceRequest::Export(_)
+        | ServiceRequest::Import(_) => vec![operation(
+            SecurityAction::WorkspaceInspect,
+            SecurityResourceKind::OperationFamily,
+            None,
+        )],
+    }
+}
+
+fn workspace_security_operation(action: SecurityAction, workspace: &str) -> SecurityOperation {
+    SecurityOperation {
+        action,
+        resource: SecurityResource {
+            workspace: workspace.to_owned(),
+            kind: SecurityResourceKind::Workspace,
+            model: None,
+        },
+    }
+}
+
+fn query_security_operations(
+    query: &Query,
+    workspace: &str,
+    wrapper_action: SecurityAction,
+) -> Vec<SecurityOperation> {
+    let wrapper = SecurityOperation {
+        action: wrapper_action,
+        resource: SecurityResource {
+            workspace: workspace.to_owned(),
+            kind: SecurityResourceKind::OperationFamily,
+            model: None,
+        },
+    };
+    let mut operations = vec![wrapper];
+    match query {
+        Query::NodeFind(request) => operations.extend(node_find_security_operations(
+            &request.model,
+            &request.traversals,
+            workspace,
+            false,
+        )),
+        Query::EdgeFind(request) => operations.push(SecurityOperation {
+            action: SecurityAction::EdgeRead,
+            resource: SecurityResource {
+                workspace: workspace.to_owned(),
+                kind: SecurityResourceKind::EdgeModel,
+                model: Some(request.model.clone()),
+            },
+        }),
+        Query::Traversal(request) => operations.extend(node_find_security_operations(
+            &request.root.model,
+            &request.root.traversals,
+            workspace,
+            true,
+        )),
+    }
+    operations
+}
+
+fn node_find_security_operations(
+    root_model: &str,
+    traversals: &[TraversalStep],
+    workspace: &str,
+    force_traverse: bool,
+) -> Vec<SecurityOperation> {
+    let resource = |kind, model: Option<&str>| SecurityResource {
+        workspace: workspace.to_owned(),
+        kind,
+        model: model.map(str::to_owned),
+    };
+    let mut operations = vec![SecurityOperation {
+        action: SecurityAction::NodeRead,
+        resource: resource(SecurityResourceKind::NodeModel, Some(root_model)),
+    }];
+    if force_traverse || !traversals.is_empty() {
+        operations.push(SecurityOperation {
+            action: SecurityAction::Traverse,
+            resource: resource(SecurityResourceKind::NodeModel, Some(root_model)),
+        });
+    }
+    for traversal in traversals {
+        operations.push(SecurityOperation {
+            action: SecurityAction::EdgeRead,
+            resource: resource(
+                SecurityResourceKind::EdgeModel,
+                traversal.edge_model.as_deref(),
+            ),
+        });
+        operations.push(SecurityOperation {
+            action: SecurityAction::NodeRead,
+            resource: resource(SecurityResourceKind::NodeModel, Some(&traversal.end_model)),
+        });
+    }
+    operations
+}
+
+fn batch_security_operation(operation: &BatchOperation, workspace: &str) -> SecurityOperation {
+    let (action, kind, model) = match operation {
+        BatchOperation::SchemaDefineNode(request) => (
+            SecurityAction::SchemaDefine,
+            SecurityResourceKind::NodeModel,
+            request.name.as_str(),
+        ),
+        BatchOperation::SchemaDefineEdge(request) => (
+            SecurityAction::SchemaDefine,
+            SecurityResourceKind::EdgeModel,
+            request.name.as_str(),
+        ),
+        BatchOperation::NodeCreate(request) => (
+            SecurityAction::NodeCreate,
+            SecurityResourceKind::NodeModel,
+            request.model.as_str(),
+        ),
+        BatchOperation::NodeUpdate(request) => (
+            SecurityAction::NodeUpdate,
+            SecurityResourceKind::NodeModel,
+            request.model.as_str(),
+        ),
+        BatchOperation::NodeDelete(request) => (
+            SecurityAction::NodeDelete,
+            SecurityResourceKind::NodeModel,
+            request.model.as_str(),
+        ),
+        BatchOperation::EdgeCreate(request) => (
+            SecurityAction::EdgeCreate,
+            SecurityResourceKind::EdgeModel,
+            request.model.as_str(),
+        ),
+        BatchOperation::EdgeUpdate(request) => (
+            SecurityAction::EdgeUpdate,
+            SecurityResourceKind::EdgeModel,
+            request.model.as_str(),
+        ),
+        BatchOperation::EdgeDelete(request) => (
+            SecurityAction::EdgeDelete,
+            SecurityResourceKind::EdgeModel,
+            request.model.as_str(),
+        ),
+    };
+    SecurityOperation {
+        action,
+        resource: SecurityResource {
+            workspace: workspace.to_owned(),
+            kind,
+            model: Some(model.to_owned()),
+        },
+    }
 }
 
 fn workspace_status(error: WorkspaceServiceError) -> Status {

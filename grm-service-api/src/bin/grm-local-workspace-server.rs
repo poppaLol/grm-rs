@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use grm_service_api::{GrpcServerTlsOptions, GrpcWorkspaceService};
+use grm_service_api::{GrpcServerTlsOptions, GrpcWorkspaceService, ServiceSecurityConfig};
 use tonic::transport::Server;
 
 #[tokio::main]
@@ -17,7 +17,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::env::temp_dir().join("grm-service-workspaces"));
     std::fs::create_dir_all(&workspace_root)?;
 
-    let service = GrpcWorkspaceService::with_local_workspace_root(&workspace_root).into_server();
+    let service = GrpcWorkspaceService::with_local_workspace_root(
+        &workspace_root,
+        ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let tls = GrpcServerTlsOptions::from_env()?;
     let mut server = Server::builder();
     let transport = if let Some(tls) = tls {

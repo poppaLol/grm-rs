@@ -1606,9 +1606,11 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let service =
-            grm_service_api::GrpcWorkspaceService::with_local_workspace_root(tempdir.path())
-                .into_server();
+        let service = grm_service_api::GrpcWorkspaceService::with_local_workspace_root(
+            tempdir.path(),
+            grm_service_api::ServiceSecurityConfig::anonymous_local(),
+        )
+        .into_server();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             Server::builder()

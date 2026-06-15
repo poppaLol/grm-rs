@@ -6,7 +6,7 @@ use std::path::Path;
 use grm_rs::{DefineNodeRequest, FieldSpec, FieldValueType, NodeCreateRequest};
 use grm_service_api::{
     DurabilityFormat, GrpcClientTlsOptions, GrpcServerTlsOptions, GrpcWorkspaceClient,
-    GrpcWorkspaceMode, GrpcWorkspaceService,
+    GrpcWorkspaceMode, GrpcWorkspaceService, ServiceSecurityConfig,
 };
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -28,7 +28,11 @@ async fn tls_workspace_service_create_open_execute_roundtrip() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let service = GrpcWorkspaceService::with_local_workspace_root(
+        temp.path(),
+        ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let tls = GrpcServerTlsOptions::new(&cert, &key)
         .server_tls_config()
         .unwrap();
@@ -129,7 +133,11 @@ async fn mutual_tls_requires_a_client_signed_by_the_trusted_client_ca() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let service = GrpcWorkspaceService::with_local_workspace_root(
+        temp.path(),
+        ServiceSecurityConfig::secured(),
+    )
+    .into_server();
     let tls = GrpcServerTlsOptions::new(&server_cert, &server_key)
         .with_client_ca(&client_ca_cert)
         .server_tls_config()
@@ -157,9 +165,15 @@ async fn mutual_tls_requires_a_client_signed_by_the_trusted_client_ca() {
         DurabilityFormat::Binary,
         Some(trusted_tls),
     )
-    .await
-    .expect("client signed by trusted client CA should connect");
-    trusted.close().await.unwrap();
+    .await;
+    let unauthenticated = match trusted {
+        Ok(_) => panic!("mTLS transport identity must not grant application authorization"),
+        Err(error) => error,
+    };
+    let grm_service_api::GrpcWorkspaceClientError::Status(status) = unauthenticated else {
+        panic!("expected application authentication status");
+    };
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
 
     let missing_identity = GrpcClientTlsOptions::new(&server_ca_cert).with_domain_name("localhost");
     let missing_result = GrpcWorkspaceClient::connect_with_format_and_tls(

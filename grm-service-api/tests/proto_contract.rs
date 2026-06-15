@@ -661,7 +661,8 @@ async fn in_process_workspace_service_returns_structured_errors() {
 async fn generated_grpc_client_executes_workspace_requests_over_local_transport() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = svc::GrpcWorkspaceService::new().into_server();
+    let service =
+        svc::GrpcWorkspaceService::new(svc::ServiceSecurityConfig::anonymous_local()).into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -780,7 +781,11 @@ async fn workspace_client_executes_through_workspace_scope() {
     let temp = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(
+        temp.path(),
+        svc::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -863,7 +868,11 @@ async fn generated_grpc_create_rejects_existing_workspace_without_replacing_it()
     let temp = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(
+        temp.path(),
+        svc::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -963,7 +972,11 @@ async fn ergonomic_workspace_client_routes_supported_operations_through_execute_
     let temp = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(
+        temp.path(),
+        svc::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -1202,7 +1215,11 @@ async fn workspace_client_accepts_explicit_json_workspace_format() {
     let temp = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(
+        temp.path(),
+        svc::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
@@ -1251,7 +1268,11 @@ async fn generated_grpc_client_reopens_binary_autocommitted_workspace_without_ma
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = svc::GrpcWorkspaceService::with_local_workspace_root(temp.path()).into_server();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(
+        temp.path(),
+        svc::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
