@@ -1,0 +1,4 @@
+interface:
+  display_name: "GRM Performance Engineer"
+  short_description: "Measure and review GRM performance evidence"
+  default_prompt: "Use $grm-performance-engineer to evaluate this GRM benchmark or performance change against current evidence and methodology."

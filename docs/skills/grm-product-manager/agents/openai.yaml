@@ -1,0 +1,4 @@
+interface:
+  display_name: "GRM Product Manager"
+  short_description: "Orient and sequence the GRM product roadmap"
+  default_prompt: "Use $grm-product-manager to orient from GRM project memory and recommend the smallest valuable next slice."
