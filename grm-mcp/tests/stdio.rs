@@ -890,6 +890,33 @@ async fn schema_define_tools_expose_structured_field_objects() {
 }
 
 #[tokio::test]
+async fn schema_checkpoint_is_exposed_and_rejects_in_memory_mode() {
+    let client = client(&[]).await;
+    let tools = client.list_tools(None).await.expect("list tools");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .any(|tool| tool.name == "grm_schema_checkpoint")
+    );
+
+    let error = call_error(&client, "grm_schema_checkpoint", json!({})).await;
+    assert!(error.contains("only supported in Neo4j MCP mode"));
+
+    let help = call(
+        &client,
+        "grm_tool_help",
+        json!({ "tool": "grm_schema_checkpoint" }),
+    )
+    .await;
+    assert!(help.to_string().contains(
+        "does not create, update, delete, compact, or otherwise modify Neo4j graph data"
+    ));
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn find_tools_accept_adapter_filters_through_public_mcp_surface() {
     let client = client(&[]).await;
 
