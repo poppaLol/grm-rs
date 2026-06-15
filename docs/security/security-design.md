@@ -50,50 +50,73 @@ The initial design does not promise:
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     Client["CLI / Python / MCP / Rust / SDK"]
 
     subgraph Transport["Transport boundary"]
+        direction TB
         TLS["TLS / optional mTLS"]
         Peer["Transport peer evidence"]
+        TLS --> Peer
     end
 
     subgraph Service["GRM service security boundary"]
-        Normalize["Request normalization"]
-        Authenticate["Principal authentication"]
-        Resolve["Workspace and resource resolution"]
-        Authorize["Authorization policy"]
-        Limit["Limits and admission control"]
-        AuditStart["Audit attempt"]
-        Runtime["Typed runtime execution"]
-        Commit["Durability commit"]
-        Evidence["Audit outcome and signed receipt"]
+        direction TB
+
+        subgraph Establish["Establish trusted context"]
+            direction TB
+            Normalize["Request normalization"]
+            Authenticate["Principal authentication"]
+            Resolve["Workspace and resource resolution"]
+            Normalize --> Authenticate --> Resolve
+        end
+
+        subgraph Enforce["Enforce security policy"]
+            direction TB
+            Authorize["Authorization policy"]
+            Limit["Limits and admission control"]
+            AuditStart["Audit attempt"]
+            Authorize --> Limit --> AuditStart
+        end
+
+        subgraph Execute["Execute and record outcome"]
+            direction TB
+            Runtime["Typed runtime execution"]
+            Commit["Durability commit"]
+            Evidence["Audit outcome and signed receipt"]
+            Runtime --> Commit --> Evidence
+        end
+
+        Resolve --> Authorize
+        AuditStart --> Runtime
     end
 
     subgraph Storage["Protected storage"]
-        Workspace["Encrypted workspace envelope"]
-        WAL["Encrypted WAL / checkpoints"]
-        Policy["Policy and identity metadata"]
-        Audit["Bounded audit sink"]
-        Keys["Key provider / wrapped data keys"]
+        direction TB
+        StorageEntry["Persist protected state and evidence"]
+        PolicyStore["Policy and identity metadata"]
+        DurableStore["Encrypted workspace envelope<br/>WAL / checkpoints"]
+        AuditStore["Bounded audit sink"]
+        KeyStore["Key provider / wrapped data keys"]
+
+        StorageEntry --> PolicyStore
+        StorageEntry --> DurableStore
+        StorageEntry --> AuditStore
+        StorageEntry --> KeyStore
+        KeyStore --> DurableStore
     end
 
-    Client --> TLS --> Peer --> Normalize
-    Normalize --> Authenticate --> Resolve --> Authorize --> Limit --> AuditStart
-    AuditStart --> Runtime --> Commit --> Evidence --> Client
-    Runtime --> Workspace
-    Commit --> WAL
-    Authenticate --> Policy
-    Authorize --> Policy
-    AuditStart --> Audit
-    Evidence --> Audit
-    Workspace --> Keys
-    WAL --> Keys
+    Client -->|request| TLS
+    Peer --> Normalize
+    Evidence --> StorageEntry
 ```
 
 The canonical secured service path remains the workspace-scoped typed
 `ExecuteWorkspace` path. Direct RPC aliases and future gateways must enter the
 same pipeline and must not create alternate authorization or audit behavior.
+After evidence is produced, the service returns the verified response to the
+client; that return edge is omitted from the diagram to preserve its
+top-to-bottom layout.
 
 ## Deployment Profiles
 
