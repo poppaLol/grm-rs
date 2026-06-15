@@ -518,14 +518,45 @@ signing.
 | Server-local paths excluded from public workspace contracts | Implemented |
 | Server-authenticated TLS | Implemented and tested |
 | Optional mTLS client-certificate requirement | Implemented and tested |
-| Application principal authentication | Not implemented |
-| Authorization and policy versioning | Not implemented |
-| Request limits and admission policy | Not implemented as a security layer |
+| Trusted application-principal abstraction | Implemented; no production credential provider |
+| Authorization and policy versioning | Minimal policy abstraction and default-deny enforcement implemented; policy storage/versioning not implemented |
+| Request limits and admission policy | Batch operation count enforced in secured profile; broader limits not implemented |
 | Bounded security audit sink | Not implemented |
 | GRM-managed encryption at rest | Not implemented |
 | Signed durable receipts and state commitments | Not implemented |
 | Rollback, fork, and equivocation detection | Not implemented |
 | Hosted tenant isolation | Not implemented |
+
+The current minimum enforcement proof constructs transport-peer evidence,
+authenticated principal, asserted actor, server-resolved workspace, action,
+resource, and authorization decision as internal Rust types. The public
+protobuf does not accept an effective security context. Workspace create, open,
+execute, and close RPCs normalize typed requests, authenticate, resolve scope,
+and authorize before lifecycle or runtime effects. `ExecuteWorkspace` also
+applies the current batch limit before invoking the existing runtime path.
+
+The explicit `anonymous-local` profile preserves local development behavior.
+Service constructors require a `ServiceSecurityConfig`; there is no permissive
+default or zero-argument constructor. Local adapters and tests must visibly
+select `ServiceSecurityConfig::anonymous_local()`.
+The `secured` profile rejects missing application principals, defaults to deny,
+fails closed on policy evaluation errors, and does not treat actor metadata or
+an mTLS client certificate as application authorization. Public gRPC tests
+prove lifecycle denial before workspace effects, denial before mutation,
+contained-operation batch classification, query wrapper plus underlying
+data-access classification, per-step traversal edge and destination-model
+classification for query and direct find requests, and continued runtime
+validation after authorization.
+
+Secured mode rejects traversal steps that omit `edge_model`. The runtime may
+infer an edge model in local workflows, but secured authorization does not
+accept an unresolved broad edge resource. Explicit anonymous-local mode retains
+the existing runtime behavior.
+
+For handle-backed execute and close operations, secured policy evaluation
+precedes public unknown-handle errors. A denied caller receives the same
+permission-denied response for existing and missing handles; an allowed caller
+may receive not-found after authorization.
 
 ## Implementation Sequence
 

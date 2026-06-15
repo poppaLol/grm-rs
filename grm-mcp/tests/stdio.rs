@@ -58,7 +58,11 @@ async fn grpc_service(root: PathBuf) -> (String, JoinHandle<()>) {
         .expect("bind local gRPC service");
     let addr = listener.local_addr().expect("local gRPC service address");
     let incoming = TcpListenerStream::new(listener);
-    let service = GrpcWorkspaceService::with_local_workspace_root(root).into_server();
+    let service = GrpcWorkspaceService::with_local_workspace_root(
+        root,
+        grm_service_api::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(service)

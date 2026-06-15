@@ -163,7 +163,11 @@ async fn start_workspace_service(
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = svc::GrpcWorkspaceService::with_local_workspace_root(root).into_server();
+    let service = svc::GrpcWorkspaceService::with_local_workspace_root(
+        root,
+        svc::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()

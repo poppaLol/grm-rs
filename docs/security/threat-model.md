@@ -408,6 +408,28 @@ Implemented and tested controls currently include:
 - typed protobuf workspace operations;
 - server-managed workspace handles and opaque workspace references;
 - no client-supplied server-local filesystem paths in public admin contracts;
+- trusted internal security-context types that distinguish transport peer,
+  authenticated principal, asserted actor, delegated actor, server-resolved
+  workspace/action/resource, and authorization decision;
+- canonical authentication and authorization for workspace create, open,
+  execute, and close, with pre-runtime enforcement around `ExecuteWorkspace`;
+- an explicit anonymous-local compatibility profile;
+- service constructors that require explicit security-profile selection rather
+  than defaulting to anonymous-local;
+- secured-profile unauthenticated, default-deny, policy-error, and batch-limit
+  outcomes;
+- server-derived classification of every contained batch operation;
+- query, explain, and profile classification that preserves both wrapper action
+  and underlying node, edge, or traversal access;
+- traversal classification that includes the root node model, each selected
+  edge model, and each destination node model for query and direct find
+  requests;
+- secured-profile rejection of implicit-edge traversal when the concrete edge
+  resource cannot be derived before authorization;
+- public service tests proving actor assertions and mTLS peer identity do not
+  independently authorize access, and denied requests do not mutate state;
+- public service tests proving denied execute and close requests do not reveal
+  whether a workspace handle exists;
 - server-authenticated TLS;
 - optional mutual TLS requiring a certificate signed by the configured client
   CA;
@@ -427,13 +449,15 @@ authenticated service returned complete and accurate state.
 
 GRM does not yet define or implement:
 
-- authenticated application principal resolution;
-- safe actor assertion and delegation semantics;
+- a production credential mechanism for authenticated application principal
+  resolution;
+- authenticated delegation semantics;
 - certificate-to-principal or token-to-principal mapping;
 - workspace ownership, membership, or tenant isolation;
-- a permission and protected-resource taxonomy;
+- a complete permission and protected-resource taxonomy;
 - policy storage, versioning, administration, or failure semantics;
-- bounded request, traversal, batch, result, profile, or concurrency policy;
+- bounded request, traversal, result, profile, concurrency, or broad admission
+  policy beyond the current secured-profile batch count;
 - durable, bounded, redacted, tamper-evident audit storage;
 - request replay and idempotency semantics;
 - production secret and certificate lifecycle;
