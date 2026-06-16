@@ -1,6 +1,6 @@
 [package]
 name = "grm-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Typed in-memory graph modeling, querying, persistence, and interactive CLI sessions for Rust."
 readme = "README.md"
@@ -19,7 +19,7 @@ default = ["neo4j"]
 neo4j = ["dep:neo4rs"]
 
 [dependencies]
-grm-rs-macros = { version = "0.1.0", path = "./grm-rs-macros" }
+grm-rs-macros = { version = "0.1.1", path = "./grm-rs-macros" }
 async-trait = "0.1"
 bincode = "1"
 serde = { version = "1", features = ["derive"] }
