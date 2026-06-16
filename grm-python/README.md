@@ -4,20 +4,20 @@ This crate packages a first-pass Python API for the `grm-rs` runtime session sur
 It includes embedded `Session`, service-backed `ServiceSession`, and direct
 `Neo4jSession` implementations of a portable synchronous `GraphSession` core.
 
-The Python package is an alpha pre-release. Its API and supported backend
-capabilities may change between alpha versions, but it is published for public
+The Python package is an early public release. Its API and supported backend
+capabilities may change between early versions, but it is published for public
 evaluation, tutorials, and early application development.
 
-Install the latest published alpha from PyPI:
+Install the latest published release from PyPI:
 
 ```bash
-python -m pip install --pre grm-rs
+python -m pip install grm-rs
 ```
 
 Pin a specific release when reproducibility matters:
 
 ```bash
-python -m pip install grm-rs==0.1.0a8
+python -m pip install grm-rs==0.1.1
 ```
 
 The distribution package is named `grm-rs`; the import package is `grm_rs`.
