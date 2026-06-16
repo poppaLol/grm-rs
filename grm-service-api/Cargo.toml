@@ -1,6 +1,6 @@
 [package]
 name = "grm-service-api"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Split-ready protobuf service contract skeleton for GRM typed runtime operations."
 repository = "https://github.com/poppaLol/grm-rs"

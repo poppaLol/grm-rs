@@ -736,7 +736,7 @@ dependencies = [
 
 [[package]]
 name = "grm-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "grm-rs",
  "grm-service-api",
@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "grm-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "grm-rs",
  "grm-service-api",
@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "grm-rs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "bincode",
@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "grm-rs-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "grm-service-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "grm-rs",
