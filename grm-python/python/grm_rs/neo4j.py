@@ -1,8 +1,8 @@
 import asyncio
 from functools import partial
-from typing import List, Literal, Optional, Sequence, cast
+from typing import Any, List, Literal, Optional, Sequence, Type, Union, cast, overload
 
-from ._grm_rs import Neo4jSession
+from .session import Neo4jSession
 from .typing import (
     BatchOperation,
     BatchResponseMode,
@@ -36,14 +36,24 @@ class AsyncNeo4jSession:
         )
         return cls(session)
 
+    @overload
     async def model_create(
         self, name: str, id_field: str, fields: Sequence[FieldDefinition]
+    ) -> None: ...
+
+    @overload
+    async def model_create(
+        self, name: Type[Any], id_field: Optional[str] = None
+    ) -> None: ...
+
+    async def model_create(
+        self,
+        name: Union[str, Type[Any]],
+        id_field: Optional[str] = None,
+        fields: Optional[Sequence[FieldDefinition]] = None,
     ) -> None:
         return await asyncio.to_thread(
-            self._session.model_create,
-            name,
-            id_field,
-            fields,
+            partial(self._session.model_create, name, id_field, fields),
         )
 
     async def execute_query(
@@ -59,6 +69,7 @@ class AsyncNeo4jSession:
     async def link_list(self) -> List[LinkModelDescription]:
         return await asyncio.to_thread(self._session.link_list)
 
+    @overload
     async def link_create(
         self,
         name: str,
@@ -66,18 +77,40 @@ class AsyncNeo4jSession:
         to_model: str,
         id_field: str,
         fields: Sequence[FieldDefinition],
+    ) -> None: ...
+
+    @overload
+    async def link_create(self, name: Type[Any]) -> None: ...
+
+    async def link_create(
+        self,
+        name: Union[str, Type[Any]],
+        from_model: Optional[str] = None,
+        to_model: Optional[str] = None,
+        id_field: Optional[str] = None,
+        fields: Optional[Sequence[FieldDefinition]] = None,
     ) -> None:
         return await asyncio.to_thread(
-            self._session.link_create,
-            name,
-            from_model,
-            to_model,
-            id_field,
-            fields,
+            partial(
+                self._session.link_create,
+                name,
+                from_model,
+                to_model,
+                id_field,
+                fields,
+            ),
         )
 
+    @overload
     async def node_create(
         self, model_name: str, values: Optional[PropertyMap] = None
+    ) -> Node: ...
+
+    @overload
+    async def node_create(self, model_name: object) -> Node: ...
+
+    async def node_create(
+        self, model_name: Union[str, object], values: Optional[PropertyMap] = None
     ) -> Node:
         return await asyncio.to_thread(
             partial(self._session.node_create, model_name, values),
@@ -91,11 +124,23 @@ class AsyncNeo4jSession:
         )
         return cast(List[Node], entities)
 
+    @overload
     async def edge_create(
         self,
         model_name: str,
         from_id: int,
         to_id: int,
+        values: Optional[PropertyMap] = None,
+    ) -> Edge: ...
+
+    @overload
+    async def edge_create(self, model_name: object) -> Edge: ...
+
+    async def edge_create(
+        self,
+        model_name: Union[str, object],
+        from_id: Optional[int] = None,
+        to_id: Optional[int] = None,
         values: Optional[PropertyMap] = None,
     ) -> Edge:
         return await asyncio.to_thread(

@@ -6,6 +6,93 @@ from typing import Any, cast
 
 import grm_rs
 from grm_rs import GrmError, Session, WorkspaceGraphSession
+from grm_rs.session import ServiceSession
+
+
+class _ListOnlyNative:
+    def model_list(self) -> list[dict[str, object]]:
+        return [
+            {
+                "name": "ListOnly",
+                "label": "ListOnly",
+                "id_field": "listOnlyId",
+                "id_type": "int",
+                "fields": [],
+            }
+        ]
+
+    def link_list(self) -> list[dict[str, object]]:
+        return [
+            {
+                "name": "LIST_ONLY",
+                "type": "LIST_ONLY",
+                "from_model": "ListOnly",
+                "to_model": "ListOnly",
+                "id_field": "listOnlyEdgeId",
+                "id_type": "int",
+                "fields": [],
+            }
+        ]
+
+
+class _FakePydanticField:
+    def __init__(self, annotation: object, required: bool = True) -> None:
+        self.annotation = annotation
+        self._required = required
+
+    def is_required(self) -> bool:
+        return self._required
+
+
+class StatementLine:
+    __grm_id_field__ = "statementLineId"
+    model_fields = {
+        "date": _FakePydanticField(str),
+        "amount": _FakePydanticField(float),
+        "cleared": _FakePydanticField(bool, required=False),
+    }
+
+    def __init__(self, date: str, amount: float, cleared: bool = False) -> None:
+        self.date = date
+        self.amount = amount
+        self.cleared = cleared
+        self.dump_mode: object = None
+
+    def model_dump(self, *, mode: str = "python") -> dict[str, object]:
+        self.dump_mode = mode
+        return {
+            "date": self.date,
+            "amount": self.amount,
+            "cleared": self.cleared,
+        }
+
+
+class StatementTag:
+    model_fields = {
+        "name": _FakePydanticField(str),
+    }
+
+
+class UnsupportedStatementLine:
+    __grm_id_field__ = "unsupportedLineId"
+    model_fields = {
+        "tags": _FakePydanticField(list[str]),
+    }
+
+
+class Authored:
+    __grm_link_name__ = "TYPED_AUTHORED"
+    __grm_from_model__ = "TypedUser"
+    __grm_to_model__ = "TypedPost"
+    __grm_id_field__ = "typedAuthoredId"
+    __grm_from_id_field__ = "user_id"
+    __grm_to_id_field__ = "post_id"
+    year: int
+
+    def __init__(self, user_id: int, post_id: int, year: int) -> None:
+        self.user_id = user_id
+        self.post_id = post_id
+        self.year = year
 
 
 def main() -> None:
@@ -116,6 +203,72 @@ def main() -> None:
         assert imported_authored_link["from_model"] == "User"
         assert imported.node_find("User", {"name": "Alice"})[0]["props"]["age"] == 42
         assert imported.edge_find("Authored", {"from": user["id"]})[0]["props"]["year"] == 2024
+
+        typed_session = Session()
+        typed_session.model_create(StatementLine, id_field="explicitLineId")
+        statement_model = typed_session.model_show("StatementLine")
+        assert statement_model is not None
+        assert statement_model["id_field"] == "explicitLineId"
+        assert statement_model["fields"] == [
+            {"name": "date", "type": "string", "required": True},
+            {"name": "amount", "type": "float", "required": True},
+            {"name": "cleared", "type": "bool", "required": False},
+        ]
+        line = StatementLine("2026-06-16", 12.5, True)
+        typed_line = typed_session.node_create(line)
+        assert typed_line["props"] == line.model_dump()
+        assert line.dump_mode == "python"
+
+        list_only_service = ServiceSession.__new__(ServiceSession)
+        cast(Any, list_only_service)._native = _ListOnlyNative()
+        assert list_only_service.model_show("ListOnly") is not None
+        assert list_only_service.model_show("Missing") is None
+        assert list_only_service.link_show("LIST_ONLY") is not None
+        assert list_only_service.link_show("MISSING") is None
+
+        typed_session.model_create(StatementTag, id_field="tagId")
+        explicit_tag_model = typed_session.model_show("StatementTag")
+        assert explicit_tag_model is not None
+        assert explicit_tag_model["id_field"] == "tagId"
+
+        inferred_id_session = Session()
+        inferred_id_session.model_create(StatementLine)
+        inferred_statement_model = inferred_id_session.model_show("StatementLine")
+        assert inferred_statement_model is not None
+        assert inferred_statement_model["id_field"] == "statementLineId"
+
+        try:
+            inferred_id_session.model_create(StatementTag)
+            raise AssertionError("typed model creation should require id field metadata")
+        except TypeError as exc:
+            assert "__grm_id_field__" in str(exc)
+
+        try:
+            typed_session.model_create(UnsupportedStatementLine)
+            raise AssertionError("typed model creation should reject unsupported field types")
+        except TypeError as exc:
+            assert "UnsupportedStatementLine.tags" in str(exc)
+            assert "unsupported field type" in str(exc)
+
+        typed_session.model_create(
+            "TypedUser",
+            "typedUserId",
+            [{"name": "name", "type": "string", "required": True}],
+        )
+        typed_session.model_create(
+            "TypedPost",
+            "typedPostId",
+            [{"name": "title", "type": "string", "required": True}],
+        )
+        typed_session.link_create(Authored)
+        typed_user = typed_session.node_create("TypedUser", {"name": "Ada"})
+        typed_post = typed_session.node_create("TypedPost", {"title": "Typed hello"})
+        authored = Authored(typed_user["id"], typed_post["id"], 2026)
+        typed_edge = typed_session.edge_create(authored)
+        assert typed_edge["type"] == "TYPED_AUTHORED"
+        assert typed_edge["from"] == typed_user["id"]
+        assert typed_edge["to"] == typed_post["id"]
+        assert typed_edge["props"] == {"year": 2026}
 
         autocommit_reloaded = Session()
         autocommit_reloaded.load_json(str(import_autocommit_path))

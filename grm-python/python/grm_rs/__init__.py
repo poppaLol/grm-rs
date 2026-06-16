@@ -1,4 +1,6 @@
-from ._grm_rs import GrmError, Neo4jSession, ServiceSession, Session
+from ._grm_rs import GrmError
+from .models import GrmEdge, GrmNode
+from .session import Neo4jSession, ServiceSession, Session
 from .neo4j import AsyncNeo4jSession
 from .typing import (
     AsyncNeo4jGraphSession,
@@ -67,6 +69,8 @@ __all__ = [
     "GraphId",
     "GraphSession",
     "GraphValue",
+    "GrmEdge",
+    "GrmNode",
     "GrmError",
     "IdType",
     "JsonObject",
