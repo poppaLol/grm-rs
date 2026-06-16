@@ -1,14 +1,17 @@
 """Public type contracts for GRM Python sessions."""
 
 from typing import (
+    Any,
     Dict,
     List,
     Literal,
     Optional,
     Protocol,
     Sequence,
+    Type,
     TypedDict,
     Union,
+    overload,
     runtime_checkable,
 )
 
@@ -285,10 +288,15 @@ class SchemaCapability(Protocol):
 
     def rel_id_type(self) -> IdType: ...
 
+    @overload
     def model_create(
         self, name: str, id_field: str, fields: Sequence[FieldDefinition]
     ) -> None: ...
 
+    @overload
+    def model_create(self, name: Type[Any], id_field: Optional[str] = None) -> None: ...
+
+    @overload
     def link_create(
         self,
         name: str,
@@ -297,6 +305,9 @@ class SchemaCapability(Protocol):
         id_field: str,
         fields: Sequence[FieldDefinition],
     ) -> None: ...
+
+    @overload
+    def link_create(self, name: Type[Any]) -> None: ...
 
 
 class SchemaInspectionCapability(Protocol):
@@ -312,10 +323,15 @@ class WorkspaceSchemaCapability(
 
 
 class GraphCreateCapability(Protocol):
+    @overload
     def node_create(
         self, model_name: str, values: Optional[PropertyMap] = None
     ) -> Node: ...
 
+    @overload
+    def node_create(self, model_name: object) -> Node: ...
+
+    @overload
     def edge_create(
         self,
         model_name: str,
@@ -323,6 +339,9 @@ class GraphCreateCapability(Protocol):
         to_id: GraphId,
         values: Optional[PropertyMap] = None,
     ) -> Edge: ...
+
+    @overload
+    def edge_create(self, model_name: object) -> Edge: ...
 
 
 class GraphCrudCapability(GraphCreateCapability, Protocol):
@@ -481,14 +500,21 @@ class Neo4jGraphSession(GraphSession, Neo4jNativeQueryCapability, Protocol):
 class AsyncNeo4jGraphSession(Protocol):
     def capabilities(self) -> List[str]: ...
 
+    @overload
     async def model_create(
         self, name: str, id_field: str, fields: Sequence[FieldDefinition]
+    ) -> None: ...
+
+    @overload
+    async def model_create(
+        self, name: Type[Any], id_field: Optional[str] = None
     ) -> None: ...
 
     async def model_list(self) -> List[NodeModelDescription]: ...
 
     async def link_list(self) -> List[LinkModelDescription]: ...
 
+    @overload
     async def link_create(
         self,
         name: str,
@@ -498,13 +524,20 @@ class AsyncNeo4jGraphSession(Protocol):
         fields: Sequence[FieldDefinition],
     ) -> None: ...
 
+    @overload
+    async def link_create(self, name: Type[Any]) -> None: ...
+
     async def execute_query(
         self, query_text: str, params: Optional[JsonObject] = None
     ) -> int: ...
 
+    @overload
     async def node_create(
         self, model_name: str, values: Optional[PropertyMap] = None
     ) -> Node: ...
+
+    @overload
+    async def node_create(self, model_name: object) -> Node: ...
 
     async def node_find(
         self, model_name: str, filters: Optional[FilterMap] = None
@@ -516,6 +549,7 @@ class AsyncNeo4jGraphSession(Protocol):
 
     async def node_delete(self, model_name: str, node_id: GraphId) -> None: ...
 
+    @overload
     async def edge_create(
         self,
         model_name: str,
@@ -523,6 +557,9 @@ class AsyncNeo4jGraphSession(Protocol):
         to_id: int,
         values: Optional[PropertyMap] = None,
     ) -> Edge: ...
+
+    @overload
+    async def edge_create(self, model_name: object) -> Edge: ...
 
     async def edge_find(
         self, model_name: str, filters: Optional[FilterMap] = None

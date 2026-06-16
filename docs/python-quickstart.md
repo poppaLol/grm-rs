@@ -116,6 +116,37 @@ fresh.import_json("test-dbs/users.interchange.json")
 print(portable["format"])
 ```
 
+You can also derive the same structured schema and write calls from typed Python
+objects. This is a Python ergonomic layer over the existing typed GRM operations:
+it still delegates to `model_create`, `node_create`, `link_create`, and
+`edge_create` rather than defining a new service contract or query language.
+
+```python
+from pydantic import BaseModel
+from grm_rs import Session
+
+
+class StatementLine(BaseModel):
+    __grm_id_field__ = "statementLineId"
+
+    date: str
+    amount: float
+    cleared: bool = False
+
+
+session = Session()
+session.model_create(StatementLine)
+
+line = StatementLine(date="2026-06-16", amount=12.5, cleared=True)
+node = session.node_create(line)
+print(node["props"])
+```
+
+Typed schema derivation currently supports only primitive field annotations:
+`str`, `int`, `float`, and `bool`. Complex typing such as `Optional`, `Union`,
+lists, dictionaries, nested models, aliases, validators, computed fields, and
+generics is intentionally out of scope for this adapter slice.
+
 Batch several related mutations with one shared result and one autocommit write:
 
 ```python
@@ -149,6 +180,7 @@ print(result["counts"])
 
 - Field definitions are Python dicts with `name`, `type`, and `required`
 - Supported field types are `string`, `int`, `float`, and `bool`
+- `model_create(SomeClass)` and `node_create(instance)` are optional typed-object conveniences; pass `id_field="..."` or define `__grm_id_field__ = "..."` on the class
 - The Python method names mostly mirror the CLI commands with `_` instead of `.`, such as `model_create`, `node_find`, and `edge_update`
 - `session.batch(...)` accepts structured operation dicts for schema, node, and edge creates/updates/deletes; deletes require `allow_deletes=True`, and node creates can define batch-local refs for later edge endpoints
 - `explain_node_find`, `profile_node_find`, `explain_edge_find`, and `profile_edge_find` expose the same first-phase query introspection as CLI `session.explain` / `session.profile`
