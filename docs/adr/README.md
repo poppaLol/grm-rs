@@ -18,3 +18,6 @@ Current records:
 - [ADR 0003: Transparent Backend Acceleration From Profiled Workloads](0003-transparent-backend-acceleration.md)
 - [ADR 0004: Frame GRM As A Structured Operational Memory Layer](0004-structured-operational-memory-layer.md)
 - [ADR 0005: Use Graph Workspaces And Durable Envelopes](0005-graph-workspace-and-durable-envelope.md)
+- [ADR 0006: Use Explicit mTLS Certificate Mapping As The First Application Authentication Provider](0006-mtls-certificate-mapping-authentication-provider.md)
+- [ADR 0007: Authorize Exact Server-Derived Workspace Permissions](0007-server-derived-workspace-permissions.md)
+- [ADR 0008: Require Bounded Redacted Audit At Security And Effect Boundaries](0008-bounded-authoritative-security-audit.md)
