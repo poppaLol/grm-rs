@@ -14,27 +14,21 @@ planning, and "where are we versus where are we trying to go?" work in
 Do not start from memory alone. Inspect the project-memory graph first when MCP
 is available, then inspect relevant repo files.
 
-The graph and architecture docs describe intent. The codebase is the source of
-truth for current implementation. When comparing current versus aspirational
-architecture, verify claims against repo files before reporting them as current
-state.
-
-Do not infer that an architecture component is implemented just because it
-exists in the graph. The graph may contain future or aspirational components.
-Confirm implementation status from code, tests, and docs.
+Apply the `grm-project-memory` evidence hierarchy. Treat architecture graph and
+docs as intent, and verify component implementation status from code and tests.
 
 ## Startup
 
-1. Call `grm_schema_list`.
-2. If Neo4j mode is active, read `grm://backend/status`.
-3. Read the architecture graph around:
+1. Use `grm-project-memory` and `grm-project-constraints` alongside this skill
+   for graph work, project rules, claims, and testing boundaries.
+2. Read the architecture graph around:
    - `ArchitectureBoundary`
    - `ArchitectureComponent`
    - `Constraint`
    - `Decision`
    - `RoadmapItem`
    - `WorkSlice` when present
-4. Prefer these edges when available:
+3. Prefer these edges when available:
    - `COMPONENT_IN_BOUNDARY`
    - `COMPONENT_DEPENDS_ON`
    - `BOUNDARY_REINFORCES_CONSTRAINT`
@@ -42,8 +36,8 @@ Confirm implementation status from code, tests, and docs.
    - `COMPONENT_INFORMS_ROADMAP_ITEM`
    - `ARCHITECTURE_DOCUMENTED_BY`
    - `BOUNDARY_DOCUMENTED_BY`
-5. Read `docs/architecture/aspirational-service-architecture.md`.
-6. Read narrower docs only when relevant:
+4. Read `docs/architecture/aspirational-service-architecture.md`.
+5. Read narrower docs only when relevant:
    - `docs/service-boundary-design.md`
    - `docs/adr/0001-graph-data-and-schema-memory.md`
    - `docs/testing-policy.md`

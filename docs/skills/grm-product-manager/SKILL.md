@@ -23,6 +23,8 @@ syntaxes are adapter conveniences, not the canonical service contract.
 
 Use the smallest extra skill needed for the question:
 
+- For any live project-graph access or maintenance, use
+  `grm-project-memory` alongside this skill.
 - For planning, review, scope checks, testing policy, or semantic creep, use
   `grm-project-constraints`.
 - For architecture diagrams, current-vs-aspirational architecture comparisons,
@@ -46,18 +48,13 @@ explicitly authorize a degraded mode.
 Before giving direction, gather only the context needed:
 
 1. Inspect project memory when available:
-   - `grm_schema_list`
    - relevant `Constraint`, `Decision`, `Policy`, `RoadmapItem`, and
      `WorkSlice` nodes
 2. Inspect current docs/ADRs when the question touches declared architecture or
    product guarantees.
 3. Inspect code when claims depend on implementation reality.
-4. Separate:
-   - what is implemented
-   - what is documented
-   - what the graph believes
-   - what is aspirational
-5. Call out stale graph/docs state instead of quietly relying on it.
+4. Apply the `grm-project-memory` evidence hierarchy and call out stale or
+   conflicting graph, docs, ADR, code, and test state.
 
 ## PM Judgement
 
@@ -131,8 +128,9 @@ After a decision, merged PR, or dogfooding discovery, update the map:
   presenting the roadmap as settled.
 
 If MCP graph mutation is available, prefer structured typed operations. If graph
-updates are not possible, provide exact Cypher or MCP operations for a human or
-future agent to apply.
+updates are not possible, provide the exact structured GRM MCP operations for a
+future agent to apply. Keep human database-query examples in documentation
+rather than skill instructions.
 
 ## Tone
 

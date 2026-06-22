@@ -10,10 +10,9 @@ GRM MCP graph when available.
 
 ## Startup
 
-1. Call `grm_schema_list`.
-2. If Neo4j mode is active, read `grm://backend/status`.
-3. In Neo4j mode, `grm://graph/summary` is supported for schema-aware node and
-   edge counts; `grm://graph/export` remains unsupported.
+1. Use `grm-project-memory` alongside this skill for MCP orientation,
+   inspection, context isolation, mutation safety, and verification.
+2. Inspect the constraint, policy, and decision models relevant to the task.
 
 If the schema lacks the models below, use the closest available equivalents and
 say what was missing.
