@@ -248,6 +248,14 @@ Principal
   attributes
 ```
 
+The canonical principal identifier is `(issuer, subject)`. Here `issuer` is
+the GRM identity namespace or authority within which `subject` is unique; it is
+not automatically an X.509 certificate issuer, OIDC issuer URL, or JWT `iss`
+claim. An authentication-provider contract may explicitly map a normalized
+credential issuer into the canonical issuer field. Credential provenance and
+authentication method remain separately labelled evidence so authorization
+does not accidentally conflate credential identity with application identity.
+
 Candidate authentication mechanisms are:
 
 - mTLS certificate identity mapped through configured trust and mapping policy;
@@ -255,6 +263,28 @@ Candidate authentication mechanisms are:
   and
 - an explicit anonymous-local principal restricted to the local development
   profile.
+
+[ADR 0006](../adr/0006-mtls-certificate-mapping-authentication-provider.md)
+accepts explicit SHA-256 leaf-certificate fingerprint mapping as the first
+application authentication provider for controlled service-principal
+deployments. The fingerprint identifies validated credential evidence, not the
+principal itself. The provider maps that evidence to the provider-independent
+canonical principal and returns no permissions.
+
+This first-provider decision does not make fingerprints GRM's permanent or
+universal identity mechanism. Future providers may establish workload,
+service, or user principals from mechanisms such as SPIFFE-compatible
+identities, OIDC/OAuth authentication, or other accepted credentials. Any
+cross-provider account linking, delegation, or user-principal pass-through
+requires a separate accepted contract.
+
+The mTLS mapping provider re-evaluates the active mapping on every RPC,
+including RPCs on an established TLS channel and operations using an existing
+workspace handle. Mapping removal therefore applies to requests beginning
+after atomic activation; an in-flight request retains its captured mapping
+version. This request-scoped rule does not replace bounded TLS connection
+lifetime or equivalent revalidation for certificate expiry, trust-root change,
+or certificate revocation.
 
 Authentication providers should return either a validated principal or a
 failure. They must not return permissions. Credential parsing, certificate
@@ -287,6 +317,14 @@ Resources should include workspace, model, edge/link model, operation family,
 and administrative resource. IDs and property values should not become policy
 dimensions until there is a concrete requirement and bounded evaluation model.
 
+Workspace creation is authorized against a service resource before allocation;
+there is no stable workspace identity yet. A requested workspace name or ID and
+the current `new-workspace` placeholder are untrusted request inputs, not
+authorization scope. Workspace open instead uses a stable opaque workspace or
+snapshot reference as workspace policy scope, with existence checked only
+after authorization. Execute and close derive stable workspace scope from the
+managed handle and reauthenticate and reauthorize on every RPC.
+
 The first policy engine may be a small deterministic role/permission table. It
 must still support:
 
@@ -297,6 +335,26 @@ must still support:
 - stricter administrative actions;
 - no permission supplied by adapters or clients; and
 - fail-closed behavior on policy load or evaluation failure.
+
+[ADR 0007](../adr/0007-server-derived-workspace-permissions.md) accepts an
+exact deterministic permission table over canonical authenticated principals
+and server-derived workspace, action, and resource scope. Canonical principals
+may represent workloads, services, or users; authentication method, transport
+identity, and asserted actor metadata do not implicitly grant permission.
+Deployment-local roles may bundle explicit permissions, but role names are not
+canonical GRM security semantics.
+
+Authorization decisions are evaluated against the authenticated principal
+presented to the authorization system. Future delegated or end-user
+pass-through models require explicit contracts describing how user and service
+identities are represented, audited, and authorized. A service principal must
+not silently substitute for an authenticated end user.
+
+The initial table deliberately excludes graph instance IDs, property values,
+ownership and tenant attributes, and arbitrary data-level predicates. This is
+an initial implementation boundary, not a permanent prohibition. Future
+ownership, tenancy, relationship-based, attribute-based, or finer-grained
+authorization requires a separate accepted contract and bounded public proof.
 
 ## Workspace Isolation
 
@@ -362,6 +420,30 @@ tokens, private keys, and unbounded request bodies by default.
 The audit sink contract must define backpressure, retention, failure behavior,
 ordering expectations, redaction, and access policy. A process-local unbounded
 vector is not an acceptable secured-profile audit sink.
+
+[ADR 0008](../adr/0008-bounded-authoritative-security-audit.md) accepts a
+versioned, principal-centric audit event and bounded authoritative sink
+contract. The event meaning is independent of authentication provider and
+storage architecture. Transport peer, canonical authenticated principal,
+asserted actor, delegated actor, authorization decision, runtime outcome,
+durable outcome, and observable delivery state remain separately labelled.
+
+Audit strictness is deployment-scoped:
+
+- `anonymous-local` permits best-effort audit or ordinary logging and makes no
+  security-audit completeness claim;
+- `secured-profile` requires bounded mandatory authoritative audit and rejects
+  effects when required pre-effect records cannot be accepted; and
+- `high-assurance/regulated` is future architectural direction that may require
+  an external authoritative sink and stronger controls, not an implemented
+  profile or current compliance claim.
+
+For the secured profile, authoritative audit backpressure and failure can make
+the service unavailable. After a committed mutation, audit failure must not
+falsify the commit outcome; the service reports the established outcome,
+degrades audit health, and blocks subsequent secured effects until recovery.
+The first implementation may use a bounded local authoritative sink without
+preventing later forwarding or external authoritative storage.
 
 ## Encryption In Transit
 
@@ -571,18 +653,20 @@ may receive not-found after authorization.
 
 ### Phase 2: Minimal Authentication And Authorization
 
-- Implement one authentication provider, likely explicit mTLS certificate
-  mapping for the controlled local service.
-- Implement a deterministic default-deny workspace role/permission policy.
+- Implement the accepted explicit mTLS leaf-certificate fingerprint mapping
+  provider for the controlled local service.
+- Implement the accepted exact, deterministic, default-deny workspace
+  permission table over canonical principals and server-derived scope.
 - Authorize all contained operations in batches.
-- Emit bounded in-memory test audit events behind a sink contract, then provide
-  a bounded production-capable sink before secured-profile claims.
+- Implement the accepted versioned audit event and bounded local authoritative
+  sink contract with deployment-scoped failure behavior.
 
 ### Phase 3: Limits And Durable Audit
 
 - Add finite request, traversal, batch, result, profile, concurrency, and handle
   limits.
-- Define audit retention, redaction, backpressure, and failure behavior.
+- Extend the accepted audit contract with any required external authoritative
+  sink, forwarding, monitoring, and stronger recovery behavior.
 - Test cross-workspace access, policy failure, replay, and resource exhaustion
   through gRPC.
 
@@ -626,13 +710,8 @@ wrong-principal, wrong-workspace, malformed-input, and policy-failure tests.
 
 Before Phase 2 implementation, decide:
 
-1. Which credential mechanism is the first source of application principals?
-2. What exact principal and actor/delegation types cross internal boundaries?
-3. What minimal workspace role and permission set supports the first
-   demonstrator?
-4. Which operations and outcomes must be audited before execution and after
-   commit?
-5. Which finite limits are mandatory for the secured local service?
+1. What exact principal and actor/delegation types cross internal boundaries?
+2. Which finite limits are mandatory for the secured local service?
 
 Before Phase 4, decide:
 

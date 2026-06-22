@@ -147,6 +147,7 @@ a direction; a control is the mechanism eventually implemented and verified.
 | `DECISION_RESOLVES_SECURITY_QUESTION` | `SecurityDecision` | `SecurityOpenQuestion` | The decision resolves or closes the question. |
 | `DECISION_SATISFIES_SECURITY_REQUIREMENT` | `SecurityDecision` | `SecurityRequirement` | The selected direction defines how the requirement will be met. |
 | `DECISION_SELECTS_SECURITY_CONTROL` | `SecurityDecision` | `SecurityControl` | The decision selects, constrains, or rejects a control. |
+| `SECURITY_DECISION_DOCUMENTED_BY` | `SecurityDecision` | `Doc` | The durable ADR or security document that records the accepted decision. |
 
 Each relationship may carry an optional `reason` field explaining the specific
 connection.
@@ -161,6 +162,7 @@ The schema should support questions such as:
 - Where is authenticated principal identity established?
 - Which open questions block a security requirement?
 - Which decision selected a control, and what requirement justified it?
+- Which ADR records the full contract and consequences of a security decision?
 - Which controls are proposed but not yet verified?
 
 ## Modeling Rules

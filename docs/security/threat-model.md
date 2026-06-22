@@ -447,18 +447,37 @@ authenticated service returned complete and accurate state.
 
 ## Known Gaps
 
-GRM does not yet define or implement:
+GRM has accepted but not yet implemented:
+
+- [ADR 0006](../adr/0006-mtls-certificate-mapping-authentication-provider.md),
+  which selects explicit validated mTLS leaf-certificate fingerprint mapping
+  as the first controlled service-principal authentication provider while
+  preserving a provider-independent canonical principal boundary;
+- [ADR 0007](../adr/0007-server-derived-workspace-permissions.md), which
+  defines an exact server-derived workspace action/resource permission table
+  for canonical workload, service, or user principals without foreclosing
+  separately designed finer-grained authorization; and
+- [ADR 0008](../adr/0008-bounded-authoritative-security-audit.md), which
+  defines versioned principal-centric audit events, a bounded local
+  authoritative sink, and explicit anonymous-local, secured-profile, and
+  future high-assurance/regulated audit postures.
+
+Design acceptance is not implementation or verification. GRM still does not
+implement:
 
 - a production credential mechanism for authenticated application principal
   resolution;
 - authenticated delegation semantics;
-- certificate-to-principal or token-to-principal mapping;
+- the accepted certificate-to-principal mapping provider or any
+  token-to-principal provider;
 - workspace ownership, membership, or tenant isolation;
-- a complete permission and protected-resource taxonomy;
-- policy storage, versioning, administration, or failure semantics;
+- the accepted exact permission table, policy storage, or safe policy-version
+  replacement;
+- policy administration or recovery semantics;
 - bounded request, traversal, result, profile, concurrency, or broad admission
   policy beyond the current secured-profile batch count;
-- durable, bounded, redacted, tamper-evident audit storage;
+- the accepted bounded authoritative audit sink, external authoritative audit,
+  or tamper-evident audit storage;
 - request replay and idempotency semantics;
 - production secret and certificate lifecycle;
 - encryption-at-rest guarantees;
@@ -478,31 +497,36 @@ GRM does not yet define or implement:
 
 ## Required Next Decisions
 
-Before another authorization implementation slice, GRM should decide:
+The first authentication provider, permission taxonomy, and bounded audit
+contract are resolved by ADR 0006, ADR 0007, and ADR 0008. Remaining decisions
+include:
 
-1. Which identity mechanisms are supported for local service and future hosted
-   service deployments?
-2. What is the canonical authenticated-principal type?
+1. Which additional identity mechanisms are supported beyond the first
+   controlled mTLS provider for local service and future hosted deployments?
+2. Which bounded canonical-principal attributes and authentication-provider
+   provenance must cross internal boundaries beyond the accepted
+   `(issuer, subject)` principal identifier?
 3. How are asserted actors and delegated actors represented without enabling
    impersonation?
-4. What resource/action taxonomy is sufficient for the first demonstrator?
-5. Is the first non-local policy default deny, and how is local permissive mode
-   selected and reported?
-6. How are batch operations authorized?
-7. What audit sink and bounded-retention contract is required for the next
-   implementation?
-8. Which limits are mandatory before a service can bind beyond loopback?
-9. What negative security tests are release-blocking?
-10. Which workspace artifacts must be encrypted at rest, and who is allowed to
-    possess or unwrap each key?
-11. Is host-transparent disk encryption sufficient for the first secured
-    deployment, or must selected fields/workspaces be encrypted above the
-    service host?
-12. What is the first client-verifiable commitment: signed mutation receipts,
+4. Which ownership, tenancy, relationship, attribute, or other finer-grained
+   authorization dimensions are justified after the exact initial table?
+5. How are policy configuration, version replacement, and administration
+   authorized and recovered safely?
+6. Which limits are mandatory before a service can bind beyond loopback?
+7. What negative security tests are release-blocking beyond the explicit tests
+   attached to the three Phase 2 implementation slices?
+8. When does a deployment require an external authoritative audit sink or a
+   stronger high-assurance/regulated posture?
+9. Which workspace artifacts must be encrypted at rest, and who is allowed to
+   possess or unwrap each key?
+10. Is host-transparent disk encryption sufficient for the first secured
+   deployment, or must selected fields/workspaces be encrypted above the
+   service host?
+11. What is the first client-verifiable commitment: signed mutation receipts,
     hash-linked WAL/checkpoints, Merkle workspace roots, or another design?
-13. Where does the client retain its last trusted workspace commitment, and how
+12. Where does the client retain its last trusted workspace commitment, and how
     are rollback and fork warnings handled?
-14. Does GRM require independent witnesses or remote attestation for any
+13. Does GRM require independent witnesses or remote attestation for any
     claimed zero-trust deployment class?
 
 ## Review Triggers
