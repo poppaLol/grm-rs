@@ -1,0 +1,4 @@
+interface:
+  display_name: "GRM Project Memory"
+  short_description: "Safely inspect and maintain live GRM memory"
+  default_prompt: "Use $grm-project-memory to inspect and update the live GRM project graph safely."

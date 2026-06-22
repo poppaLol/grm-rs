@@ -13,7 +13,8 @@ claims inside what has actually been implemented and tested.
 
 ## Startup
 
-1. Use `grm-project-constraints` first when available.
+1. Use `grm-project-memory` and `grm-project-constraints` alongside this skill
+   when available.
 2. Before connecting to or mutating any live database, identify whether it could
    be shared GRM project memory/SOML. If a benchmark setup, cleanup, reset, or
    fixture operation could wipe shared memory, pause for explicit user

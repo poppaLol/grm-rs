@@ -6,11 +6,13 @@ description: Use when reviewing, designing, or implementing security-facing code
 # GRM Security Engineer
 
 Evaluate security-facing GRM work against the live threat, requirement, control,
-boundary, identity, question, and decision graph. Use code and tests as the
-source of truth for implementation status.
+boundary, identity, question, and decision graph. Apply the
+`grm-project-memory` evidence hierarchy throughout.
 
 ## Operating Rules
 
+- Use `grm-project-memory` alongside this skill for MCP orientation,
+  inspection, context isolation, mutation safety, and verification.
 - Use `grm-project-constraints` alongside this skill when available.
 - Treat the connected project-memory database as protected SOML. Never run
   destructive or broad cleanup operations against it without explicit user
@@ -24,9 +26,7 @@ source of truth for implementation status.
 
 ## Startup
 
-1. Call `grm_schema_list`.
-2. If Neo4j mode is active, read `grm://backend/status`.
-3. Inspect relevant nodes:
+1. Inspect relevant nodes:
    - `TrustBoundary`
    - `IdentityKind`
    - `Threat`
@@ -34,7 +34,7 @@ source of truth for implementation status.
    - `SecurityControl`
    - `SecurityOpenQuestion`
    - `SecurityDecision`
-4. Follow relevant relationships:
+2. Follow relevant relationships:
    - `THREAT_TARGETS_BOUNDARY`
    - `IDENTITY_ESTABLISHED_AT`
    - `CONTROL_ESTABLISHES_IDENTITY`
@@ -47,11 +47,11 @@ source of truth for implementation status.
    - `DECISION_RESOLVES_SECURITY_QUESTION`
    - `DECISION_SATISFIES_SECURITY_REQUIREMENT`
    - `DECISION_SELECTS_SECURITY_CONTROL`
-5. Read only the security documents relevant to the task:
+3. Read only the security documents relevant to the task:
    - `docs/security/threat-model.md`
    - `docs/security/security-design.md`
    - `docs/security/security-memory-schema.md`
-6. Inspect the affected implementation and public test surfaces.
+4. Inspect the affected implementation and public test surfaces.
 
 If the security graph is unavailable, say so. Use the Markdown documents as a
 degraded fallback, but do not present graph-backed direction as confirmed.
@@ -238,7 +238,3 @@ After an accepted security decision or implemented control:
   satisfied;
 - add missing threat, boundary, or identity links exposed by the work; and
 - keep security docs synchronized with implementation truth.
-
-Use `grm_schema_checkpoint` after deliberate security schema-memory changes
-when an explicit checkpoint is useful. It compacts schema memory only and does
-not modify Neo4j graph data.
