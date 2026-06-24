@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use grm_service_api::{
@@ -129,6 +130,28 @@ async fn explicit_anonymous_local_profile_executes_workspace_operations() {
     server.await.unwrap().unwrap();
 }
 
+#[test]
+fn anonymous_local_profile_refuses_public_bind_addresses() {
+    let public: SocketAddr = "0.0.0.0:50051".parse().unwrap();
+    let loopback: SocketAddr = "127.0.0.1:50051".parse().unwrap();
+
+    assert!(
+        ServiceSecurityConfig::anonymous_local()
+            .validate_bind_addr(public)
+            .is_err()
+    );
+    assert!(
+        ServiceSecurityConfig::anonymous_local()
+            .validate_bind_addr(loopback)
+            .is_ok()
+    );
+    assert!(
+        ServiceSecurityConfig::secured()
+            .validate_bind_addr(public)
+            .is_ok()
+    );
+}
+
 #[tokio::test]
 async fn secured_profile_rejects_anonymous_actor_assertion() {
     let (mut client, shutdown, server) = start_service(ServiceSecurityConfig::secured()).await;
@@ -142,6 +165,39 @@ async fn secured_profile_rejects_anonymous_actor_assertion() {
 
     shutdown.send(()).unwrap();
     server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn local_workspace_refs_reject_path_like_ids() {
+    let rejected = [
+        "",
+        "../escape",
+        "/absolute",
+        r"nested\path",
+        ".",
+        "name.json",
+    ];
+
+    for workspace_id in rejected {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut client, shutdown, server) =
+            start_local_service(temp.path(), ServiceSecurityConfig::anonymous_local()).await;
+
+        let err = client
+            .create_workspace(proto::WorkspaceCreateRequest {
+                mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+                workspace: Some(proto::WorkspaceRef {
+                    id: workspace_id.into(),
+                }),
+                format: proto::DurabilityFormat::Binary as i32,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Code::InvalidArgument, "{workspace_id:?}");
+
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
 }
 
 #[tokio::test]
@@ -722,6 +778,32 @@ async fn start_service(
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let service = GrpcWorkspaceService::new(security).into_server();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+    let client = proto::grm_service_client::GrmServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+    (client, shutdown_tx, server)
+}
+
+async fn start_local_service(
+    root: &std::path::Path,
+    security: ServiceSecurityConfig,
+) -> (
+    proto::grm_service_client::GrmServiceClient<Channel>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let service = GrpcWorkspaceService::with_local_workspace_root(root, security).into_server();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()

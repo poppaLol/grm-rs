@@ -5,6 +5,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use bincode::Options;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -37,6 +38,8 @@ use crate::{
     BackendIdentity, GraphClient, GraphTx, InMemoryBackend, Result, RuntimeField, RuntimeNodeModel,
     RuntimeRelModel, RuntimeValueType, SessionModelCatalog, StoredNode, StoredRel,
 };
+
+const MAX_BINARY_SESSION_FILE_BYTES: u64 = 128 * 1024 * 1024;
 
 pub struct SessionState {
     client: GraphClient<InMemoryBackend>,
@@ -841,10 +844,8 @@ impl SessionState {
 
     fn load_from_binary_with_source(&mut self, path: impl AsRef<Path>) -> Result<LoadSource> {
         let path = path.as_ref();
-        let bytes = fs::read(path).map_err(|_| {
-            crate::error::GrmError::LoadAborted("failed to read binary session file")
-        })?;
-        match bincode::deserialize::<BinaryPersistedSession>(&bytes) {
+        let bytes = read_limited_binary_session_file(path, MAX_BINARY_SESSION_FILE_BYTES)?;
+        match deserialize_limited_binary_session(&bytes) {
             Ok(persisted) => {
                 self.client
                     .backend()
@@ -5440,12 +5441,11 @@ impl SessionState {
 
     fn load_binary_backup(&mut self, path: &Path) -> Result<LoadSource> {
         let backup = backup_path(path);
-        let bytes = fs::read(&backup).map_err(|_| {
-            crate::error::GrmError::LoadAborted("failed to deserialize binary session file")
-        })?;
-        let persisted: BinaryPersistedSession = bincode::deserialize(&bytes).map_err(|_| {
-            crate::error::GrmError::LoadAborted("failed to deserialize binary session file")
-        })?;
+        let bytes = read_limited_binary_session_file(&backup, MAX_BINARY_SESSION_FILE_BYTES)?;
+        let persisted: BinaryPersistedSession = deserialize_limited_binary_session(&bytes)
+            .map_err(|_| {
+                crate::error::GrmError::LoadAborted("failed to deserialize binary session file")
+            })?;
         self.client
             .backend()
             .replace_store(GraphStore::from_binary_persisted(persisted.graph)?);
@@ -5453,6 +5453,28 @@ impl SessionState {
         self.apply_session_log(path)?;
         Ok(LoadSource::Backup)
     }
+}
+
+fn read_limited_binary_session_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    let len = fs::metadata(path)
+        .map_err(|_| crate::error::GrmError::LoadAborted("failed to read binary session file"))?
+        .len();
+    if len > max_bytes {
+        return Err(crate::error::GrmError::LoadAborted(
+            "binary session file exceeds maximum supported size",
+        ));
+    }
+    fs::read(path)
+        .map_err(|_| crate::error::GrmError::LoadAborted("failed to read binary session file"))
+}
+
+fn deserialize_limited_binary_session(
+    bytes: &[u8],
+) -> std::result::Result<BinaryPersistedSession, bincode::Error> {
+    bincode::options()
+        .with_fixint_encoding()
+        .with_limit(MAX_BINARY_SESSION_FILE_BYTES)
+        .deserialize(bytes)
 }
 
 fn apply_session_log_entry(
@@ -5493,6 +5515,52 @@ fn apply_session_log_entry(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn limited_binary_session_read_rejects_oversized_files_before_reading() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let mut file = temp.reopen().unwrap();
+        file.write_all(b"too large").unwrap();
+        file.flush().unwrap();
+
+        let err = read_limited_binary_session_file(temp.path(), 3).unwrap_err();
+        assert!(err.to_string().contains("exceeds maximum supported size"));
+    }
+
+    #[test]
+    fn limited_binary_session_read_accepts_files_within_limit() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let mut file = temp.reopen().unwrap();
+        file.write_all(b"ok").unwrap();
+        file.flush().unwrap();
+
+        let bytes = read_limited_binary_session_file(temp.path(), 2).unwrap();
+        assert_eq!(bytes, b"ok");
+    }
+
+    #[test]
+    fn limited_binary_session_deserialize_rejects_trailing_bytes() {
+        let session = SessionState::new();
+        let persisted = BinaryPersistedSession {
+            graph: session
+                .client
+                .backend()
+                .snapshot_store()
+                .to_binary_persisted()
+                .unwrap(),
+            catalog: session.catalog.clone(),
+        };
+        let mut bytes = bincode::serialize(&persisted).unwrap();
+        bytes.extend_from_slice(b"trailing junk");
+
+        assert!(deserialize_limited_binary_session(&bytes).is_err());
+    }
 }
 
 fn strip_script_comment(line: &str) -> String {
