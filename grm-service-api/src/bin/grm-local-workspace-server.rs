@@ -17,11 +17,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::env::temp_dir().join("grm-service-workspaces"));
     std::fs::create_dir_all(&workspace_root)?;
 
-    let service = GrpcWorkspaceService::with_local_workspace_root(
-        &workspace_root,
-        ServiceSecurityConfig::anonymous_local(),
-    )
-    .into_server();
+    let security = ServiceSecurityConfig::anonymous_local();
+    security.validate_bind_addr(addr)?;
+    let service =
+        GrpcWorkspaceService::with_local_workspace_root(&workspace_root, security).into_server();
     let tls = GrpcServerTlsOptions::from_env()?;
     let mut server = Server::builder();
     let transport = if let Some(tls) = tls {

@@ -1049,4 +1049,42 @@ mod tests {
 
         assert!(err.to_string().contains("conflicting edge id filters"));
     }
+
+    #[test]
+    fn cypher_name_escapes_malicious_identifier_fragments() {
+        let escaped = cypher_name("User`) MATCH (m) DETACH DELETE m //");
+        assert_eq!(escaped, "`User``) MATCH (m) DETACH DELETE m //`");
+    }
+
+    #[test]
+    fn cypher_predicate_ops_are_fixed_enum_mappings() {
+        assert_eq!(cypher_predicate_op(PredicateOp::Eq), "=");
+        assert_eq!(cypher_predicate_op(PredicateOp::Ne), "<>");
+        assert_eq!(cypher_predicate_op(PredicateOp::Gt), ">");
+        assert_eq!(cypher_predicate_op(PredicateOp::Ge), ">=");
+        assert_eq!(cypher_predicate_op(PredicateOp::Lt), "<");
+        assert_eq!(cypher_predicate_op(PredicateOp::Le), "<=");
+        assert_eq!(cypher_predicate_op(PredicateOp::Contains), "CONTAINS");
+    }
+
+    #[test]
+    fn neo4j_predicates_and_order_reject_unknown_raw_fields() {
+        let model = user_model();
+        let malicious_field = "name`) DETACH DELETE n //".to_string();
+        let predicates = vec![PropertyPredicate {
+            field: malicious_field.clone(),
+            op: PredicateOp::Eq,
+            value: json!("Ada"),
+        }];
+
+        let err = typed_predicates(&predicates, &model.fields, &model.name).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+
+        let order = vec![OrderSpec {
+            field: malicious_field,
+            direction: OrderDirection::Asc,
+        }];
+        let err = validate_node_order_fields(&order, &model).unwrap_err();
+        assert!(err.to_string().contains("unknown order field"));
+    }
 }

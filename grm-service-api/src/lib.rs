@@ -10,6 +10,7 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1286,6 +1287,24 @@ pub struct AuthenticationError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PolicyEvaluationError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceSecurityConfigError {
+    profile: ServiceSecurityProfile,
+    bind_addr: SocketAddr,
+}
+
+impl fmt::Display for ServiceSecurityConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{:?} service security profile may only bind to loopback addresses; refused {}",
+            self.profile, self.bind_addr
+        )
+    }
+}
+
+impl Error for ServiceSecurityConfigError {}
+
 pub trait ApplicationAuthenticator: Send + Sync {
     fn authenticate(
         &self,
@@ -1348,6 +1367,12 @@ pub struct ServiceSecurityConfig {
 }
 
 impl ServiceSecurityConfig {
+    /// Local developer/test profile with no application principal.
+    ///
+    /// This profile is intentionally limited to loopback transport. Use
+    /// [`ServiceSecurityConfig::validate_bind_addr`] before starting a socket
+    /// listener, and the gRPC service also rejects non-loopback peers at
+    /// request time as defense in depth.
     pub fn anonymous_local() -> Self {
         Self {
             profile: ServiceSecurityProfile::AnonymousLocal,
@@ -1379,6 +1404,35 @@ impl ServiceSecurityConfig {
     pub fn with_max_batch_operations(mut self, max_batch_operations: usize) -> Self {
         self.max_batch_operations = max_batch_operations;
         self
+    }
+
+    pub fn validate_bind_addr(
+        &self,
+        bind_addr: SocketAddr,
+    ) -> Result<(), ServiceSecurityConfigError> {
+        if self.profile == ServiceSecurityProfile::AnonymousLocal && !bind_addr.ip().is_loopback() {
+            return Err(ServiceSecurityConfigError {
+                profile: self.profile,
+                bind_addr,
+            });
+        }
+        Ok(())
+    }
+
+    fn allows_transport_peer(&self, peer: &TransportPeer) -> bool {
+        self.profile != ServiceSecurityProfile::AnonymousLocal || transport_peer_is_loopback(peer)
+    }
+}
+
+fn transport_peer_is_loopback(peer: &TransportPeer) -> bool {
+    match peer.remote_address.as_deref() {
+        None => true,
+        Some(address) => address
+            .parse::<SocketAddr>()
+            .map(|address| address.ip())
+            .or_else(|_| address.parse().map(|address: std::net::IpAddr| address))
+            .ok()
+            .is_some_and(|address| address.is_loopback()),
     }
 }
 
@@ -1431,6 +1485,9 @@ impl GrpcWorkspaceService {
                 .peer_certs()
                 .is_some_and(|certificates| !certificates.is_empty()),
         };
+        if !self.security.allows_transport_peer(&transport_peer) {
+            return Err(SecurityEnforcementError::AnonymousLocalRemotePeer);
+        }
         let asserted_actor = actor_assertion(request.metadata())
             .map_err(|_| SecurityEnforcementError::InvalidActorAssertion)?;
         let authenticated_principal = self
@@ -1939,6 +1996,7 @@ fn log_workspace_lifecycle(workspace: &str, operation: &'static str) {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SecurityEnforcementError {
+    AnonymousLocalRemotePeer,
     InvalidActorAssertion,
     AuthenticationFailed,
     MissingPrincipal,
@@ -1948,6 +2006,9 @@ enum SecurityEnforcementError {
 
 fn security_status(error: SecurityEnforcementError) -> Status {
     match error {
+        SecurityEnforcementError::AnonymousLocalRemotePeer => {
+            Status::permission_denied("anonymous local profile requires a loopback peer")
+        }
         SecurityEnforcementError::InvalidActorAssertion => {
             Status::invalid_argument("actor assertion metadata is not valid ASCII")
         }

@@ -3411,6 +3411,74 @@ async fn session_autocommit_supports_binary_targets() {
 }
 
 #[tokio::test]
+async fn session_load_recovers_from_binary_backup_when_primary_is_damaged() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin_path = temp.path().join("grm-session-recovery-test.bin");
+    let backup_path = temp.path().join("grm-session-recovery-test.bin.bak");
+
+    let seed_input = Cursor::new(format!(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nsession.save --bin {}\nnode.create User name=Bob\nsession.save --bin {}\nsession.exit\n",
+        bin_path.display(),
+        bin_path.display()
+    ));
+    let output = Vec::new();
+    let mut seed_session = CliSession::new(seed_input, output);
+    seed_session.run().await.unwrap();
+
+    fs::write(&bin_path, b"not a valid binary session").unwrap();
+
+    let load_input = Cursor::new(format!(
+        "session.load --bin {}\nnode.find User name=Alice\nnode.find User name=Bob\nsession.exit\n",
+        bin_path.display()
+    ));
+    let output = Vec::new();
+    let mut load_session = CliSession::new(load_input, output);
+    load_session.run().await.unwrap();
+
+    let (_, _, output) = load_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(fs::metadata(backup_path).is_ok());
+    assert!(output.contains("Recovered session from backup binary file"));
+    assert!(output.contains("Node User userId=1 {name=Alice}"));
+    assert!(output.contains("Node User userId=2 {name=Bob}"));
+}
+
+#[tokio::test]
+async fn session_load_rejects_binary_primary_with_trailing_bytes_and_uses_backup() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin_path = temp.path().join("grm-session-trailing-bytes-test.bin");
+
+    let seed_input = Cursor::new(format!(
+        "model.define User userId name:string:required\nnode.create User name=Alice\nsession.save --bin {}\nnode.create User name=Bob\nsession.save --bin {}\nsession.exit\n",
+        bin_path.display(),
+        bin_path.display()
+    ));
+    let output = Vec::new();
+    let mut seed_session = CliSession::new(seed_input, output);
+    seed_session.run().await.unwrap();
+
+    let mut primary = fs::OpenOptions::new().append(true).open(&bin_path).unwrap();
+    primary.write_all(b"trailing junk").unwrap();
+    primary.flush().unwrap();
+
+    let load_input = Cursor::new(format!(
+        "session.load --bin {}\nnode.find User name=Alice\nnode.find User name=Bob\nsession.exit\n",
+        bin_path.display()
+    ));
+    let output = Vec::new();
+    let mut load_session = CliSession::new(load_input, output);
+    load_session.run().await.unwrap();
+
+    let (_, _, output) = load_session.into_parts();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Recovered session from backup binary file"));
+    assert!(output.contains("Node User userId=1 {name=Alice}"));
+    assert!(output.contains("Node User userId=2 {name=Bob}"));
+}
+
+#[tokio::test]
 async fn session_compact_checkpoints_autocommit_log() {
     let json_path = "/tmp/grm-session-compact-test.json";
     let backup_path = "/tmp/grm-session-compact-test.json.bak";
