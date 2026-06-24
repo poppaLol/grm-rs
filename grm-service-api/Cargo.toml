@@ -15,6 +15,7 @@ neo4j = ["grm-rs/neo4j"]
 
 [dependencies]
 grm-rs = { path = "..", default-features = false }
+libc = "0.2"
 prost = "0.13"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
