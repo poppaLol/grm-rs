@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     image: grm-rs-grpc:local
     ports:
-      - "50051:50051"
+      - "127.0.0.1:50051:50051"
     volumes:
       - grm-workspaces:/workspaces
     restart: unless-stopped

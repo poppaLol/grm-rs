@@ -198,7 +198,7 @@ Pull and run the published insecure local service:
 ```bash
 docker pull lauriebart/grm:latest
 docker run --rm --name grm \
-  -p 50051:50051 \
+  -p 127.0.0.1:50051:50051 \
   -v grm-workspaces:/workspaces \
   lauriebart/grm:latest
 ```

@@ -8,16 +8,18 @@ COPY . .
 
 RUN cargo build -p grm-service-api --release --bin grm-local-workspace-server
 
-FROM debian:trixie-slim
+FROM debian:stable-slim
 
 COPY --from=builder /src/target/release/grm-local-workspace-server /usr/local/bin/grm-local-workspace-server
 
 RUN useradd --system --create-home --home-dir /var/lib/grm grm \
     && mkdir -p /workspaces \
-    && chown -R grm:grm /workspaces /var/lib/grm
+    && chown -R grm:grm /workspaces /var/lib/grm \
+    && chmod 700 /workspaces /var/lib/grm
 
 USER grm
 WORKDIR /var/lib/grm
+ENV GRM_SERVICE_SECURITY_PROFILE=docker_local_insecure
 
 EXPOSE 50051
 

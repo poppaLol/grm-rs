@@ -8,6 +8,8 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use grm_service_api::{GrpcServerTlsOptions, GrpcWorkspaceService, ServiceSecurityConfig};
 use tonic::transport::Server;
 
+const GRM_SERVICE_SECURITY_PROFILE_ENV: &str = "GRM_SERVICE_SECURITY_PROFILE";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -17,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let workspace_root = prepare_workspace_root(args.next().map(PathBuf::from))?;
 
-    let security = ServiceSecurityConfig::anonymous_local();
+    let security = service_security_config_from_env(|key| env::var_os(key))?;
     security.validate_bind_addr(addr)?;
     let service =
         GrpcWorkspaceService::with_local_workspace_root(&workspace_root, security).into_server();
@@ -42,6 +44,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     server.add_service(service).serve(addr).await?;
 
     Ok(())
+}
+
+fn service_security_config_from_env(
+    getenv: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> io::Result<ServiceSecurityConfig> {
+    let Some(profile) = getenv(GRM_SERVICE_SECURITY_PROFILE_ENV) else {
+        return Ok(ServiceSecurityConfig::anonymous_local());
+    };
+    match profile.to_string_lossy().as_ref() {
+        "anonymous_local" => Ok(ServiceSecurityConfig::anonymous_local()),
+        "docker_local_insecure" => Ok(ServiceSecurityConfig::docker_local_insecure()),
+        "secured" => Ok(ServiceSecurityConfig::secured()),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{GRM_SERVICE_SECURITY_PROFILE_ENV} must be one of anonymous_local, docker_local_insecure, secured"
+            ),
+        )),
+    }
 }
 
 fn prepare_workspace_root(explicit: Option<PathBuf>) -> io::Result<PathBuf> {
@@ -199,6 +220,37 @@ mod tests {
 
         assert_eq!(prepared, root);
         assert!(prepared.is_dir());
+    }
+
+    #[test]
+    fn default_security_profile_is_anonymous_local() {
+        let security = service_security_config_from_env(|_| None).unwrap();
+        let public: SocketAddr = "0.0.0.0:50051".parse().unwrap();
+
+        assert!(security.validate_bind_addr(public).is_err());
+    }
+
+    #[test]
+    fn docker_local_insecure_profile_allows_container_bind() {
+        let security = service_security_config_from_env(|key| {
+            (key == GRM_SERVICE_SECURITY_PROFILE_ENV).then_some("docker_local_insecure".into())
+        })
+        .unwrap();
+        let public: SocketAddr = "0.0.0.0:50051".parse().unwrap();
+
+        assert!(security.validate_bind_addr(public).is_ok());
+    }
+
+    #[test]
+    fn unknown_security_profile_is_rejected() {
+        let result = service_security_config_from_env(|key| {
+            (key == GRM_SERVICE_SECURITY_PROFILE_ENV).then_some("surprise".into())
+        });
+        let Err(err) = result else {
+            panic!("unknown security profile should be rejected");
+        };
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
