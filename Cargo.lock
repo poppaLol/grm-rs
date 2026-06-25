@@ -816,6 +816,7 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "rcgen",
+ "ring",
  "serde_json",
  "tempfile",
  "tokio",

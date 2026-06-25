@@ -12,8 +12,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
+use ring::digest;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tonic::metadata::MetadataMap;
@@ -1188,10 +1189,40 @@ pub enum ServiceSecurityProfile {
     Secured,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TransportPeer {
     pub remote_address: Option<String>,
     pub client_certificate_present: bool,
+    pub client_certificate_leaf_der: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for TransportPeer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TransportPeer")
+            .field("remote_address", &self.remote_address)
+            .field(
+                "client_certificate_present",
+                &self.client_certificate_present,
+            )
+            .field(
+                "client_certificate_leaf_der",
+                &self
+                    .client_certificate_leaf_der
+                    .as_ref()
+                    .map(|certificate| RedactedBytes(certificate.len())),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RedactedBytes(usize);
+
+impl fmt::Debug for RedactedBytes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "<redacted {} bytes>", self.0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1286,6 +1317,156 @@ pub struct AuthenticationError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PolicyEvaluationError;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CertificateFingerprint([u8; 32]);
+
+impl CertificateFingerprint {
+    pub fn sha256_der(der: &[u8]) -> Self {
+        let digest = digest::digest(&digest::SHA256, der);
+        let mut bytes = [0; 32];
+        bytes.copy_from_slice(digest.as_ref());
+        Self(bytes)
+    }
+
+    pub fn from_hex(input: &str) -> Result<Self, CertificatePrincipalMappingConfigError> {
+        let input = input.trim();
+        if input.len() != 64 {
+            return Err(CertificatePrincipalMappingConfigError);
+        }
+        let mut bytes = [0; 32];
+        for (index, chunk) in input.as_bytes().chunks_exact(2).enumerate() {
+            let high = hex_nibble(chunk[0]).ok_or(CertificatePrincipalMappingConfigError)?;
+            let low = hex_nibble(chunk[1]).ok_or(CertificatePrincipalMappingConfigError)?;
+            bytes[index] = (high << 4) | low;
+        }
+        Ok(Self(bytes))
+    }
+
+    pub fn as_hex(&self) -> String {
+        let mut output = String::with_capacity(64);
+        for byte in self.0 {
+            write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        output
+    }
+}
+
+impl fmt::Debug for CertificateFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CertificateFingerprint(<redacted>)")
+    }
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct CertificatePrincipalMapping {
+    pub fingerprint: CertificateFingerprint,
+    pub principal: Principal,
+}
+
+impl fmt::Debug for CertificatePrincipalMapping {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CertificatePrincipalMapping(<redacted>)")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CertificatePrincipalMappingConfigError;
+
+impl fmt::Display for CertificatePrincipalMappingConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("invalid certificate principal mapping configuration")
+    }
+}
+
+impl Error for CertificatePrincipalMappingConfigError {}
+
+#[derive(Clone)]
+pub struct CertificatePrincipalAuthenticator {
+    mappings: Arc<RwLock<Arc<BTreeMap<CertificateFingerprint, Principal>>>>,
+}
+
+impl CertificatePrincipalAuthenticator {
+    pub fn new(
+        mappings: impl IntoIterator<Item = CertificatePrincipalMapping>,
+    ) -> Result<Self, CertificatePrincipalMappingConfigError> {
+        Ok(Self {
+            mappings: Arc::new(RwLock::new(Arc::new(validated_certificate_mappings(
+                mappings,
+            )?))),
+        })
+    }
+
+    pub fn replace_mappings(
+        &self,
+        mappings: impl IntoIterator<Item = CertificatePrincipalMapping>,
+    ) -> Result<(), CertificatePrincipalMappingConfigError> {
+        let mappings = Arc::new(validated_certificate_mappings(mappings)?);
+        let mut active = self
+            .mappings
+            .write()
+            .map_err(|_| CertificatePrincipalMappingConfigError)?;
+        *active = mappings;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for CertificatePrincipalAuthenticator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CertificatePrincipalAuthenticator(<redacted mappings>)")
+    }
+}
+
+impl ApplicationAuthenticator for CertificatePrincipalAuthenticator {
+    fn authenticate(
+        &self,
+        transport_peer: &TransportPeer,
+        _metadata: &MetadataMap,
+    ) -> Result<Option<Principal>, AuthenticationError> {
+        let leaf_der = transport_peer
+            .client_certificate_leaf_der
+            .as_deref()
+            .ok_or(AuthenticationError)?;
+        let fingerprint = CertificateFingerprint::sha256_der(leaf_der);
+        let mappings = self
+            .mappings
+            .read()
+            .map_err(|_| AuthenticationError)?
+            .clone();
+        mappings
+            .get(&fingerprint)
+            .cloned()
+            .map(Some)
+            .ok_or(AuthenticationError)
+    }
+}
+
+fn validated_certificate_mappings(
+    mappings: impl IntoIterator<Item = CertificatePrincipalMapping>,
+) -> Result<BTreeMap<CertificateFingerprint, Principal>, CertificatePrincipalMappingConfigError> {
+    let mut validated = BTreeMap::new();
+    for mapping in mappings {
+        if mapping.principal.issuer.is_empty()
+            || mapping.principal.subject.is_empty()
+            || mapping.principal.authentication_method.is_empty()
+            || validated
+                .insert(mapping.fingerprint, mapping.principal)
+                .is_some()
+        {
+            return Err(CertificatePrincipalMappingConfigError);
+        }
+    }
+    Ok(validated)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceSecurityConfigError {
@@ -1479,11 +1660,15 @@ impl GrpcWorkspaceService {
         request: &Request<T>,
     ) -> Result<(TransportPeer, Option<Principal>, Option<ActorAssertion>), SecurityEnforcementError>
     {
+        let peer_certs = request.peer_certs();
+        let client_certificate_leaf_der = peer_certs
+            .as_ref()
+            .and_then(|certificates| certificates.first())
+            .map(|certificate| certificate.as_ref().to_vec());
         let transport_peer = TransportPeer {
             remote_address: request.remote_addr().map(|address| address.to_string()),
-            client_certificate_present: request
-                .peer_certs()
-                .is_some_and(|certificates| !certificates.is_empty()),
+            client_certificate_present: client_certificate_leaf_der.is_some(),
+            client_certificate_leaf_der,
         };
         if !self.security.allows_transport_peer(&transport_peer) {
             return Err(SecurityEnforcementError::AnonymousLocalRemotePeer);
