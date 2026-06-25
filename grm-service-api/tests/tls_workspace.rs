@@ -9,8 +9,8 @@ use grm_service_api::{
     AuthorizationDecision, AuthorizationPolicy, AuthorizationReason, CertificateFingerprint,
     CertificatePrincipalAuthenticator, CertificatePrincipalMapping, DurabilityFormat,
     GrpcClientTlsOptions, GrpcServerTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceMode,
-    GrpcWorkspaceService, PolicyEvaluationError, Principal, SecurityRequestContext,
-    ServiceSecurityConfig, proto,
+    GrpcWorkspaceService, MTLS_CERTIFICATE_AUTHENTICATION_METHOD, PolicyEvaluationError, Principal,
+    SecurityRequestContext, ServiceSecurityConfig, proto,
 };
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -305,6 +305,33 @@ async fn mapped_mtls_certificate_can_be_authorized_without_actor_metadata_impers
         .close_workspace(proto::WorkspaceCloseRequest {
             handle: Some(handle),
         })
+        .await
+        .unwrap();
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn certificate_authenticator_sets_mtls_authentication_method() {
+    let fixture = MtlsFixture::new();
+    let configured_principal = test_principal_with_method("misconfigured-provider-label");
+    let authenticated_principal =
+        test_principal_with_method(MTLS_CERTIFICATE_AUTHENTICATION_METHOD);
+    let authenticator = mapped_authenticator(vec![mapping(
+        fixture.client.fingerprint.clone(),
+        configured_principal,
+    )]);
+    let security = ServiceSecurityConfig::secured()
+        .with_authenticator(Arc::new(authenticator))
+        .with_policy(Arc::new(AllowExpectedPrincipalPolicy {
+            expected: authenticated_principal,
+        }));
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+
+    mtls_client(&endpoint, &fixture, &fixture.client)
+        .await
+        .create_workspace(in_memory_workspace_create_request())
         .await
         .unwrap();
 
@@ -648,10 +675,14 @@ fn mapping(
 }
 
 fn test_principal() -> Principal {
+    test_principal_with_method(MTLS_CERTIFICATE_AUTHENTICATION_METHOD)
+}
+
+fn test_principal_with_method(authentication_method: &str) -> Principal {
     Principal {
         issuer: "grm-test".into(),
         subject: "service/client".into(),
-        authentication_method: "mtls-certificate".into(),
+        authentication_method: authentication_method.into(),
     }
 }
 
