@@ -1318,6 +1318,8 @@ pub struct AuthenticationError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PolicyEvaluationError;
 
+pub const MTLS_CERTIFICATE_AUTHENTICATION_METHOD: &str = "mtls-certificate";
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CertificateFingerprint([u8; 32]);
 
@@ -1442,11 +1444,12 @@ impl ApplicationAuthenticator for CertificatePrincipalAuthenticator {
             .read()
             .map_err(|_| AuthenticationError)?
             .clone();
-        mappings
+        let mut principal = mappings
             .get(&fingerprint)
             .cloned()
-            .map(Some)
-            .ok_or(AuthenticationError)
+            .ok_or(AuthenticationError)?;
+        principal.authentication_method = MTLS_CERTIFICATE_AUTHENTICATION_METHOD.into();
+        Ok(Some(principal))
     }
 }
 
@@ -1457,7 +1460,6 @@ fn validated_certificate_mappings(
     for mapping in mappings {
         if mapping.principal.issuer.is_empty()
             || mapping.principal.subject.is_empty()
-            || mapping.principal.authentication_method.is_empty()
             || validated
                 .insert(mapping.fingerprint, mapping.principal)
                 .is_some()
