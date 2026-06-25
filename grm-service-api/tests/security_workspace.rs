@@ -146,6 +146,11 @@ fn anonymous_local_profile_refuses_public_bind_addresses() {
             .is_ok()
     );
     assert!(
+        ServiceSecurityConfig::docker_local_insecure()
+            .validate_bind_addr(public)
+            .is_ok()
+    );
+    assert!(
         ServiceSecurityConfig::secured()
             .validate_bind_addr(public)
             .is_ok()

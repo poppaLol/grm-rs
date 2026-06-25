@@ -4,6 +4,9 @@ This is an insecure Docker-hostable demo for the local GRM gRPC workspace shell.
 It is intended for local development, examples, and adapter integration tests.
 It is not the TLS-capable benchmark line and does not provide authentication,
 authorization, hosted durability, or multi-writer coordination.
+The image opts into the explicit `docker_local_insecure` service profile so the
+process can bind inside the container while Docker publishes the host port on
+loopback only.
 
 The container runs the `grm-service-api` `grm-local-workspace-server` binary:
 
@@ -48,7 +51,7 @@ The ready-built service is published as `lauriebart/grm:latest`:
 ```bash
 docker pull lauriebart/grm:latest
 docker run --rm --name grm \
-  -p 50051:50051 \
+  -p 127.0.0.1:50051:50051 \
   -v grm-workspaces:/workspaces \
   lauriebart/grm:latest
 ```

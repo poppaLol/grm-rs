@@ -4,6 +4,8 @@ This quick start covers the local gRPC workspace shell. Docker Compose remains
 an insecure local demo. The same local server example can also run with TLS from
 self-signed or local-CA certificate files for developer smoke tests and the
 TLS-capable benchmark line.
+The Docker image uses the explicit `docker_local_insecure` profile and should
+publish the host port on loopback only.
 
 ## Start The Service
 
@@ -12,7 +14,7 @@ Pull and run the published image:
 ```bash
 docker pull lauriebart/grm:latest
 docker run --rm --name grm \
-  -p 50051:50051 \
+  -p 127.0.0.1:50051:50051 \
   -v grm-workspaces:/workspaces \
   lauriebart/grm:latest
 ```

@@ -1186,6 +1186,7 @@ fn validate_workspace_ref(workspace: &WorkspaceRef) -> WorkspaceServiceResult<()
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceSecurityProfile {
     AnonymousLocal,
+    DockerLocalInsecure,
     Secured,
 }
 
@@ -1559,6 +1560,21 @@ impl ServiceSecurityConfig {
     pub fn anonymous_local() -> Self {
         Self {
             profile: ServiceSecurityProfile::AnonymousLocal,
+            authenticator: Arc::new(NoApplicationAuthenticator),
+            policy: Arc::new(AnonymousLocalPolicy),
+            max_batch_operations: usize::MAX,
+        }
+    }
+
+    /// Docker-hosted local demo profile with no application principal.
+    ///
+    /// This profile is intentionally weaker than [`ServiceSecurityProfile::Secured`]
+    /// and exists so a container can bind to `0.0.0.0` while callers publish
+    /// the host port on loopback only, for example `127.0.0.1:50051:50051`.
+    /// It must not be used for production or untrusted networks.
+    pub fn docker_local_insecure() -> Self {
+        Self {
+            profile: ServiceSecurityProfile::DockerLocalInsecure,
             authenticator: Arc::new(NoApplicationAuthenticator),
             policy: Arc::new(AnonymousLocalPolicy),
             max_batch_operations: usize::MAX,
