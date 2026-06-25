@@ -17,7 +17,7 @@ python -m pip install grm-rs
 Pin a specific release when reproducibility matters:
 
 ```bash
-python -m pip install grm-rs==0.1.1
+python -m pip install grm-rs==0.2.0
 ```
 
 The distribution package is named `grm-rs`; the import package is `grm_rs`.
