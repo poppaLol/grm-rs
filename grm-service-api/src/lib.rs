@@ -5,7 +5,7 @@
 //! the monorepo later without depending on private daemon internals. The local
 //! gRPC shell is a transport proof over the in-process workspace service.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
@@ -1244,11 +1244,16 @@ pub struct DelegatedActor {
     pub delegation_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SecurityAction {
     WorkspaceCreate,
     WorkspaceOpen,
     WorkspaceClose,
+    WorkspaceInspect,
+    WorkspaceSave,
+    WorkspaceLoad,
+    WorkspaceExport,
+    WorkspaceImport,
     SchemaDefine,
     SchemaInspect,
     NodeCreate,
@@ -1265,16 +1270,18 @@ pub enum SecurityAction {
     Profile,
     BatchApply,
     IndexInspect,
-    WorkspaceInspect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityResourceKind {
+    Service,
     Workspace,
     NodeModel,
     EdgeModel,
     OperationFamily,
     IndexCatalog,
+    WorkspaceArtifact,
+    ReservedAdmin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1298,6 +1305,7 @@ pub struct SecurityRequestContext {
     pub delegated_actor: Option<DelegatedActor>,
     pub workspace: String,
     pub operations: Vec<SecurityOperation>,
+    pub policy_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1318,6 +1326,374 @@ pub struct AuthenticationError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PolicyEvaluationError;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionTableConfig {
+    pub version: String,
+    pub assignments: Vec<PermissionAssignment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolePermissionTableConfig {
+    pub version: String,
+    pub roles: Vec<PermissionRole>,
+    pub assignments: Vec<RolePermissionAssignment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRole {
+    pub name: String,
+    pub permissions: Vec<Permission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolePermissionAssignment {
+    pub principal: Principal,
+    pub scope: PermissionScope,
+    pub permissions: Vec<Permission>,
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionAssignment {
+    pub principal: Principal,
+    pub scope: PermissionScope,
+    pub permissions: Vec<Permission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Permission {
+    pub action: SecurityAction,
+    pub resource: ResourceSelector,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionScope {
+    Service,
+    Workspace(String),
+    DeploymentLocalAllWorkspaces,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceSelector {
+    Service,
+    Workspace,
+    NodeModel(String),
+    AnyNodeModel,
+    EdgeModel(String),
+    AnyEdgeModel,
+    OperationFamily,
+    IndexCatalog,
+    WorkspaceArtifact,
+    ReservedAdmin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionTableConfigError {
+    MissingPolicyVersion,
+    DuplicatePrincipalScope,
+    EmptyPermissionSet,
+    EmptyPrincipal,
+    EmptyScope,
+    EmptyResourceSelector,
+    EmptyRoleName,
+    DuplicateRole,
+    UnknownRole,
+}
+
+impl fmt::Display for PermissionTableConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingPolicyVersion => "permission table policy version is required",
+            Self::DuplicatePrincipalScope => {
+                "permission table contains duplicate principal/scope assignment"
+            }
+            Self::EmptyPermissionSet => "permission table assignment has no permissions",
+            Self::EmptyPrincipal => "permission table principal issuer and subject are required",
+            Self::EmptyScope => "permission table workspace scope is empty",
+            Self::EmptyResourceSelector => "permission table resource selector is empty",
+            Self::EmptyRoleName => "permission table role name is empty",
+            Self::DuplicateRole => "permission table contains a duplicate role name",
+            Self::UnknownRole => "permission table assignment references an unknown role",
+        })
+    }
+}
+
+impl Error for PermissionTableConfigError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PrincipalKey {
+    issuer: String,
+    subject: String,
+}
+
+impl From<&Principal> for PrincipalKey {
+    fn from(principal: &Principal) -> Self {
+        Self {
+            issuer: principal.issuer.clone(),
+            subject: principal.subject.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PermissionTablePolicy {
+    version: String,
+    assignments: BTreeMap<(PrincipalKey, PermissionScopeKey), BTreeSet<PermissionKey>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum PermissionScopeKey {
+    Service,
+    Workspace(String),
+    DeploymentLocalAllWorkspaces,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PermissionKey {
+    action: SecurityAction,
+    resource: ResourceSelectorKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ResourceSelectorKey {
+    Service,
+    Workspace,
+    NodeModel(String),
+    AnyNodeModel,
+    EdgeModel(String),
+    AnyEdgeModel,
+    OperationFamily,
+    IndexCatalog,
+    WorkspaceArtifact,
+    ReservedAdmin,
+}
+
+impl PermissionTablePolicy {
+    pub fn new(config: PermissionTableConfig) -> Result<Self, PermissionTableConfigError> {
+        if config.version.trim().is_empty() {
+            return Err(PermissionTableConfigError::MissingPolicyVersion);
+        }
+        let mut assignments = BTreeMap::new();
+        for assignment in config.assignments {
+            if assignment.principal.issuer.is_empty() || assignment.principal.subject.is_empty() {
+                return Err(PermissionTableConfigError::EmptyPrincipal);
+            }
+            if assignment.permissions.is_empty() {
+                return Err(PermissionTableConfigError::EmptyPermissionSet);
+            }
+            let scope = PermissionScopeKey::try_from(assignment.scope)?;
+            let principal = PrincipalKey::from(&assignment.principal);
+            let key = (principal, scope);
+            let mut permissions = BTreeSet::new();
+            for permission in assignment.permissions {
+                permissions.insert(PermissionKey::try_from(permission)?);
+            }
+            if assignments.insert(key, permissions).is_some() {
+                return Err(PermissionTableConfigError::DuplicatePrincipalScope);
+            }
+        }
+        Ok(Self {
+            version: config.version,
+            assignments,
+        })
+    }
+
+    pub fn from_role_config(
+        config: RolePermissionTableConfig,
+    ) -> Result<Self, PermissionTableConfigError> {
+        let mut roles = BTreeMap::new();
+        for role in config.roles {
+            if role.name.is_empty() {
+                return Err(PermissionTableConfigError::EmptyRoleName);
+            }
+            if role.permissions.is_empty() {
+                return Err(PermissionTableConfigError::EmptyPermissionSet);
+            }
+            if roles.insert(role.name, role.permissions).is_some() {
+                return Err(PermissionTableConfigError::DuplicateRole);
+            }
+        }
+        let mut assignments = Vec::with_capacity(config.assignments.len());
+        for assignment in config.assignments {
+            let mut permissions = assignment.permissions;
+            for role_name in assignment.roles {
+                let role_permissions = roles
+                    .get(&role_name)
+                    .ok_or(PermissionTableConfigError::UnknownRole)?;
+                permissions.extend(role_permissions.clone());
+            }
+            assignments.push(PermissionAssignment {
+                principal: assignment.principal,
+                scope: assignment.scope,
+                permissions,
+            });
+        }
+        Self::new(PermissionTableConfig {
+            version: config.version,
+            assignments,
+        })
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    fn has_permission(
+        &self,
+        principal: &PrincipalKey,
+        operation: &SecurityOperation,
+        permission: &PermissionKey,
+    ) -> bool {
+        let mut keys = vec![(
+            principal.clone(),
+            match operation.resource.kind {
+                SecurityResourceKind::Service => PermissionScopeKey::Service,
+                _ => PermissionScopeKey::Workspace(operation.resource.workspace.clone()),
+            },
+        )];
+        if operation.resource.kind != SecurityResourceKind::Service {
+            keys.push((
+                principal.clone(),
+                PermissionScopeKey::DeploymentLocalAllWorkspaces,
+            ));
+        }
+        keys.into_iter().any(|key| {
+            self.assignments.get(&key).is_some_and(|permissions| {
+                permissions
+                    .iter()
+                    .any(|candidate| candidate.matches(permission))
+            })
+        })
+    }
+}
+
+impl AuthorizationPolicy for PermissionTablePolicy {
+    fn policy_version(&self) -> Option<&str> {
+        Some(&self.version)
+    }
+
+    fn evaluate(
+        &self,
+        context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError> {
+        let Some(principal) = context.authenticated_principal.as_ref() else {
+            return Ok(AuthorizationDecision::Deny {
+                reason: AuthorizationReason::NoMatchingPermission,
+            });
+        };
+        let principal = PrincipalKey::from(principal);
+        for operation in &context.operations {
+            let Some(permission) = PermissionKey::from_operation(operation) else {
+                return Ok(AuthorizationDecision::Deny {
+                    reason: AuthorizationReason::NoMatchingPermission,
+                });
+            };
+            if !self.has_permission(&principal, operation, &permission) {
+                return Ok(AuthorizationDecision::Deny {
+                    reason: AuthorizationReason::NoMatchingPermission,
+                });
+            }
+        }
+        Ok(AuthorizationDecision::Allow {
+            reason: AuthorizationReason::ExplicitPolicyAllow,
+        })
+    }
+}
+
+impl TryFrom<PermissionScope> for PermissionScopeKey {
+    type Error = PermissionTableConfigError;
+
+    fn try_from(scope: PermissionScope) -> Result<Self, Self::Error> {
+        Ok(match scope {
+            PermissionScope::Service => Self::Service,
+            PermissionScope::Workspace(workspace) => {
+                if workspace.is_empty() {
+                    return Err(PermissionTableConfigError::EmptyScope);
+                }
+                Self::Workspace(workspace)
+            }
+            PermissionScope::DeploymentLocalAllWorkspaces => Self::DeploymentLocalAllWorkspaces,
+        })
+    }
+}
+
+impl TryFrom<Permission> for PermissionKey {
+    type Error = PermissionTableConfigError;
+
+    fn try_from(permission: Permission) -> Result<Self, Self::Error> {
+        Ok(Self {
+            action: permission.action,
+            resource: ResourceSelectorKey::try_from(permission.resource)?,
+        })
+    }
+}
+
+impl PermissionKey {
+    fn from_operation(operation: &SecurityOperation) -> Option<Self> {
+        let resource = match operation.resource.kind {
+            SecurityResourceKind::Service => ResourceSelectorKey::Service,
+            SecurityResourceKind::Workspace => ResourceSelectorKey::Workspace,
+            SecurityResourceKind::NodeModel => {
+                ResourceSelectorKey::NodeModel(operation.resource.model.clone()?)
+            }
+            SecurityResourceKind::EdgeModel => {
+                ResourceSelectorKey::EdgeModel(operation.resource.model.clone()?)
+            }
+            SecurityResourceKind::OperationFamily => ResourceSelectorKey::OperationFamily,
+            SecurityResourceKind::IndexCatalog => ResourceSelectorKey::IndexCatalog,
+            SecurityResourceKind::WorkspaceArtifact => ResourceSelectorKey::WorkspaceArtifact,
+            SecurityResourceKind::ReservedAdmin => ResourceSelectorKey::ReservedAdmin,
+        };
+        Some(Self {
+            action: operation.action,
+            resource,
+        })
+    }
+
+    fn matches(&self, required: &Self) -> bool {
+        self.action == required.action && self.resource.matches(&required.resource)
+    }
+}
+
+impl ResourceSelectorKey {
+    fn matches(&self, required: &Self) -> bool {
+        match (self, required) {
+            (Self::AnyNodeModel, Self::NodeModel(_)) => true,
+            (Self::AnyEdgeModel, Self::EdgeModel(_)) => true,
+            _ => self == required,
+        }
+    }
+}
+
+impl TryFrom<ResourceSelector> for ResourceSelectorKey {
+    type Error = PermissionTableConfigError;
+
+    fn try_from(selector: ResourceSelector) -> Result<Self, Self::Error> {
+        Ok(match selector {
+            ResourceSelector::Service => Self::Service,
+            ResourceSelector::Workspace => Self::Workspace,
+            ResourceSelector::NodeModel(model) => {
+                if model.is_empty() {
+                    return Err(PermissionTableConfigError::EmptyResourceSelector);
+                }
+                Self::NodeModel(model)
+            }
+            ResourceSelector::AnyNodeModel => Self::AnyNodeModel,
+            ResourceSelector::EdgeModel(model) => {
+                if model.is_empty() {
+                    return Err(PermissionTableConfigError::EmptyResourceSelector);
+                }
+                Self::EdgeModel(model)
+            }
+            ResourceSelector::AnyEdgeModel => Self::AnyEdgeModel,
+            ResourceSelector::OperationFamily => Self::OperationFamily,
+            ResourceSelector::IndexCatalog => Self::IndexCatalog,
+            ResourceSelector::WorkspaceArtifact => Self::WorkspaceArtifact,
+            ResourceSelector::ReservedAdmin => Self::ReservedAdmin,
+        })
+    }
+}
 
 pub const MTLS_CERTIFICATE_AUTHENTICATION_METHOD: &str = "mtls-certificate";
 
@@ -1498,6 +1874,10 @@ pub trait ApplicationAuthenticator: Send + Sync {
 }
 
 pub trait AuthorizationPolicy: Send + Sync {
+    fn policy_version(&self) -> Option<&str> {
+        None
+    }
+
     fn evaluate(
         &self,
         context: &SecurityRequestContext,
@@ -1539,6 +1919,17 @@ impl AuthorizationPolicy for DefaultDenyPolicy {
         Ok(AuthorizationDecision::Deny {
             reason: AuthorizationReason::NoMatchingPermission,
         })
+    }
+}
+
+struct PolicyLoadFailurePolicy;
+
+impl AuthorizationPolicy for PolicyLoadFailurePolicy {
+    fn evaluate(
+        &self,
+        _context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError> {
+        Err(PolicyEvaluationError)
     }
 }
 
@@ -1597,6 +1988,11 @@ impl ServiceSecurityConfig {
 
     pub fn with_policy(mut self, policy: Arc<dyn AuthorizationPolicy>) -> Self {
         self.policy = policy;
+        self
+    }
+
+    pub fn with_policy_load_failure(mut self) -> Self {
+        self.policy = Arc::new(PolicyLoadFailurePolicy);
         self
     }
 
@@ -1721,6 +2117,7 @@ impl GrpcWorkspaceService {
             delegated_actor: None,
             workspace,
             operations,
+            policy_version: self.security.policy.policy_version().map(str::to_owned),
         };
         match self
             .security
@@ -1745,20 +2142,12 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             .map_err(security_status)?;
         let request: WorkspaceCreateRequest =
             request.into_inner().try_into().map_err(proto_status)?;
-        let workspace = request
-            .workspace
-            .as_ref()
-            .map(|workspace| workspace.id.clone())
-            .unwrap_or_else(|| "new-workspace".into());
         self.authorize(
             transport_peer,
             authenticated_principal,
             asserted_actor,
-            workspace.clone(),
-            vec![workspace_security_operation(
-                SecurityAction::WorkspaceCreate,
-                &workspace,
-            )],
+            "service".into(),
+            vec![service_security_operation(SecurityAction::WorkspaceCreate)],
         )
         .map_err(security_status)?;
         let response = self
@@ -2388,14 +2777,37 @@ fn security_operations(request: &ServiceRequest, workspace: &str) -> Vec<Securit
             SecurityResourceKind::Workspace,
             None,
         )],
-        ServiceRequest::Save(_)
-        | ServiceRequest::Load(_)
-        | ServiceRequest::Export(_)
-        | ServiceRequest::Import(_) => vec![operation(
-            SecurityAction::WorkspaceInspect,
-            SecurityResourceKind::OperationFamily,
+        ServiceRequest::Save(_) => vec![operation(
+            SecurityAction::WorkspaceSave,
+            SecurityResourceKind::WorkspaceArtifact,
             None,
         )],
+        ServiceRequest::Load(_) => vec![operation(
+            SecurityAction::WorkspaceLoad,
+            SecurityResourceKind::WorkspaceArtifact,
+            None,
+        )],
+        ServiceRequest::Export(_) => vec![operation(
+            SecurityAction::WorkspaceExport,
+            SecurityResourceKind::WorkspaceArtifact,
+            None,
+        )],
+        ServiceRequest::Import(_) => vec![operation(
+            SecurityAction::WorkspaceImport,
+            SecurityResourceKind::WorkspaceArtifact,
+            None,
+        )],
+    }
+}
+
+fn service_security_operation(action: SecurityAction) -> SecurityOperation {
+    SecurityOperation {
+        action,
+        resource: SecurityResource {
+            workspace: "service".to_owned(),
+            kind: SecurityResourceKind::Service,
+            model: None,
+        },
     }
 }
 
@@ -2717,6 +3129,10 @@ impl TryFrom<proto::RuntimeRequest> for ServiceRequest {
             ProtoRequest::ApplyBatch(request) => Ok(Self::ApplyBatch(request.try_into()?)),
             ProtoRequest::IndexList(request) => Ok(Self::IndexList(request.into())),
             ProtoRequest::Summary(request) => Ok(Self::Summary(request.into())),
+            ProtoRequest::Save(request) => Ok(Self::Save(request.try_into()?)),
+            ProtoRequest::Load(request) => Ok(Self::Load(request.try_into()?)),
+            ProtoRequest::Export(request) => Ok(Self::Export(request.try_into()?)),
+            ProtoRequest::Import(request) => Ok(Self::Import(request.try_into()?)),
         }
     }
 }
