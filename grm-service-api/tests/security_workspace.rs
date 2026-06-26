@@ -3,8 +3,11 @@ use std::sync::Arc;
 
 use grm_service_api::{
     ApplicationAuthenticator, AuthenticationError, AuthorizationDecision, AuthorizationPolicy,
-    AuthorizationReason, GrpcWorkspaceService, PolicyEvaluationError, Principal, SecurityAction,
-    SecurityRequestContext, SecurityResourceKind, ServiceSecurityConfig, TransportPeer, proto,
+    AuthorizationReason, GrpcWorkspaceService, Permission, PermissionAssignment, PermissionRole,
+    PermissionScope, PermissionTableConfig, PermissionTablePolicy, PolicyEvaluationError,
+    Principal, ResourceSelector, RolePermissionAssignment, RolePermissionTableConfig,
+    SecurityAction, SecurityRequestContext, SecurityResourceKind, ServiceSecurityConfig,
+    TransportPeer, proto,
 };
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -25,6 +28,18 @@ impl ApplicationAuthenticator for FixedAuthenticator {
             subject: "test-principal".into(),
             authentication_method: "server-test-fixture".into(),
         }))
+    }
+}
+
+struct PrincipalAuthenticator(Principal);
+
+impl ApplicationAuthenticator for PrincipalAuthenticator {
+    fn authenticate(
+        &self,
+        _transport_peer: &TransportPeer,
+        _metadata: &MetadataMap,
+    ) -> Result<Option<Principal>, AuthenticationError> {
+        Ok(Some(self.0.clone()))
     }
 }
 
@@ -112,6 +127,26 @@ impl AuthorizationPolicy for DenyResourcePolicy {
     }
 }
 
+struct PolicyVersionAssertingPolicy {
+    expected: &'static str,
+}
+
+impl AuthorizationPolicy for PolicyVersionAssertingPolicy {
+    fn policy_version(&self) -> Option<&str> {
+        Some(self.expected)
+    }
+
+    fn evaluate(
+        &self,
+        context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError> {
+        assert_eq!(context.policy_version.as_deref(), Some(self.expected));
+        Ok(AuthorizationDecision::Allow {
+            reason: AuthorizationReason::ExplicitPolicyAllow,
+        })
+    }
+}
+
 #[tokio::test]
 async fn explicit_anonymous_local_profile_executes_workspace_operations() {
     let (mut client, shutdown, server) =
@@ -155,6 +190,24 @@ fn anonymous_local_profile_refuses_public_bind_addresses() {
             .validate_bind_addr(public)
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn authorization_context_carries_policy_version() {
+    let security = secured_with_policy(Arc::new(PolicyVersionAssertingPolicy {
+        expected: "asserted-policy-v1",
+    }));
+    let (mut client, shutdown, server) = start_service(security).await;
+    let handle = create_workspace(&mut client).await;
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::SchemaList(proto::SchemaListRequest {}),
+    )
+    .await
+    .unwrap();
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
 }
 
 #[tokio::test]
@@ -221,6 +274,178 @@ async fn secured_default_policy_denies_authenticated_principal() {
 }
 
 #[tokio::test]
+async fn permission_table_gives_workload_service_and_user_principals_same_semantics() {
+    for kind in ["workload", "service", "user"] {
+        let principal = principal(kind);
+        let security = secured_with_table(
+            principal.clone(),
+            vec![
+                assignment(
+                    principal.clone(),
+                    PermissionScope::Service,
+                    vec![permission(
+                        SecurityAction::WorkspaceCreate,
+                        ResourceSelector::Service,
+                    )],
+                ),
+                assignment(
+                    principal,
+                    PermissionScope::DeploymentLocalAllWorkspaces,
+                    vec![permission(
+                        SecurityAction::SchemaInspect,
+                        ResourceSelector::Workspace,
+                    )],
+                ),
+            ],
+        );
+        let (mut client, shutdown, server) = start_service(security).await;
+        let handle = create_workspace(&mut client).await;
+        execute(
+            &mut client,
+            &handle,
+            proto::runtime_request::Request::SchemaList(proto::SchemaListRequest {}),
+        )
+        .await
+        .unwrap();
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn permission_table_denies_wrong_principal_and_wrong_workspace() {
+    let allowed = principal("allowed");
+    let wrong = principal("wrong");
+    let security = secured_with_table(
+        wrong,
+        vec![assignment(
+            allowed.clone(),
+            PermissionScope::Service,
+            vec![permission(
+                SecurityAction::WorkspaceCreate,
+                ResourceSelector::Service,
+            )],
+        )],
+    );
+    let (mut client, shutdown, server) = start_service(security).await;
+    let denied = client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+
+    let security = secured_with_table(
+        allowed.clone(),
+        vec![
+            assignment(
+                allowed.clone(),
+                PermissionScope::Service,
+                vec![permission(
+                    SecurityAction::WorkspaceCreate,
+                    ResourceSelector::Service,
+                )],
+            ),
+            assignment(
+                allowed,
+                PermissionScope::Workspace("other-workspace".into()),
+                vec![permission(
+                    SecurityAction::SchemaInspect,
+                    ResourceSelector::Workspace,
+                )],
+            ),
+        ],
+    );
+    let (mut client, shutdown, server) = start_service(security).await;
+    let handle = create_workspace(&mut client).await;
+    let denied = execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::SchemaList(proto::SchemaListRequest {}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn permission_table_create_uses_service_scope_before_allocation() {
+    let temp = tempfile::tempdir().unwrap();
+    let principal = principal("creator");
+    let security = secured_with_table(
+        principal.clone(),
+        vec![assignment(
+            principal,
+            PermissionScope::DeploymentLocalAllWorkspaces,
+            vec![permission(
+                SecurityAction::WorkspaceCreate,
+                ResourceSelector::Workspace,
+            )],
+        )],
+    );
+    let (mut client, shutdown, server) = start_local_service(temp.path(), security).await;
+    let denied = client
+        .create_workspace(proto::WorkspaceCreateRequest {
+            mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+            workspace: Some(proto::WorkspaceRef {
+                id: "requested-id".into(),
+            }),
+            format: proto::DurabilityFormat::Binary as i32,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    assert!(!temp.path().join("requested-id.json").exists());
+    assert!(!temp.path().join("requested-id.bin").exists());
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn permission_table_open_masks_missing_and_inaccessible_workspaces() {
+    let principal = principal("opener");
+    let security = secured_with_table(
+        principal.clone(),
+        vec![assignment(
+            principal,
+            PermissionScope::Workspace("allowed-workspace".into()),
+            vec![permission(
+                SecurityAction::WorkspaceOpen,
+                ResourceSelector::Workspace,
+            )],
+        )],
+    );
+    let (mut client, shutdown, server) = start_service(security).await;
+    let inaccessible = client
+        .open_workspace(proto::WorkspaceOpenRequest {
+            snapshot: None,
+            workspace: Some(proto::WorkspaceRef {
+                id: "denied-workspace".into(),
+            }),
+            format: proto::DurabilityFormat::Binary as i32,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(inaccessible.code(), Code::PermissionDenied);
+    let missing_allowed = client
+        .open_workspace(proto::WorkspaceOpenRequest {
+            snapshot: None,
+            workspace: Some(proto::WorkspaceRef {
+                id: "allowed-workspace".into(),
+            }),
+            format: proto::DurabilityFormat::Binary as i32,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(missing_allowed.code(), Code::InvalidArgument);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn secured_profile_rejects_anonymous_workspace_lifecycle_requests() {
     let (mut client, shutdown, server) = start_service(ServiceSecurityConfig::secured()).await;
 
@@ -252,6 +477,402 @@ async fn secured_profile_rejects_anonymous_workspace_lifecycle_requests() {
         .unwrap_err();
     assert_eq!(close.code(), Code::Unauthenticated);
 
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn permission_table_uses_exact_node_and_edge_model_selectors() {
+    let principal = principal("models");
+    let security = secured_with_table(
+        principal.clone(),
+        vec![
+            service_create_assignment(principal.clone()),
+            assignment(
+                principal,
+                PermissionScope::DeploymentLocalAllWorkspaces,
+                vec![
+                    permission(SecurityAction::SchemaDefine, ResourceSelector::AnyNodeModel),
+                    permission(SecurityAction::SchemaDefine, ResourceSelector::AnyEdgeModel),
+                    permission(
+                        SecurityAction::NodeCreate,
+                        ResourceSelector::NodeModel("User".into()),
+                    ),
+                    permission(
+                        SecurityAction::EdgeCreate,
+                        ResourceSelector::EdgeModel("Authored".into()),
+                    ),
+                ],
+            ),
+        ],
+    );
+    let (mut client, shutdown, server) = start_service(security).await;
+    let handle = create_workspace(&mut client).await;
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::DefineNode(user_model()),
+    )
+    .await
+    .unwrap();
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::DefineNode(post_model()),
+    )
+    .await
+    .unwrap();
+
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::CreateNode(user_create("Ada")),
+    )
+    .await
+    .unwrap();
+    let denied_node = execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::CreateNode(proto::NodeCreateRequest {
+            model: "Post".into(),
+            props: Some(properties("title", "Denied")),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied_node.code(), Code::PermissionDenied);
+    let denied_edge = execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::CreateEdge(proto::EdgeCreateRequest {
+            model: "Liked".into(),
+            from: 1,
+            to: 1,
+            props: None,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied_edge.code(), Code::PermissionDenied);
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn permission_table_requires_batch_wrapper_and_contained_permissions() {
+    let principal = principal("batch");
+    let batch_request = proto::runtime_request::Request::ApplyBatch(proto::BatchRequest {
+        atomic: true,
+        allow_deletes: false,
+        response_mode: proto::BatchResponseMode::Detailed as i32,
+        ops: vec![proto::BatchOperation {
+            op: Some(proto::batch_operation::Op::NodeCreate(
+                proto::BatchNodeCreate {
+                    model: "User".into(),
+                    props: Some(properties("name", "Ada")),
+                    local_ref: None,
+                },
+            )),
+        }],
+    });
+
+    let missing_wrapper = secured_with_table(
+        principal.clone(),
+        vec![
+            service_create_assignment(principal.clone()),
+            assignment(
+                principal.clone(),
+                PermissionScope::DeploymentLocalAllWorkspaces,
+                vec![permission(
+                    SecurityAction::NodeCreate,
+                    ResourceSelector::NodeModel("User".into()),
+                )],
+            ),
+        ],
+    );
+    let (mut client, shutdown, server) = start_service(missing_wrapper).await;
+    let handle = create_workspace(&mut client).await;
+    let denied = execute(&mut client, &handle, batch_request.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+
+    let missing_contained = secured_with_table(
+        principal.clone(),
+        vec![
+            service_create_assignment(principal.clone()),
+            assignment(
+                principal,
+                PermissionScope::DeploymentLocalAllWorkspaces,
+                vec![permission(
+                    SecurityAction::BatchApply,
+                    ResourceSelector::OperationFamily,
+                )],
+            ),
+        ],
+    );
+    let (mut client, shutdown, server) = start_service(missing_contained).await;
+    let handle = create_workspace(&mut client).await;
+    let denied = execute(&mut client, &handle, batch_request)
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn permission_table_requires_query_explain_profile_wrappers_and_underlying_resources() {
+    for wrapper_action in [
+        SecurityAction::Query,
+        SecurityAction::Explain,
+        SecurityAction::Profile,
+    ] {
+        let principal = principal("query");
+        let request = wrapper_request(wrapper_action, node_find_query("User"));
+        let missing_wrapper = secured_with_table(
+            principal.clone(),
+            vec![
+                service_create_assignment(principal.clone()),
+                assignment(
+                    principal.clone(),
+                    PermissionScope::DeploymentLocalAllWorkspaces,
+                    vec![permission(
+                        SecurityAction::NodeRead,
+                        ResourceSelector::NodeModel("User".into()),
+                    )],
+                ),
+            ],
+        );
+        let (mut client, shutdown, server) = start_service(missing_wrapper).await;
+        let handle = create_workspace(&mut client).await;
+        let denied = execute(&mut client, &handle, request.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), Code::PermissionDenied);
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+
+        let missing_underlying = secured_with_table(
+            principal.clone(),
+            vec![
+                service_create_assignment(principal.clone()),
+                assignment(
+                    principal,
+                    PermissionScope::DeploymentLocalAllWorkspaces,
+                    vec![permission(
+                        wrapper_action,
+                        ResourceSelector::OperationFamily,
+                    )],
+                ),
+            ],
+        );
+        let (mut client, shutdown, server) = start_service(missing_underlying).await;
+        let handle = create_workspace(&mut client).await;
+        let denied = execute(&mut client, &handle, request).await.unwrap_err();
+        assert_eq!(denied.code(), Code::PermissionDenied);
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn permission_table_save_load_export_import_use_distinct_permissions() {
+    for (allowed_action, request) in [
+        (
+            SecurityAction::WorkspaceSave,
+            proto::runtime_request::Request::Save(proto::SaveRequest {
+                format: proto::DurabilityFormat::Json as i32,
+                requested_snapshot_id: None,
+            }),
+        ),
+        (
+            SecurityAction::WorkspaceLoad,
+            proto::runtime_request::Request::Load(proto::LoadRequest {
+                format: proto::DurabilityFormat::Json as i32,
+                snapshot: Some(snapshot("snap")),
+            }),
+        ),
+        (
+            SecurityAction::WorkspaceExport,
+            proto::runtime_request::Request::Export(proto::ExportRequest {
+                snapshot: Some(snapshot("snap")),
+            }),
+        ),
+        (
+            SecurityAction::WorkspaceImport,
+            proto::runtime_request::Request::Import(proto::ImportRequest {
+                document: b"{}".to_vec(),
+                format: proto::DurabilityFormat::Json as i32,
+            }),
+        ),
+    ] {
+        let principal = principal("durability");
+        let denied_security = secured_with_table(
+            principal.clone(),
+            vec![
+                service_create_assignment(principal.clone()),
+                assignment(
+                    principal.clone(),
+                    PermissionScope::DeploymentLocalAllWorkspaces,
+                    vec![permission(
+                        SecurityAction::WorkspaceInspect,
+                        ResourceSelector::Workspace,
+                    )],
+                ),
+            ],
+        );
+        let (mut client, shutdown, server) = start_service(denied_security).await;
+        let handle = create_workspace(&mut client).await;
+        let denied = execute(&mut client, &handle, request.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), Code::PermissionDenied);
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+
+        let allowed_security = secured_with_table(
+            principal.clone(),
+            vec![
+                service_create_assignment(principal.clone()),
+                assignment(
+                    principal,
+                    PermissionScope::DeploymentLocalAllWorkspaces,
+                    vec![permission(
+                        allowed_action,
+                        ResourceSelector::WorkspaceArtifact,
+                    )],
+                ),
+            ],
+        );
+        let (mut client, shutdown, server) = start_service(allowed_security).await;
+        let handle = create_workspace(&mut client).await;
+        let unsupported = execute(&mut client, &handle, request).await.unwrap_err();
+        assert_eq!(unsupported.code(), Code::Unimplemented);
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn permission_table_load_failure_and_evaluation_failure_fail_closed_before_effects() {
+    let security = ServiceSecurityConfig::secured()
+        .with_authenticator(Arc::new(FixedAuthenticator))
+        .with_policy_load_failure();
+    let (mut client, shutdown, server) = start_service(security).await;
+    let failed = client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(failed.code(), Code::Unavailable);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+
+    let security =
+        secured_with_policy(Arc::new(ErrorActionPolicy(SecurityAction::WorkspaceCreate)));
+    let (mut client, shutdown, server) = start_service(security).await;
+    let failed = client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(failed.code(), Code::Unavailable);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn permission_table_does_not_grant_authority_from_authentication_method() {
+    let allowed = Principal {
+        issuer: "issuer".into(),
+        subject: "allowed".into(),
+        authentication_method: "password".into(),
+    };
+    let wrong_same_method = Principal {
+        issuer: "issuer".into(),
+        subject: "wrong".into(),
+        authentication_method: "password".into(),
+    };
+    let security = secured_with_table(
+        wrong_same_method,
+        vec![service_create_assignment(allowed.clone())],
+    );
+    let (mut client, shutdown, server) = start_service(security).await;
+    let denied = client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+
+    let authenticated_with_different_method = Principal {
+        authentication_method: "mtls-certificate".into(),
+        ..allowed.clone()
+    };
+    let security = secured_with_table(
+        authenticated_with_different_method,
+        vec![service_create_assignment(allowed)],
+    );
+    let (mut client, shutdown, server) = start_service(security).await;
+    create_workspace(&mut client).await;
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn permission_table_expands_deployment_local_roles_to_exact_permissions() {
+    let principal = principal("role");
+    let policy = PermissionTablePolicy::from_role_config(RolePermissionTableConfig {
+        version: "role-policy-v1".into(),
+        roles: vec![PermissionRole {
+            name: "schema-reader".into(),
+            permissions: vec![permission(
+                SecurityAction::SchemaInspect,
+                ResourceSelector::Workspace,
+            )],
+        }],
+        assignments: vec![
+            RolePermissionAssignment {
+                principal: principal.clone(),
+                scope: PermissionScope::Service,
+                permissions: vec![permission(
+                    SecurityAction::WorkspaceCreate,
+                    ResourceSelector::Service,
+                )],
+                roles: vec![],
+            },
+            RolePermissionAssignment {
+                principal: principal.clone(),
+                scope: PermissionScope::DeploymentLocalAllWorkspaces,
+                permissions: vec![],
+                roles: vec!["schema-reader".into()],
+            },
+        ],
+    })
+    .unwrap();
+    let security = ServiceSecurityConfig::secured()
+        .with_authenticator(Arc::new(PrincipalAuthenticator(principal)))
+        .with_policy(Arc::new(policy));
+    let (mut client, shutdown, server) = start_service(security).await;
+    let handle = create_workspace(&mut client).await;
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::SchemaList(proto::SchemaListRequest {}),
+    )
+    .await
+    .unwrap();
+    let denied = execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::CreateNode(user_create("Ada")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
     shutdown.send(()).unwrap();
     server.await.unwrap().unwrap();
 }
@@ -773,6 +1394,78 @@ fn secured_with_policy(policy: Arc<dyn AuthorizationPolicy>) -> ServiceSecurityC
         .with_policy(policy)
 }
 
+fn secured_with_table(
+    authenticated_principal: Principal,
+    assignments: Vec<PermissionAssignment>,
+) -> ServiceSecurityConfig {
+    let policy = PermissionTablePolicy::new(PermissionTableConfig {
+        version: "test-policy-v1".into(),
+        assignments,
+    })
+    .unwrap();
+    ServiceSecurityConfig::secured()
+        .with_authenticator(Arc::new(PrincipalAuthenticator(authenticated_principal)))
+        .with_policy(Arc::new(policy))
+}
+
+fn assignment(
+    principal: Principal,
+    scope: PermissionScope,
+    permissions: Vec<Permission>,
+) -> PermissionAssignment {
+    PermissionAssignment {
+        principal,
+        scope,
+        permissions,
+    }
+}
+
+fn service_create_assignment(principal: Principal) -> PermissionAssignment {
+    assignment(
+        principal,
+        PermissionScope::Service,
+        vec![permission(
+            SecurityAction::WorkspaceCreate,
+            ResourceSelector::Service,
+        )],
+    )
+}
+
+fn permission(action: SecurityAction, resource: ResourceSelector) -> Permission {
+    Permission { action, resource }
+}
+
+fn principal(kind: &str) -> Principal {
+    Principal {
+        issuer: format!("test-{kind}"),
+        subject: "principal".into(),
+        authentication_method: format!("{kind}-test-fixture"),
+    }
+}
+
+fn wrapper_request(
+    action: SecurityAction,
+    query: proto::QueryRequest,
+) -> proto::runtime_request::Request {
+    match action {
+        SecurityAction::Query => proto::runtime_request::Request::Query(query),
+        SecurityAction::Explain => {
+            proto::runtime_request::Request::Explain(proto::ExplainRequest { query: Some(query) })
+        }
+        SecurityAction::Profile => {
+            proto::runtime_request::Request::Profile(proto::ProfileRequest { query: Some(query) })
+        }
+        other => panic!("unsupported wrapper action in test: {other:?}"),
+    }
+}
+
+fn snapshot(id: &str) -> proto::SnapshotHandle {
+    proto::SnapshotHandle {
+        id: id.into(),
+        etag: "etag".into(),
+    }
+}
+
 async fn start_service(
     security: ServiceSecurityConfig,
 ) -> (
@@ -902,6 +1595,18 @@ fn user_model() -> proto::DefineNodeRequest {
         id_field: "userId".into(),
         fields: vec![proto::FieldSpec {
             name: "name".into(),
+            value_type: proto::FieldValueType::String as i32,
+            required: true,
+        }],
+    }
+}
+
+fn post_model() -> proto::DefineNodeRequest {
+    proto::DefineNodeRequest {
+        name: "Post".into(),
+        id_field: "postId".into(),
+        fields: vec![proto::FieldSpec {
+            name: "title".into(),
             value_type: proto::FieldValueType::String as i32,
             required: true,
         }],

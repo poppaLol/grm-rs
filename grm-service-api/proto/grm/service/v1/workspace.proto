@@ -83,6 +83,10 @@ message RuntimeRequest {
     BatchRequest apply_batch = 15;
     IndexListRequest index_list = 16;
     SummaryRequest summary = 17;
+    SaveRequest save = 18;
+    LoadRequest load = 19;
+    ExportRequest export = 20;
+    ImportRequest import = 21;
   }
 }
 

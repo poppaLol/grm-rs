@@ -601,7 +601,7 @@ signing.
 | Server-authenticated TLS | Implemented and tested |
 | Optional mTLS client-certificate requirement | Implemented and tested |
 | Trusted application-principal abstraction | Implemented; no production credential provider |
-| Authorization and policy versioning | Minimal policy abstraction and default-deny enforcement implemented; policy storage/versioning not implemented |
+| Authorization and policy versioning | Exact versioned workspace permission table, default-deny enforcement, and public negative authorization tests implemented; durable policy storage and administration not implemented |
 | Request limits and admission policy | Batch operation count enforced in secured profile; broader limits not implemented |
 | Bounded security audit sink | Not implemented |
 | GRM-managed encryption at rest | Not implemented |
@@ -611,11 +611,12 @@ signing.
 
 The current minimum enforcement proof constructs transport-peer evidence,
 authenticated principal, asserted actor, server-resolved workspace, action,
-resource, and authorization decision as internal Rust types. The public
-protobuf does not accept an effective security context. Workspace create, open,
-execute, and close RPCs normalize typed requests, authenticate, resolve scope,
-and authorize before lifecycle or runtime effects. `ExecuteWorkspace` also
-applies the current batch limit before invoking the existing runtime path.
+resource, policy version, and authorization decision as internal Rust types.
+The public protobuf does not accept an effective security context. Workspace
+create, open, execute, and close RPCs normalize typed requests, authenticate,
+resolve scope, and authorize before lifecycle or runtime effects.
+`ExecuteWorkspace` also applies the current batch limit before invoking the
+existing runtime path.
 
 The explicit `anonymous-local` profile preserves local development behavior.
 Service constructors require a `ServiceSecurityConfig`; there is no permissive
@@ -629,6 +630,22 @@ contained-operation batch classification, query wrapper plus underlying
 data-access classification, per-step traversal edge and destination-model
 classification for query and direct find requests, and continued runtime
 validation after authorization.
+
+The secured profile now includes an exact deterministic permission table over
+canonical principal issuer and subject, service or stable workspace scope,
+action, resource selector, and explicit policy version. Authentication method,
+transport identity, asserted actor metadata, requested workspace IDs, synthetic
+workspace placeholders, and adapter labels do not grant authority. Workspace
+create is service-scoped before allocation; workspace open authorizes the
+stable requested workspace or snapshot reference before existence checks;
+execute and close resolve scope from managed handles and reauthorize on every
+request. Save, load, export, and import are distinct stronger
+workspace-artifact actions. The implementation also has an explicitly named
+deployment-local all-workspaces scope for small controlled deployments and test
+fixtures; it is not a hosted isolation, tenancy, or ownership contract. Durable
+policy storage, administrative policy RPCs, delegation, tenant ownership, audit
+receipts, encryption at rest, attestation, and hosted-security claims remain
+unimplemented.
 
 Secured mode rejects traversal steps that omit `edge_model`. The runtime may
 infer an edge model in local workflows, but secured authorization does not
