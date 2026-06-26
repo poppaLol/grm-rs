@@ -36,13 +36,17 @@ const QUERY_LANGUAGE_DOC: &str = include_str!("../../docs/query-language-design.
 
 #[tool_router(vis = "pub(crate)")]
 impl GrmMcpServer {
-    #[tool(description = "Return GRM agent guidance, value rules, resources, and common workflow.")]
+    #[tool(
+        description = "Return GRM agent guidance, value rules, resources, and common workflow.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
     async fn grm_help(&self) -> Result<Json<JsonObject>, McpError> {
         Ok(Json(to_object(help_index())?))
     }
 
     #[tool(
-        description = "Return examples and error-recovery hints for one GRM tool, e.g. {\"tool\":\"grm_node_create\"}."
+        description = "Return examples and error-recovery hints for one GRM tool, e.g. {\"tool\":\"grm_node_create\"}.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn grm_tool_help(
         &self,
@@ -61,7 +65,8 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Return the current GRM runtime schema and backend identity types. Call before graph reads/writes when model fields are unknown."
+        description = "Return the current GRM runtime schema and backend identity types. Call before graph reads/writes when model fields are unknown.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn grm_schema_list(&self) -> Result<Json<JsonObject>, McpError> {
         Ok(Json(to_object(
@@ -89,7 +94,8 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Inspect GRM's current system index catalog. Indexes are backend-maintained derived metadata, not user-defined or durable source-of-truth data."
+        description = "Inspect GRM's current system index catalog. Indexes are backend-maintained derived metadata, not user-defined or durable source-of-truth data.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn grm_index_list(&self) -> Result<Json<JsonObject>, McpError> {
         if let Some(err) = self.unsupported_in_service("grm_index_list") {
@@ -334,7 +340,8 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Find nodes using model filters. Supports equality, comparison suffixes, via traversal steps, end_filters, edge_filters, return, order, limit, and offset."
+        description = "Find nodes using model filters. Supports equality, comparison suffixes, via traversal steps, end_filters, edge_filters, return, order, limit, and offset.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn grm_node_find(
         &self,
@@ -479,7 +486,8 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Find edges using endpoint and property filters. Special filters id, from, and to only support equality."
+        description = "Find edges using endpoint and property filters. Special filters id, from, and to only support equality.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn grm_edge_find(
         &self,
@@ -552,7 +560,8 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Explain a CLI-compatible node.find or edge.find command and return the current logical plan as structured JSON."
+        description = "Explain a CLI-compatible node.find or edge.find command and return the current logical plan as structured JSON.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn grm_explain(
         &self,
@@ -601,7 +610,8 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Profile a CLI-compatible node.find or edge.find command and return its plan, row count, and elapsed time as structured JSON."
+        description = "Profile a CLI-compatible node.find or edge.find command by executing the read query, then return its plan, row count, and elapsed time as structured JSON.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn grm_profile(
         &self,

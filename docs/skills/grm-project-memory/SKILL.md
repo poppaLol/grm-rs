@@ -84,6 +84,15 @@ full live-database safety policy.
   approval and a narrowly verified target.
 - Keep graph property values to supported scalar strings, numbers, or booleans.
 
+### Schema Discipline
+
+Keep to the declared runtime schema and the existing graph shape.
+
+- Do not attempt to create invalid nodes, invalid edges, invalid properties, or placeholder models as probes.
+- If the intended model, edge, field, or direction is missing, stop and ask the user whether to extend the schema.
+- Use read-only discovery first: `grm_schema_list`, `grm_node_find`, `grm_edge_find`, tool help, and MCP resources.
+- Treat write-shaped calls as mutations even when you expect them to fail.
+
 ## Verification
 
 After writes:

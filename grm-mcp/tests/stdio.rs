@@ -894,6 +894,80 @@ async fn schema_define_tools_expose_structured_field_objects() {
 }
 
 #[tokio::test]
+async fn read_only_tools_expose_mcp_safety_annotations() {
+    let client = client(&[]).await;
+    let tools = client.list_tools(None).await.expect("list tools");
+
+    for tool_name in [
+        "grm_help",
+        "grm_tool_help",
+        "grm_schema_list",
+        "grm_index_list",
+        "grm_node_find",
+        "grm_edge_find",
+        "grm_explain",
+        "grm_profile",
+    ] {
+        let tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap_or_else(|| panic!("missing tool {tool_name}"));
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("missing annotations for {tool_name}"));
+
+        assert_eq!(
+            annotations.read_only_hint,
+            Some(true),
+            "{tool_name} should advertise read-only behavior"
+        );
+        assert_eq!(
+            annotations.open_world_hint,
+            Some(false),
+            "{tool_name} should advertise a closed-world graph scope"
+        );
+    }
+
+    for tool_name in [
+        "grm_help",
+        "grm_tool_help",
+        "grm_schema_list",
+        "grm_explain",
+    ] {
+        let tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name == tool_name)
+            .unwrap_or_else(|| panic!("missing tool {tool_name}"));
+        assert_eq!(
+            tool.annotations
+                .as_ref()
+                .and_then(|annotations| annotations.idempotent_hint),
+            Some(true),
+            "{tool_name} should advertise idempotent behavior"
+        );
+    }
+
+    let query = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name == "grm_query")
+        .expect("missing grm_query tool");
+    assert_ne!(
+        query
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint),
+        Some(true),
+        "grm_query should not be advertised as read-only until it is constrained to read commands"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn schema_checkpoint_is_exposed_and_rejects_in_memory_mode() {
     let client = client(&[]).await;
     let tools = client.list_tools(None).await.expect("list tools");
