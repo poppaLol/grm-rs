@@ -93,6 +93,7 @@ Keep to the declared runtime schema and the existing graph shape.
 - Use read-only discovery first: `grm_schema_list`, `grm_node_find`, `grm_edge_find`, tool help, and MCP resources.
 - Treat write-shaped calls as mutations even when you expect them to fail.
 - Do not checkpoint schema memory unless the log is too large or the user has indicated that checkpointing is wanted.
+- Never include `grm_schema_checkpoint` in startup, orientation, roadmap, or read-only inspection tool bundles.
 
 ## Verification
 
