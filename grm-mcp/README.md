@@ -130,9 +130,11 @@ Agent/tool flow after startup:
 6. Only then write graph data with `grm_batch`, `grm_node_create`,
    `grm_node_update`, `grm_node_delete`, `grm_edge_create`, `grm_edge_update`,
    or `grm_edge_delete`.
-7. Optionally call `grm_schema_checkpoint` to fold the schema-memory append log
-   into the `GRM_SCHEMA_TEMPLATE` base file. This compacts only local runtime
-   schema memory and does not modify Neo4j graph data.
+`grm_schema_checkpoint` is not part of startup or read-only orientation. Use it
+only as an explicit maintenance action when the operator requests schema-memory
+compaction or the append log is too large. It folds the schema-memory append log
+into the `GRM_SCHEMA_TEMPLATE` base file, compacting only local runtime schema
+memory without modifying Neo4j graph data.
 
 For autonomous schema-design tasks, grant that permission in the task prompt
 rather than relying on the conservative built-in help text. For example:
