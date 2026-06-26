@@ -92,6 +92,7 @@ Keep to the declared runtime schema and the existing graph shape.
 - If the intended model, edge, field, or direction is missing, stop and ask the user whether to extend the schema.
 - Use read-only discovery first: `grm_schema_list`, `grm_node_find`, `grm_edge_find`, tool help, and MCP resources.
 - Treat write-shaped calls as mutations even when you expect them to fail.
+- Do not checkpoint schema memory unless the log is too large or the user has indicated that checkpointing is wanted.
 
 ## Verification
 
