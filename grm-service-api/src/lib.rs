@@ -14,7 +14,9 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use base64::Engine as _;
 use ring::digest;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tonic::metadata::MetadataMap;
@@ -1731,6 +1733,34 @@ impl CertificateFingerprint {
     }
 }
 
+pub fn certificate_fingerprint_from_pem_or_der(
+    input: &[u8],
+) -> Result<CertificateFingerprint, CertificatePrincipalMappingConfigError> {
+    if input.starts_with(b"-----BEGIN CERTIFICATE-----") {
+        let pem = std::str::from_utf8(input).map_err(|_| CertificatePrincipalMappingConfigError)?;
+        let mut in_body = false;
+        let mut body = String::new();
+        for line in pem.lines() {
+            let trimmed = line.trim();
+            if trimmed == "-----BEGIN CERTIFICATE-----" {
+                in_body = true;
+                continue;
+            }
+            if trimmed == "-----END CERTIFICATE-----" {
+                let der = base64::engine::general_purpose::STANDARD
+                    .decode(body.as_bytes())
+                    .map_err(|_| CertificatePrincipalMappingConfigError)?;
+                return Ok(CertificateFingerprint::sha256_der(&der));
+            }
+            if in_body {
+                body.push_str(trimmed);
+            }
+        }
+        return Err(CertificatePrincipalMappingConfigError);
+    }
+    Ok(CertificateFingerprint::sha256_der(input))
+}
+
 impl fmt::Debug for CertificateFingerprint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CertificateFingerprint(<redacted>)")
@@ -1845,6 +1875,138 @@ fn validated_certificate_mappings(
         }
     }
     Ok(validated)
+}
+
+#[derive(Debug)]
+pub enum ServiceSecurityConfigFileError {
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    Json {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    CertificateMapping(CertificatePrincipalMappingConfigError),
+    PermissionTable(PermissionTableConfigError),
+    UnknownAction(String),
+    UnknownScope(String),
+    UnknownResource(String),
+    MissingWorkspaceScopeValue,
+    MissingModelResourceValue,
+}
+
+impl fmt::Display for ServiceSecurityConfigFileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read { path, source } => write!(
+                formatter,
+                "failed to read service security config '{}': {source}",
+                path.display()
+            ),
+            Self::Json { path, source } => write!(
+                formatter,
+                "failed to parse service security config '{}': {source}",
+                path.display()
+            ),
+            Self::CertificateMapping(error) => write!(formatter, "{error}"),
+            Self::PermissionTable(error) => write!(formatter, "{error}"),
+            Self::UnknownAction(action) => write!(
+                formatter,
+                "service security config contains unknown permission action '{action}'"
+            ),
+            Self::UnknownScope(scope) => write!(
+                formatter,
+                "service security config contains unknown permission scope '{scope}'"
+            ),
+            Self::UnknownResource(resource) => write!(
+                formatter,
+                "service security config contains unknown permission resource '{resource}'"
+            ),
+            Self::MissingWorkspaceScopeValue => formatter
+                .write_str("service security config workspace scope requires a workspace value"),
+            Self::MissingModelResourceValue => {
+                formatter.write_str("service security config model resource requires a model value")
+            }
+        }
+    }
+}
+
+impl Error for ServiceSecurityConfigFileError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Read { source, .. } => Some(source),
+            Self::Json { source, .. } => Some(source),
+            Self::CertificateMapping(error) => Some(error),
+            Self::PermissionTable(error) => Some(error),
+            Self::UnknownAction(_)
+            | Self::UnknownScope(_)
+            | Self::UnknownResource(_)
+            | Self::MissingWorkspaceScopeValue
+            | Self::MissingModelResourceValue => None,
+        }
+    }
+}
+
+impl From<CertificatePrincipalMappingConfigError> for ServiceSecurityConfigFileError {
+    fn from(error: CertificatePrincipalMappingConfigError) -> Self {
+        Self::CertificateMapping(error)
+    }
+}
+
+impl From<PermissionTableConfigError> for ServiceSecurityConfigFileError {
+    fn from(error: PermissionTableConfigError) -> Self {
+        Self::PermissionTable(error)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ServiceSecurityConfigFile {
+    certificate_mappings: Vec<CertificatePrincipalMappingFile>,
+    permission_table: PermissionTableFile,
+}
+
+#[derive(Debug, Deserialize)]
+struct CertificatePrincipalMappingFile {
+    fingerprint_sha256: String,
+    principal: PrincipalFile,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrincipalFile {
+    issuer: String,
+    subject: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PermissionTableFile {
+    version: String,
+    assignments: Vec<PermissionAssignmentFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PermissionAssignmentFile {
+    principal: PrincipalFile,
+    scope: ScopeFile,
+    permissions: Vec<PermissionFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PermissionFile {
+    action: String,
+    resource: ResourceFile,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScopeFile {
+    kind: String,
+    workspace: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResourceFile {
+    kind: String,
+    model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1981,6 +2143,19 @@ impl ServiceSecurityConfig {
         }
     }
 
+    pub fn secured_from_config_file(
+        path: impl AsRef<Path>,
+    ) -> Result<Self, ServiceSecurityConfigFileError> {
+        let config = load_service_security_config_file(path.as_ref())?;
+        Ok(Self::secured()
+            .with_authenticator(Arc::new(CertificatePrincipalAuthenticator::new(
+                config.certificate_mappings,
+            )?))
+            .with_policy(Arc::new(PermissionTablePolicy::new(
+                config.permission_table,
+            )?)))
+    }
+
     pub fn with_authenticator(mut self, authenticator: Arc<dyn ApplicationAuthenticator>) -> Self {
         self.authenticator = authenticator;
         self
@@ -2016,6 +2191,155 @@ impl ServiceSecurityConfig {
 
     fn allows_transport_peer(&self, peer: &TransportPeer) -> bool {
         self.profile != ServiceSecurityProfile::AnonymousLocal || transport_peer_is_loopback(peer)
+    }
+}
+
+struct LoadedServiceSecurityConfig {
+    certificate_mappings: Vec<CertificatePrincipalMapping>,
+    permission_table: PermissionTableConfig,
+}
+
+fn load_service_security_config_file(
+    path: &Path,
+) -> Result<LoadedServiceSecurityConfig, ServiceSecurityConfigFileError> {
+    let bytes = fs::read(path).map_err(|source| ServiceSecurityConfigFileError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let file: ServiceSecurityConfigFile =
+        serde_json::from_slice(&bytes).map_err(|source| ServiceSecurityConfigFileError::Json {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let certificate_mappings = file
+        .certificate_mappings
+        .into_iter()
+        .map(|mapping| {
+            Ok(CertificatePrincipalMapping {
+                fingerprint: CertificateFingerprint::from_hex(&mapping.fingerprint_sha256)
+                    .map_err(ServiceSecurityConfigFileError::CertificateMapping)?,
+                principal: Principal {
+                    issuer: mapping.principal.issuer,
+                    subject: mapping.principal.subject,
+                    authentication_method: MTLS_CERTIFICATE_AUTHENTICATION_METHOD.into(),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, ServiceSecurityConfigFileError>>()?;
+    let assignments = file
+        .permission_table
+        .assignments
+        .into_iter()
+        .map(permission_assignment_from_file)
+        .collect::<Result<Vec<_>, ServiceSecurityConfigFileError>>()?;
+    Ok(LoadedServiceSecurityConfig {
+        certificate_mappings,
+        permission_table: PermissionTableConfig {
+            version: file.permission_table.version,
+            assignments,
+        },
+    })
+}
+
+fn permission_assignment_from_file(
+    assignment: PermissionAssignmentFile,
+) -> Result<PermissionAssignment, ServiceSecurityConfigFileError> {
+    Ok(PermissionAssignment {
+        principal: Principal {
+            issuer: assignment.principal.issuer,
+            subject: assignment.principal.subject,
+            authentication_method: MTLS_CERTIFICATE_AUTHENTICATION_METHOD.into(),
+        },
+        scope: permission_scope_from_file(assignment.scope)?,
+        permissions: assignment
+            .permissions
+            .into_iter()
+            .map(permission_from_file)
+            .collect::<Result<Vec<_>, ServiceSecurityConfigFileError>>()?,
+    })
+}
+
+fn permission_scope_from_file(
+    scope: ScopeFile,
+) -> Result<PermissionScope, ServiceSecurityConfigFileError> {
+    match scope.kind.as_str() {
+        "service" => Ok(PermissionScope::Service),
+        "workspace" => {
+            Ok(PermissionScope::Workspace(scope.workspace.ok_or(
+                ServiceSecurityConfigFileError::MissingWorkspaceScopeValue,
+            )?))
+        }
+        "deployment_local_all_workspaces" => Ok(PermissionScope::DeploymentLocalAllWorkspaces),
+        other => Err(ServiceSecurityConfigFileError::UnknownScope(other.into())),
+    }
+}
+
+fn permission_from_file(
+    permission: PermissionFile,
+) -> Result<Permission, ServiceSecurityConfigFileError> {
+    Ok(Permission {
+        action: security_action_from_str(&permission.action)?,
+        resource: resource_selector_from_file(permission.resource)?,
+    })
+}
+
+fn security_action_from_str(
+    action: &str,
+) -> Result<SecurityAction, ServiceSecurityConfigFileError> {
+    Ok(match action {
+        "workspace.create" => SecurityAction::WorkspaceCreate,
+        "workspace.open" => SecurityAction::WorkspaceOpen,
+        "workspace.close" => SecurityAction::WorkspaceClose,
+        "workspace.inspect" => SecurityAction::WorkspaceInspect,
+        "workspace.save" => SecurityAction::WorkspaceSave,
+        "workspace.load" => SecurityAction::WorkspaceLoad,
+        "workspace.export" => SecurityAction::WorkspaceExport,
+        "workspace.import" => SecurityAction::WorkspaceImport,
+        "schema.define" => SecurityAction::SchemaDefine,
+        "schema.inspect" => SecurityAction::SchemaInspect,
+        "node.create" => SecurityAction::NodeCreate,
+        "node.read" => SecurityAction::NodeRead,
+        "node.update" => SecurityAction::NodeUpdate,
+        "node.delete" => SecurityAction::NodeDelete,
+        "edge.create" => SecurityAction::EdgeCreate,
+        "edge.read" => SecurityAction::EdgeRead,
+        "edge.update" => SecurityAction::EdgeUpdate,
+        "edge.delete" => SecurityAction::EdgeDelete,
+        "query" => SecurityAction::Query,
+        "traverse" => SecurityAction::Traverse,
+        "explain" => SecurityAction::Explain,
+        "profile" => SecurityAction::Profile,
+        "batch.apply" => SecurityAction::BatchApply,
+        "index.inspect" => SecurityAction::IndexInspect,
+        other => return Err(ServiceSecurityConfigFileError::UnknownAction(other.into())),
+    })
+}
+
+fn resource_selector_from_file(
+    resource: ResourceFile,
+) -> Result<ResourceSelector, ServiceSecurityConfigFileError> {
+    match resource.kind.as_str() {
+        "service" => Ok(ResourceSelector::Service),
+        "workspace" => Ok(ResourceSelector::Workspace),
+        "node_model" => {
+            Ok(ResourceSelector::NodeModel(resource.model.ok_or(
+                ServiceSecurityConfigFileError::MissingModelResourceValue,
+            )?))
+        }
+        "any_node_model" => Ok(ResourceSelector::AnyNodeModel),
+        "edge_model" => {
+            Ok(ResourceSelector::EdgeModel(resource.model.ok_or(
+                ServiceSecurityConfigFileError::MissingModelResourceValue,
+            )?))
+        }
+        "any_edge_model" => Ok(ResourceSelector::AnyEdgeModel),
+        "operation_family" => Ok(ResourceSelector::OperationFamily),
+        "index_catalog" => Ok(ResourceSelector::IndexCatalog),
+        "workspace_artifact" => Ok(ResourceSelector::WorkspaceArtifact),
+        "reserved_admin" => Ok(ResourceSelector::ReservedAdmin),
+        other => Err(ServiceSecurityConfigFileError::UnknownResource(
+            other.into(),
+        )),
     }
 }
 
@@ -6384,5 +6708,83 @@ mod workspace_operation_log_tests {
         for secret in ["42", "SecretModel", "password", "not-for-logs"] {
             assert!(!log.contains(secret));
         }
+    }
+
+    #[test]
+    fn pem_certificate_fingerprint_matches_der_fingerprint() {
+        let der = b"local test certificate der";
+        let pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            base64::engine::general_purpose::STANDARD.encode(der)
+        );
+
+        assert_eq!(
+            certificate_fingerprint_from_pem_or_der(pem.as_bytes()).unwrap(),
+            CertificateFingerprint::sha256_der(der)
+        );
+    }
+
+    #[test]
+    fn service_security_config_file_rejects_unknown_permission_action() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("security.json");
+        fs::write(
+            &path,
+            r#"{
+              "certificate_mappings": [
+                {
+                  "fingerprint_sha256": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                  "principal": { "issuer": "local-demo", "subject": "client" }
+                }
+              ],
+              "permission_table": {
+                "version": "test-policy-v1",
+                "assignments": [
+                  {
+                    "principal": { "issuer": "local-demo", "subject": "client" },
+                    "scope": { "kind": "service" },
+                    "permissions": [
+                      { "action": "admin.grant", "resource": { "kind": "service" } }
+                    ]
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let Err(error) = ServiceSecurityConfig::secured_from_config_file(&path) else {
+            panic!("invalid config should be rejected");
+        };
+
+        assert!(error.to_string().contains("unknown permission action"));
+    }
+
+    #[test]
+    fn service_security_config_file_error_redacts_mapping_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("security.json");
+        fs::write(
+            &path,
+            r#"{
+              "certificate_mappings": [
+                {
+                  "fingerprint_sha256": "not-a-fingerprint-containing-secret",
+                  "principal": { "issuer": "sensitive-issuer", "subject": "sensitive-subject" }
+                }
+              ],
+              "permission_table": { "version": "test-policy-v1", "assignments": [] }
+            }"#,
+        )
+        .unwrap();
+
+        let Err(error) = ServiceSecurityConfig::secured_from_config_file(&path) else {
+            panic!("invalid mapping should be rejected");
+        };
+        let error = error.to_string();
+
+        assert_eq!(error, "invalid certificate principal mapping configuration");
+        assert!(!error.contains("sensitive"));
+        assert!(!error.contains("not-a-fingerprint"));
     }
 }
