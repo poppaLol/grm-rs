@@ -9,6 +9,7 @@ use grm_service_api::{GrpcServerTlsOptions, GrpcWorkspaceService, ServiceSecurit
 use tonic::transport::Server;
 
 const GRM_SERVICE_SECURITY_PROFILE_ENV: &str = "GRM_SERVICE_SECURITY_PROFILE";
+const GRM_SERVICE_SECURITY_CONFIG_ENV: &str = "GRM_SERVICE_SECURITY_CONFIG";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -49,13 +50,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn service_security_config_from_env(
     getenv: impl Fn(&str) -> Option<std::ffi::OsString>,
 ) -> io::Result<ServiceSecurityConfig> {
+    let config_path = getenv(GRM_SERVICE_SECURITY_CONFIG_ENV).map(PathBuf::from);
     let Some(profile) = getenv(GRM_SERVICE_SECURITY_PROFILE_ENV) else {
+        if let Some(config_path) = config_path {
+            return ServiceSecurityConfig::secured_from_config_file(config_path)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()));
+        }
         return Ok(ServiceSecurityConfig::anonymous_local());
     };
     match profile.to_string_lossy().as_ref() {
         "anonymous_local" => Ok(ServiceSecurityConfig::anonymous_local()),
         "docker_local_insecure" => Ok(ServiceSecurityConfig::docker_local_insecure()),
-        "secured" => Ok(ServiceSecurityConfig::secured()),
+        "secured" => match config_path {
+            Some(config_path) => ServiceSecurityConfig::secured_from_config_file(config_path)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string())),
+            None => Ok(ServiceSecurityConfig::secured()),
+        },
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -248,6 +258,63 @@ mod tests {
         });
         let Err(err) = result else {
             panic!("unknown security profile should be rejected");
+        };
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn security_config_file_selects_secured_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("security.json");
+        fs::write(
+            &config,
+            r#"{
+              "certificate_mappings": [
+                {
+                  "fingerprint_sha256": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+                  "principal": { "issuer": "local-demo", "subject": "client" }
+                }
+              ],
+              "permission_table": {
+                "version": "test-policy-v1",
+                "assignments": [
+                  {
+                    "principal": { "issuer": "local-demo", "subject": "client" },
+                    "scope": { "kind": "service" },
+                    "permissions": [
+                      { "action": "workspace.create", "resource": { "kind": "service" } }
+                    ]
+                  }
+                ]
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let security = service_security_config_from_env(|key| match key {
+            GRM_SERVICE_SECURITY_PROFILE_ENV => Some("secured".into()),
+            GRM_SERVICE_SECURITY_CONFIG_ENV => Some(config.clone().into_os_string()),
+            _ => None,
+        })
+        .unwrap();
+        let public: SocketAddr = "0.0.0.0:50051".parse().unwrap();
+
+        assert!(security.validate_bind_addr(public).is_ok());
+    }
+
+    #[test]
+    fn invalid_security_config_file_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("security.json");
+        fs::write(&config, r#"{"certificate_mappings":[]}"#).unwrap();
+
+        let Err(err) = service_security_config_from_env(|key| match key {
+            GRM_SERVICE_SECURITY_PROFILE_ENV => Some("secured".into()),
+            GRM_SERVICE_SECURITY_CONFIG_ENV => Some(config.clone().into_os_string()),
+            _ => None,
+        }) else {
+            panic!("invalid security config should be rejected");
         };
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);

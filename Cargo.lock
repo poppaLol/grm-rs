@@ -809,6 +809,7 @@ dependencies = [
 name = "grm-service-api"
 version = "0.1.1"
 dependencies = [
+ "base64",
  "criterion",
  "grm-rs",
  "libc",
@@ -817,6 +818,7 @@ dependencies = [
  "protoc-bin-vendored",
  "rcgen",
  "ring",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
