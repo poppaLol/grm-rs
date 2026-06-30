@@ -30,6 +30,9 @@ target
 # local MCP configs may contain service credentials
 .mcp.local.json
 
+# local environment files may contain service credentials and key paths
+.env
+
 # Python virtual environments
 .venv/
 venv/
