@@ -6,11 +6,16 @@ WORKDIR /src
 
 COPY . .
 
-RUN cargo build -p grm-service-api --release --bin grm-local-workspace-server
+RUN cargo build --release \
+    -p grm-service-api --bin grm-local-workspace-server \
+    -p grm-service-api --bin grm-cert-fingerprint \
+    -p grm-cli --bin grm
 
 FROM debian:stable-slim
 
 COPY --from=builder /src/target/release/grm-local-workspace-server /usr/local/bin/grm-local-workspace-server
+COPY --from=builder /src/target/release/grm-cert-fingerprint /usr/local/bin/grm-cert-fingerprint
+COPY --from=builder /src/target/release/grm /usr/local/bin/grm
 
 RUN useradd --system --create-home --home-dir /var/lib/grm grm \
     && mkdir -p /workspaces \
