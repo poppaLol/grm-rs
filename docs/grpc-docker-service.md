@@ -35,14 +35,20 @@ Use `ExecuteWorkspace` for schema, node, edge, simple find, and batch runtime
 requests. The direct non-workspace RPC families in the proto are placeholders in
 the current local shell and return explicit unsupported errors.
 
-Current non-goals:
+Current non-goals for this insecure Compose profile:
 
 - production daemon lifecycle
-- TLS/mTLS in the Docker Compose demo, or authentication
+- TLS/mTLS or authentication in `docker-compose.yml`
 - authorization, quotas, request limits, and audit
 - hosted durability or multi-writer guarantees
 - direct RPC-family parity outside `ExecuteWorkspace`
 - full traversal/query/explain/profile/import/export parity through all adapters
+
+A separate local controlled secured demo lives in
+[`docs/security/cfssl-mtls-local-demo.md`](security/cfssl-mtls-local-demo.md)
+and `docker-compose.cfssl-mtls.yml`. It uses CFSSL-generated local demo
+certificates, explicit certificate fingerprint mapping, and the versioned
+permission table. It does not turn this insecure profile into a secured one.
 
 ## Run The Published Image
 
@@ -123,7 +129,7 @@ operations, closes the workspace, reopens it, and verifies data is still present
 ## TLS-Capable Local Service
 
 The `grm-local-workspace-server` binary can run with local TLS certificate files
-outside the Docker Compose demo:
+outside the default insecure Docker Compose demo:
 
 ```bash
 GRM_SERVICE_TLS_SERVER_CERT=/tmp/grm-tls/server.crt \
@@ -141,6 +147,13 @@ the corresponding `tls_ca_cert=`, `tls_domain_name=`, `tls_client_cert=`, and
 `tls_client_key=` parameters to `ServiceSession`. This proves local
 certificate-based transport authentication only; it is not RBAC, production
 certificate lifecycle, hosted durability, or multi-writer coordination.
+
+For a repeatable local mTLS onboarding path that also wires certificate
+fingerprint mappings and permission-table authorization, use the CFSSL demo:
+
+```bash
+examples/cfssl-mtls/scripts/run-compose-smoke.sh
+```
 
 ## Optional grpcurl Smoke Scripts
 

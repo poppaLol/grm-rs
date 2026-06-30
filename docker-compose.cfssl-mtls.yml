@@ -1,0 +1,86 @@
+services:
+  cfssl-init:
+    image: cfssl/cfssl:latest
+    entrypoint: ["/bin/sh", "/demo/scripts/provision-cfssl.sh"]
+    environment:
+      CERT_DIR: /certs
+      CONFIG_DIR: /config
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-certs:/certs
+      - grm-cfssl-config:/config
+
+  security-config:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grm-rs-grpc:local
+    user: "0:0"
+    depends_on:
+      cfssl-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/demo/scripts/render-security-config.sh"]
+    environment:
+      CERT_DIR: /certs
+      CONFIG_DIR: /config
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-certs:/certs
+      - grm-cfssl-config:/config
+
+  grm-secured:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grm-rs-grpc:local
+    depends_on:
+      security-config:
+        condition: service_completed_successfully
+    environment:
+      GRM_SERVICE_SECURITY_PROFILE: secured
+      GRM_SERVICE_SECURITY_CONFIG: /config/security.json
+      GRM_SERVICE_TLS_SERVER_CERT: /certs/server.pem
+      GRM_SERVICE_TLS_SERVER_KEY: /certs/server-key.pem
+      GRM_SERVICE_TLS_CLIENT_CA_CERT: /certs/ca.pem
+    ports:
+      - "127.0.0.1:50052:50051"
+    volumes:
+      - grm-cfssl-certs:/certs:ro
+      - grm-cfssl-config:/config:ro
+      - grm-cfssl-workspaces:/workspaces
+    command: ["grm-local-workspace-server", "0.0.0.0:50051", "/workspaces"]
+
+  grm-cli-sidecar:
+    image: grm-rs-grpc:local
+    profiles: ["cli"]
+    depends_on:
+      grm-secured:
+        condition: service_started
+    entrypoint: ["/bin/sh", "/demo/scripts/smoke.sh"]
+    environment:
+      GRM_SERVICE_ENDPOINT: https://grm-secured:50051
+      CERT_DIR: /certs
+      WORKSPACE_PREFIX: cfssl-sidecar
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-certs:/certs:ro
+
+  grm-secured-smoke:
+    image: grm-rs-grpc:local
+    profiles: ["smoke"]
+    depends_on:
+      grm-secured:
+        condition: service_started
+    entrypoint: ["/bin/sh", "/demo/scripts/smoke.sh"]
+    environment:
+      GRM_SERVICE_ENDPOINT: https://grm-secured:50051
+      CERT_DIR: /certs
+      WORKSPACE_PREFIX: cfssl-smoke
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-certs:/certs:ro
+
+volumes:
+  grm-cfssl-certs:
+  grm-cfssl-config:
+  grm-cfssl-workspaces:
