@@ -44,7 +44,9 @@ cat > "$CONFIG_DIR/security.json" <<JSON
           { "action": "node.create", "resource": { "kind": "any_node_model" } },
           { "action": "node.read", "resource": { "kind": "any_node_model" } },
           { "action": "edge.create", "resource": { "kind": "any_edge_model" } },
-          { "action": "edge.read", "resource": { "kind": "any_edge_model" } }
+          { "action": "edge.read", "resource": { "kind": "any_edge_model" } },
+          { "action": "explain", "resource": { "kind": "operation_family" } },
+          { "action": "profile", "resource": { "kind": "operation_family" } }
         ]
       },
       {

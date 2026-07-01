@@ -14,7 +14,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: grm-rs-grpc:local
+      target: grm-service-runtime
+    image: grm-rs-service:local
     user: "0:0"
     depends_on:
       cfssl-init:
@@ -28,11 +29,33 @@ services:
       - grm-cfssl-certs:/certs
       - grm-cfssl-config:/config
 
+  mcp-certs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: grm-service-runtime
+    image: grm-rs-service:local
+    user: "0:0"
+    depends_on:
+      cfssl-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/demo/scripts/prepare-mcp-certs.sh"]
+    environment:
+      SOURCE_CERT_DIR: /source-certs
+      MCP_CERT_DIR: /mcp-certs
+      MCP_SMOKE_CERT_DIR: /mcp-smoke-certs
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-certs:/source-certs:ro
+      - grm-cfssl-mcp-certs:/mcp-certs
+      - grm-cfssl-mcp-smoke-certs:/mcp-smoke-certs
+
   grm-secured:
     build:
       context: .
       dockerfile: Dockerfile
-    image: grm-rs-grpc:local
+      target: grm-service-runtime
+    image: grm-rs-service:local
     depends_on:
       security-config:
         condition: service_completed_successfully
@@ -51,7 +74,11 @@ services:
     command: ["grm-local-workspace-server", "0.0.0.0:50051", "/workspaces"]
 
   grm-cli-sidecar:
-    image: grm-rs-grpc:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: grm-cli-runtime
+    image: grm-rs-cli:local
     profiles: ["cli"]
     depends_on:
       grm-secured:
@@ -65,8 +92,69 @@ services:
       - ./examples/cfssl-mtls:/demo:ro
       - grm-cfssl-certs:/certs:ro
 
+  grm-mcp-http:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: grm-mcp-runtime
+    image: grm-rs-mcp:local
+    profiles: ["mcp", "smoke"]
+    depends_on:
+      grm-secured:
+        condition: service_started
+      mcp-certs:
+        condition: service_completed_successfully
+    environment:
+      GRM_BACKEND: grpc
+      GRM_SERVICE_ENDPOINT: https://grm-secured:50051
+      GRM_WORKSPACE_REF: cfssl-mcp-http-demo
+      GRM_SERVICE_WORKSPACE_MODE: create-or-open
+      GRM_SERVICE_WORKSPACE_FORMAT: binary
+      GRM_SERVICE_TLS_CA_CERT: /certs/ca.pem
+      GRM_SERVICE_TLS_DOMAIN_NAME: localhost
+      GRM_SERVICE_TLS_CLIENT_CERT: /certs/mapped-client.pem
+      GRM_SERVICE_TLS_CLIENT_KEY: /certs/mapped-client-key.pem
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-mcp-certs:/certs:ro
+    entrypoint: ["/bin/sh", "/demo/scripts/run-mcp-http-service.sh"]
+
+  grm-mcp-http-host:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: grm-mcp-runtime
+    image: grm-rs-mcp:local
+    profiles: ["mcp-host"]
+    depends_on:
+      grm-secured:
+        condition: service_started
+      mcp-certs:
+        condition: service_completed_successfully
+    environment:
+      GRM_BACKEND: grpc
+      GRM_SERVICE_ENDPOINT: https://grm-secured:50051
+      GRM_WORKSPACE_REF: cfssl-mcp-http-demo
+      GRM_SERVICE_WORKSPACE_MODE: create-or-open
+      GRM_SERVICE_WORKSPACE_FORMAT: binary
+      GRM_SERVICE_TLS_CA_CERT: /certs/ca.pem
+      GRM_SERVICE_TLS_DOMAIN_NAME: localhost
+      GRM_SERVICE_TLS_CLIENT_CERT: /certs/mapped-client.pem
+      GRM_SERVICE_TLS_CLIENT_KEY: /certs/mapped-client-key.pem
+      GRM_MCP_HTTP_ALLOWED_HOSTS: grm-mcp-http-host grm-mcp-http-host:8080 localhost:8080 127.0.0.1:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-mcp-certs:/certs:ro
+    entrypoint: ["/bin/sh", "/demo/scripts/run-mcp-http-service.sh"]
+
   grm-secured-smoke:
-    image: grm-rs-grpc:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: grm-cli-runtime
+    image: grm-rs-cli:local
     profiles: ["smoke"]
     depends_on:
       grm-secured:
@@ -80,7 +168,31 @@ services:
       - ./examples/cfssl-mtls:/demo:ro
       - grm-cfssl-certs:/certs:ro
 
+  grm-mcp-http-smoke:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: grm-mcp-smoke-runtime
+    image: grm-rs-mcp-smoke:local
+    profiles: ["smoke"]
+    depends_on:
+      grm-mcp-http:
+        condition: service_started
+      mcp-certs:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/demo/scripts/mcp-http-smoke.sh"]
+    environment:
+      GRM_SERVICE_ENDPOINT: https://grm-secured:50051
+      GRM_MCP_HTTP_ENDPOINT: http://grm-mcp-http:8080/mcp
+      CERT_DIR: /certs
+      WORKSPACE_PREFIX: cfssl-mcp-http-smoke
+    volumes:
+      - ./examples/cfssl-mtls:/demo:ro
+      - grm-cfssl-mcp-smoke-certs:/certs:ro
+
 volumes:
   grm-cfssl-certs:
   grm-cfssl-config:
   grm-cfssl-workspaces:
+  grm-cfssl-mcp-certs:
+  grm-cfssl-mcp-smoke-certs:
