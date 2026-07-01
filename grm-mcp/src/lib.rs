@@ -6,7 +6,8 @@ mod service;
 mod tools;
 
 pub use config::{
-    AutocommitTarget, SessionFileFormat, StartupOptions, parse_startup_options, usage,
+    AutocommitTarget, SessionFileFormat, StartupOptions, TransportOptions, parse_startup_options,
+    usage,
 };
 pub use schema::{
     DefineEdgeParams, DefineNodeParams, EdgeCreateParams, EdgeDeleteParams, EdgeFindParams,
