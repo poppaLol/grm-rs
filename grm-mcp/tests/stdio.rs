@@ -1,8 +1,10 @@
 use grm_rs::{DurabilityFormat, GraphBackend, Neo4jBackend, Neo4jConfig, SessionState};
 use grm_service_api::GrpcWorkspaceService;
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, JsonObject, ReadResourceRequestParams, ResourceContents};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::model::{
+    CallToolRequestParams, JsonObject, ListToolsResult, ReadResourceRequestParams, ResourceContents,
+};
+use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::{Value, json};
 use std::env;
 use std::path::PathBuf;
@@ -11,6 +13,7 @@ use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::task::JoinHandle;
+use tokio::time::{Duration, sleep};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -28,6 +31,46 @@ async fn client(args: &[&str]) -> rmcp::service::RunningService<rmcp::RoleClient
     )
     .await
     .expect("connect to grm-mcp")
+}
+
+async fn http_client() -> (
+    rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    tokio::process::Child,
+) {
+    let probe = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral HTTP MCP port");
+    let addr = probe.local_addr().expect("ephemeral HTTP MCP addr");
+    drop(probe);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_grm-mcp"))
+        .arg("--transport")
+        .arg("http")
+        .arg("--http-bind")
+        .arg(addr.to_string())
+        .arg("--http-path")
+        .arg("/mcp")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn grm-mcp HTTP server");
+
+    let uri = format!("http://{addr}/mcp");
+    for _ in 0..20 {
+        match ().serve(StreamableHttpClientTransport::from_uri(uri.clone())).await {
+            Ok(client) => return (client, child),
+            Err(_) => {
+                if let Some(status) = child.try_wait().expect("poll HTTP MCP child") {
+                    panic!("grm-mcp HTTP server exited before accepting clients: {status}");
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    child
+        .kill()
+        .await
+        .expect("kill unresponsive HTTP MCP child");
+    panic!("grm-mcp HTTP server did not accept clients on {uri}");
 }
 
 async fn neo4j_client() -> Option<rmcp::service::RunningService<rmcp::RoleClient, ()>> {
@@ -134,6 +177,74 @@ async fn call_error(
         .to_string()
 }
 
+fn assert_read_only_tool_annotations(tools: &ListToolsResult) {
+    for tool_name in [
+        "grm_help",
+        "grm_tool_help",
+        "grm_schema_list",
+        "grm_index_list",
+        "grm_node_find",
+        "grm_edge_find",
+        "grm_explain",
+        "grm_profile",
+    ] {
+        let tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .unwrap_or_else(|| panic!("missing tool {tool_name}"));
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("missing annotations for {tool_name}"));
+
+        assert_eq!(
+            annotations.read_only_hint,
+            Some(true),
+            "{tool_name} should advertise read-only behavior"
+        );
+        assert_eq!(
+            annotations.open_world_hint,
+            Some(false),
+            "{tool_name} should advertise a closed-world graph scope"
+        );
+    }
+
+    for tool_name in [
+        "grm_help",
+        "grm_tool_help",
+        "grm_schema_list",
+        "grm_explain",
+    ] {
+        let tool = tools
+            .tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .unwrap_or_else(|| panic!("missing tool {tool_name}"));
+        assert_eq!(
+            tool.annotations
+                .as_ref()
+                .and_then(|annotations| annotations.idempotent_hint),
+            Some(true),
+            "{tool_name} should advertise idempotent behavior"
+        );
+    }
+
+    let query = tools
+        .tools
+        .iter()
+        .find(|tool| tool.name.as_ref() == "grm_query")
+        .expect("missing grm_query tool");
+    assert_ne!(
+        query
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint),
+        Some(true),
+        "grm_query should not be advertised as read-only until it is constrained to read commands"
+    );
+}
+
 fn fixture_path(name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -187,6 +298,45 @@ async fn schema_list_on_empty_stdio_session() {
     assert_eq!(schema["edges"], json!([]));
 
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn streamable_http_initializes_lists_tools_and_calls_schema_list() {
+    let (client, mut server) = http_client().await;
+
+    let tools = client
+        .peer()
+        .list_tools(Default::default())
+        .await
+        .expect("list tools over Streamable HTTP");
+    assert!(
+        tools
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == "grm_schema_list")
+    );
+
+    let schema = call(&client, "grm_schema_list", json!({})).await;
+    assert_eq!(schema["nodes"], json!([]));
+    assert_eq!(schema["edges"], json!([]));
+
+    client.cancel().await.unwrap();
+    server.kill().await.expect("stop HTTP MCP server");
+}
+
+#[tokio::test]
+async fn streamable_http_preserves_mcp_safety_annotations() {
+    let (client, mut server) = http_client().await;
+    let tools = client
+        .peer()
+        .list_tools(Default::default())
+        .await
+        .expect("list tools over Streamable HTTP");
+
+    assert_read_only_tool_annotations(&tools);
+
+    client.cancel().await.unwrap();
+    server.kill().await.expect("stop HTTP MCP server");
 }
 
 #[tokio::test]
@@ -477,6 +627,41 @@ async fn grpc_service_mode_accepts_explicit_json_workspace_format() {
     assert!(!temp.path().join(format!("{workspace_ref}.bin")).exists());
 
     client.cancel().await.unwrap();
+    service.abort();
+}
+
+#[tokio::test]
+async fn grpc_service_mode_create_or_open_reuses_existing_workspace() {
+    let temp = tempdir().unwrap();
+    let (endpoint, service) = grpc_service(temp.path().to_path_buf()).await;
+    let workspace_ref = unique_smoke_id();
+    let creator = grpc_mcp_client(&endpoint, &workspace_ref, "create").await;
+
+    call(
+        &creator,
+        "grm_schema_define_node",
+        json!({
+            "name": "GrpcMcpReusableUser",
+            "id_field": "userId",
+            "fields": [
+                { "name": "name", "type": "string", "required": true }
+            ]
+        }),
+    )
+    .await;
+    creator.cancel().await.unwrap();
+
+    let reused = grpc_mcp_client(&endpoint, &workspace_ref, "create-or-open").await;
+    let schema = call(&reused, "grm_schema_list", json!({})).await;
+    assert!(
+        schema["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["name"] == json!("GrpcMcpReusableUser"))
+    );
+
+    reused.cancel().await.unwrap();
     service.abort();
 }
 
@@ -898,71 +1083,7 @@ async fn read_only_tools_expose_mcp_safety_annotations() {
     let client = client(&[]).await;
     let tools = client.list_tools(None).await.expect("list tools");
 
-    for tool_name in [
-        "grm_help",
-        "grm_tool_help",
-        "grm_schema_list",
-        "grm_index_list",
-        "grm_node_find",
-        "grm_edge_find",
-        "grm_explain",
-        "grm_profile",
-    ] {
-        let tool = tools
-            .tools
-            .iter()
-            .find(|tool| tool.name == tool_name)
-            .unwrap_or_else(|| panic!("missing tool {tool_name}"));
-        let annotations = tool
-            .annotations
-            .as_ref()
-            .unwrap_or_else(|| panic!("missing annotations for {tool_name}"));
-
-        assert_eq!(
-            annotations.read_only_hint,
-            Some(true),
-            "{tool_name} should advertise read-only behavior"
-        );
-        assert_eq!(
-            annotations.open_world_hint,
-            Some(false),
-            "{tool_name} should advertise a closed-world graph scope"
-        );
-    }
-
-    for tool_name in [
-        "grm_help",
-        "grm_tool_help",
-        "grm_schema_list",
-        "grm_explain",
-    ] {
-        let tool = tools
-            .tools
-            .iter()
-            .find(|tool| tool.name == tool_name)
-            .unwrap_or_else(|| panic!("missing tool {tool_name}"));
-        assert_eq!(
-            tool.annotations
-                .as_ref()
-                .and_then(|annotations| annotations.idempotent_hint),
-            Some(true),
-            "{tool_name} should advertise idempotent behavior"
-        );
-    }
-
-    let query = tools
-        .tools
-        .iter()
-        .find(|tool| tool.name == "grm_query")
-        .expect("missing grm_query tool");
-    assert_ne!(
-        query
-            .annotations
-            .as_ref()
-            .and_then(|annotations| annotations.read_only_hint),
-        Some(true),
-        "grm_query should not be advertised as read-only until it is constrained to read commands"
-    );
+    assert_read_only_tool_annotations(&tools);
 
     client.cancel().await.unwrap();
 }
