@@ -27,22 +27,81 @@ For an MCP client such as Ollmcp, run the compiled binary over stdio:
 }
 ```
 
+Stdio is the default transport. You can make that explicit with:
+
+```bash
+grm-mcp --transport stdio
+```
+
 The server owns one in-memory `SessionState` per process. Use
 `--autocommit-json <path>` or `--autocommit-bin <path>` if you want tool
 mutations persisted after each write. Use `--export-json <path>` if you also
 want a readable interchange graph file updated after successful mutations.
 
+### Streamable HTTP Transport
+
+For local controlled demos or local client integration, `grm-mcp` can serve MCP
+Streamable HTTP:
+
+```bash
+grm-mcp \
+  --transport http \
+  --http-bind 127.0.0.1:8080 \
+  --http-path /mcp
+```
+
+The default transport remains stdio. HTTP mode is an adapter transport for the
+same MCP tools; it is not the canonical GRM service API. The typed gRPC
+workspace service remains the service boundary for secured deployments.
+
+The HTTP server validates inbound `Host` headers. Loopback hosts are allowed by
+default. Add explicit local demo names when needed:
+
+```bash
+grm-mcp \
+  --transport http \
+  --http-bind 0.0.0.0:8080 \
+  --http-path /mcp \
+  --http-allowed-host grm-mcp-http \
+  --http-allowed-host grm-mcp-http:8080
+```
+
+Only bind or publish HTTP MCP on trusted local interfaces for this demo slice.
+The HTTP MCP adapter does not add browser authentication, OAuth, bearer-token
+auth, hosted MCP security, production PKI lifecycle, multi-tenant isolation, or
+public internet exposure.
+
 ### gRPC Workspace Service Mode
 
-To route supported MCP tools through the GRM-owned gRPC workspace service, run:
+To route supported MCP tools through the GRM-owned gRPC workspace service over
+the default stdio transport, run:
 
 ```bash
 GRM_BACKEND=grpc \
 GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
 GRM_WORKSPACE_REF=mcp-demo \
-GRM_SERVICE_WORKSPACE_MODE=create \
+GRM_SERVICE_WORKSPACE_MODE=create-or-open \
 grm-mcp
 ```
+
+The same backend can be used with Streamable HTTP:
+
+```bash
+GRM_BACKEND=grpc \
+GRM_SERVICE_ENDPOINT=https://grm-secured:50051 \
+GRM_WORKSPACE_REF=mcp-demo \
+GRM_SERVICE_WORKSPACE_MODE=create-or-open \
+GRM_SERVICE_TLS_CA_CERT=/certs/ca.pem \
+GRM_SERVICE_TLS_DOMAIN_NAME=localhost \
+GRM_SERVICE_TLS_CLIENT_CERT=/certs/mapped-client.pem \
+GRM_SERVICE_TLS_CLIENT_KEY=/certs/mapped-client-key.pem \
+grm-mcp --transport http --http-bind 127.0.0.1:8080 --http-path /mcp
+```
+
+`GRM_SERVICE_WORKSPACE_MODE` accepts `create`, `open`, or `create-or-open`.
+Use exact `create` when an existing workspace should be an error, exact `open`
+when startup should require a preexisting workspace, and `create-or-open` for
+local demo stacks that intentionally retain workspace volumes across runs.
 
 For a local TLS service, use an `https://` endpoint and set:
 
@@ -163,6 +222,10 @@ not-supported errors.
 --export-json <path>
 --autocommit-json <path>
 --autocommit-bin <path>
+--transport stdio|http
+--http-bind <host:port>
+--http-path <path>
+--http-allowed-host <host-or-host:port>
 ```
 
 ## Example Tool Calls

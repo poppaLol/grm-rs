@@ -15,8 +15,10 @@ neo4j = ["grm-rs/neo4j"]
 
 [dependencies]
 grm-rs = { path = "..", default-features = false }
+base64 = "0.22"
 libc = "0.2"
 prost = "0.13"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ring = "0.17"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
@@ -43,6 +45,10 @@ harness = false
 [[bin]]
 name = "grm-local-workspace-server"
 path = "src/bin/grm-local-workspace-server.rs"
+
+[[bin]]
+name = "grm-cert-fingerprint"
+path = "src/bin/grm-cert-fingerprint.rs"
 
 [[example]]
 name = "migrate_neo4j_to_grpc"

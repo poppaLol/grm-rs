@@ -7,7 +7,7 @@ use grm_rs::{
     GraphBackend, KernelValue, Neo4jBackend, Neo4jConfig, RuntimeField, RuntimeNodeModel,
     RuntimeRelModel, RuntimeValueType, SessionState, StoredNode, StoredRel,
 };
-use grm_service_api::proto;
+use grm_service_api::{GrpcClientTlsOptions, grpc_channel, proto};
 use serde_json::Value;
 
 #[tokio::main]
@@ -46,8 +46,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     })
     .await?;
 
-    let mut service =
-        proto::grm_service_client::GrmServiceClient::connect(options.endpoint.clone()).await?;
+    let tls = GrpcClientTlsOptions::from_env()?;
+    let channel = grpc_channel(options.endpoint.clone(), tls.as_ref()).await?;
+    let mut service = proto::grm_service_client::GrmServiceClient::new(channel);
     let workspace = proto::WorkspaceRef {
         id: options.workspace.clone(),
     };
