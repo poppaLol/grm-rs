@@ -31,6 +31,7 @@ pub(crate) struct ServiceMcpBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ServiceWorkspaceMode {
     Create,
+    CreateOrOpen,
     Open,
 }
 
@@ -38,9 +39,10 @@ impl ServiceWorkspaceMode {
     pub(crate) fn parse(raw: &str) -> GrmResult<Self> {
         match raw {
             "create" => Ok(Self::Create),
+            "create-or-open" | "create_or_open" => Ok(Self::CreateOrOpen),
             "open" => Ok(Self::Open),
             other => Err(GrmError::Constraint(format!(
-                "unsupported GRM_SERVICE_WORKSPACE_MODE '{other}'; expected 'create' or 'open'"
+                "unsupported GRM_SERVICE_WORKSPACE_MODE '{other}'; expected 'create', 'create-or-open', or 'open'"
             ))),
         }
     }
@@ -96,28 +98,21 @@ impl ServiceMcpBackend {
         let mut client = proto::grm_service_client::GrmServiceClient::new(channel);
         let format_code = format.as_proto_code();
         let handle = match mode {
-            ServiceWorkspaceMode::Create => client
-                .create_workspace(proto::WorkspaceCreateRequest {
-                    mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
-                    workspace: Some(workspace.clone()),
-                    format: format_code,
-                })
-                .await
-                .map_err(service_status_error)?
-                .into_inner()
-                .handle
-                .ok_or_else(|| missing_service_field("WorkspaceCreateResponse.handle"))?,
-            ServiceWorkspaceMode::Open => client
-                .open_workspace(proto::WorkspaceOpenRequest {
-                    snapshot: None,
-                    format: format_code,
-                    workspace: Some(workspace.clone()),
-                })
-                .await
-                .map_err(service_status_error)?
-                .into_inner()
-                .handle
-                .ok_or_else(|| missing_service_field("WorkspaceOpenResponse.handle"))?,
+            ServiceWorkspaceMode::Create => {
+                create_workspace(&mut client, workspace.clone(), format_code).await?
+            }
+            ServiceWorkspaceMode::CreateOrOpen => {
+                match create_workspace(&mut client, workspace.clone(), format_code).await {
+                    Ok(handle) => handle,
+                    Err(WorkspaceConnectError::AlreadyExists) => {
+                        open_workspace(&mut client, workspace.clone(), format_code).await?
+                    }
+                    Err(WorkspaceConnectError::Other(err)) => return Err(err),
+                }
+            }
+            ServiceWorkspaceMode::Open => {
+                open_workspace(&mut client, workspace.clone(), format_code).await?
+            }
         };
         Ok(Self {
             endpoint,
@@ -173,7 +168,7 @@ impl ServiceMcpBackend {
             },
             "recommended_startup_flow": [
                 "Start the gRPC workspace service with a configured local workspace root.",
-                "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files. Set GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME to trust a local TLS service. Set GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when the service requires mutual TLS.",
+                "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create, create-or-open, or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files. Set GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME to trust a local TLS service. Set GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when the service requires mutual TLS.",
                 "Call grm_schema_list to verify the workspace schema before writing.",
                 "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results. grm_explain and grm_profile support typed node.find and edge.find commands through ExecuteWorkspace."
             ]
@@ -431,6 +426,60 @@ impl ServiceMcpBackend {
             .map_err(service_status_error)
             .map(|response| response.into_inner())
     }
+}
+
+enum WorkspaceConnectError {
+    AlreadyExists,
+    Other(GrmError),
+}
+
+impl From<WorkspaceConnectError> for GrmError {
+    fn from(error: WorkspaceConnectError) -> Self {
+        match error {
+            WorkspaceConnectError::AlreadyExists => GrmError::Backend(
+                "gRPC service error: workspace already exists; use open mode".into(),
+            ),
+            WorkspaceConnectError::Other(err) => err,
+        }
+    }
+}
+
+async fn create_workspace(
+    client: &mut proto::grm_service_client::GrmServiceClient<Channel>,
+    workspace: proto::WorkspaceRef,
+    format_code: i32,
+) -> Result<proto::WorkspaceHandle, WorkspaceConnectError> {
+    client
+        .create_workspace(proto::WorkspaceCreateRequest {
+            mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+            workspace: Some(workspace),
+            format: format_code,
+        })
+        .await
+        .map_err(workspace_connect_status_error)?
+        .into_inner()
+        .handle
+        .ok_or_else(|| {
+            WorkspaceConnectError::Other(missing_service_field("WorkspaceCreateResponse.handle"))
+        })
+}
+
+async fn open_workspace(
+    client: &mut proto::grm_service_client::GrmServiceClient<Channel>,
+    workspace: proto::WorkspaceRef,
+    format_code: i32,
+) -> GrmResult<proto::WorkspaceHandle> {
+    client
+        .open_workspace(proto::WorkspaceOpenRequest {
+            snapshot: None,
+            format: format_code,
+            workspace: Some(workspace),
+        })
+        .await
+        .map_err(service_status_error)?
+        .into_inner()
+        .handle
+        .ok_or_else(|| missing_service_field("WorkspaceOpenResponse.handle"))
 }
 
 fn runtime_response_value(response: proto::runtime_response::Response) -> GrmResult<Value> {
@@ -993,6 +1042,14 @@ fn missing_service_field(field: &'static str) -> GrmError {
 
 fn service_status_error(status: tonic::Status) -> GrmError {
     GrmError::Backend(format!("gRPC service error: {status}"))
+}
+
+fn workspace_connect_status_error(status: tonic::Status) -> WorkspaceConnectError {
+    if status.code() == tonic::Code::AlreadyExists {
+        WorkspaceConnectError::AlreadyExists
+    } else {
+        WorkspaceConnectError::Other(service_status_error(status))
+    }
 }
 
 fn service_client_error(error: grm_service_api::GrpcWorkspaceClientError) -> GrmError {
