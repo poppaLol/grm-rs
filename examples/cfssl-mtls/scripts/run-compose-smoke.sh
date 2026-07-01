@@ -12,10 +12,11 @@ compose() {
 
 cleanup() {
   status=$?
-  compose down
+  compose --profile smoke down
   exit "$status"
 }
 trap cleanup EXIT INT TERM
 
-compose up --build -d grm-secured
+compose --profile smoke up --build -d grm-secured grm-mcp-http
 compose --profile smoke run --rm --no-deps grm-secured-smoke
+compose --profile smoke run --rm --no-deps grm-mcp-http-smoke

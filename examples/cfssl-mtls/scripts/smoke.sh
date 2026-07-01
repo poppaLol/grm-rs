@@ -32,7 +32,7 @@ run_cli() {
     unset GRM_SERVICE_TLS_CLIENT_KEY
   fi
   printf '%s\n' "$script" > "$script_file"
-  grm session --script "$script_file"
+  grm session --script "$script_file" < /dev/null
 }
 
 expect_failure() {
