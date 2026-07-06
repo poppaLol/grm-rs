@@ -5,14 +5,16 @@
 //! the monorepo later without depending on private daemon internals. The local
 //! gRPC shell is a transport proof over the in-process workspace service.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime};
 
 use base64::Engine as _;
 use ring::digest;
@@ -1310,6 +1312,299 @@ pub struct SecurityRequestContext {
     pub policy_version: Option<String>,
 }
 
+pub const SECURITY_AUDIT_SCHEMA_VERSION: u16 = 1;
+pub const DEFAULT_SECURITY_AUDIT_MAX_EVENTS: usize = 256;
+pub const DEFAULT_SECURITY_AUDIT_MAX_BYTES: usize = 256 * 1024;
+pub const DEFAULT_SECURITY_AUDIT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const SECURITY_AUDIT_MAX_FIELD_BYTES: usize = 128;
+const SECURITY_AUDIT_MAX_OPERATIONS: usize = 64;
+const SECURITY_AUDIT_MAX_EVENT_BYTES: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditMode {
+    BestEffort,
+    Mandatory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditStage {
+    Attempt,
+    Authentication,
+    Authorization,
+    Admission,
+    Runtime,
+    Durability,
+    Delivery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditDecision {
+    NotApplicable,
+    Allow,
+    Deny,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditReason {
+    RequestReceived,
+    AnonymousLocalProfile,
+    ExplicitPolicyAllow,
+    NoMatchingPermission,
+    InvalidActorAssertion,
+    AuthenticationFailed,
+    MissingPrincipal,
+    PolicyEvaluationFailed,
+    MalformedRequest,
+    ScopeRejected,
+    LimitExceeded,
+    ClassificationOverflow,
+    RuntimeSucceeded,
+    RuntimeFailed,
+    Committed,
+    NotCommitted,
+    UnknownDurability,
+    NotApplicable,
+    ResponseHandedOff,
+    UnknownDelivery,
+    SinkUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditRuntimeOutcome {
+    NotReached,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditDurabilityOutcome {
+    NotApplicable,
+    Committed,
+    NotCommitted,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditDeliveryOutcome {
+    NotReached,
+    HandedOff,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityAuditPrincipal {
+    pub issuer: String,
+    pub subject: String,
+    pub authentication_provider: String,
+    pub authentication_method: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityAuditActorAssertion {
+    pub actor_id: String,
+    pub authenticated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityAuditTransportPeer {
+    pub remote_address_present: bool,
+    pub client_certificate_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityAuditOperation {
+    pub action: SecurityAction,
+    pub resource_kind: SecurityResourceKind,
+    pub workspace: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityAuditEvent {
+    pub schema_version: u16,
+    pub event_id: u64,
+    pub request_id: u64,
+    pub service_sequence: u64,
+    pub timestamp: SystemTime,
+    pub service_identity: String,
+    pub mode: SecurityAuditMode,
+    pub stage: SecurityAuditStage,
+    pub transport_peer: SecurityAuditTransportPeer,
+    pub authenticated_principal: Option<SecurityAuditPrincipal>,
+    pub asserted_actor: Option<SecurityAuditActorAssertion>,
+    pub workspace: Option<String>,
+    pub operations: Vec<SecurityAuditOperation>,
+    pub policy_version: Option<String>,
+    pub decision: SecurityAuditDecision,
+    pub reason: SecurityAuditReason,
+    pub runtime_outcome: SecurityAuditRuntimeOutcome,
+    pub durability_outcome: SecurityAuditDurabilityOutcome,
+    pub delivery_outcome: SecurityAuditDeliveryOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditSinkError {
+    Unavailable,
+    Backpressure,
+    EventTooLarge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityAuditSinkHealth {
+    Healthy,
+    Degraded,
+}
+
+pub trait SecurityAuditSink: Send + Sync {
+    fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError>;
+
+    fn health(&self) -> SecurityAuditSinkHealth {
+        SecurityAuditSinkHealth::Healthy
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BoundedSecurityAuditSink {
+    inner: Arc<std::sync::Mutex<BoundedSecurityAuditState>>,
+    max_events: usize,
+    max_bytes: usize,
+    max_age: Duration,
+}
+
+#[derive(Debug)]
+struct BoundedSecurityAuditState {
+    events: VecDeque<SecurityAuditEvent>,
+    retained_bytes: usize,
+    degraded: bool,
+}
+
+impl BoundedSecurityAuditSink {
+    pub fn new(max_events: usize, max_bytes: usize, max_age: Duration) -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(BoundedSecurityAuditState {
+                events: VecDeque::new(),
+                retained_bytes: 0,
+                degraded: false,
+            })),
+            max_events,
+            max_bytes,
+            max_age,
+        }
+    }
+
+    pub fn default_local() -> Self {
+        Self::new(
+            DEFAULT_SECURITY_AUDIT_MAX_EVENTS,
+            DEFAULT_SECURITY_AUDIT_MAX_BYTES,
+            DEFAULT_SECURITY_AUDIT_MAX_AGE,
+        )
+    }
+
+    pub fn retained_events(&self) -> Vec<SecurityAuditEvent> {
+        self.inner
+            .lock()
+            .map(|state| state.events.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|state| state.retained_bytes)
+            .unwrap_or_default()
+    }
+
+    pub fn retention_limits(&self) -> (usize, usize, Duration) {
+        (self.max_events, self.max_bytes, self.max_age)
+    }
+}
+
+impl Default for BoundedSecurityAuditSink {
+    fn default() -> Self {
+        Self::default_local()
+    }
+}
+
+impl SecurityAuditSink for BoundedSecurityAuditSink {
+    fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError> {
+        let event_size = security_audit_event_size(&event);
+        if event_size > SECURITY_AUDIT_MAX_EVENT_BYTES || event_size > self.max_bytes {
+            return Err(SecurityAuditSinkError::EventTooLarge);
+        }
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| SecurityAuditSinkError::Unavailable)?;
+        let cutoff = event.timestamp.checked_sub(self.max_age);
+        while state.events.len() >= self.max_events
+            || state.retained_bytes + event_size > self.max_bytes
+            || cutoff.is_some_and(|cutoff| {
+                state
+                    .events
+                    .front()
+                    .is_some_and(|retained| retained.timestamp < cutoff)
+            })
+        {
+            let Some(expired) = state.events.pop_front() else {
+                break;
+            };
+            state.retained_bytes = state
+                .retained_bytes
+                .saturating_sub(security_audit_event_size(&expired));
+        }
+        if state.retained_bytes + event_size > self.max_bytes
+            || state.events.len() >= self.max_events
+        {
+            state.degraded = true;
+            return Err(SecurityAuditSinkError::Backpressure);
+        }
+        state.retained_bytes += event_size;
+        state.events.push_back(event);
+        state.degraded = false;
+        Ok(())
+    }
+
+    fn health(&self) -> SecurityAuditSinkHealth {
+        self.inner
+            .lock()
+            .map(|state| {
+                if state.degraded {
+                    SecurityAuditSinkHealth::Degraded
+                } else {
+                    SecurityAuditSinkHealth::Healthy
+                }
+            })
+            .unwrap_or(SecurityAuditSinkHealth::Degraded)
+    }
+}
+
+fn security_audit_event_size(event: &SecurityAuditEvent) -> usize {
+    let mut size = std::mem::size_of::<SecurityAuditEvent>() + event.service_identity.len();
+    if let Some(principal) = &event.authenticated_principal {
+        size += principal.issuer.len()
+            + principal.subject.len()
+            + principal.authentication_provider.len()
+            + principal.authentication_method.len();
+    }
+    if let Some(actor) = &event.asserted_actor {
+        size += actor.actor_id.len();
+    }
+    if let Some(workspace) = &event.workspace {
+        size += workspace.len();
+    }
+    if let Some(policy_version) = &event.policy_version {
+        size += policy_version.len();
+    }
+    for operation in &event.operations {
+        size += operation.workspace.len();
+        if let Some(model) = &operation.model {
+            size += model.len();
+        }
+    }
+    size
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizationReason {
     AnonymousLocalProfile,
@@ -2101,6 +2396,7 @@ pub struct ServiceSecurityConfig {
     authenticator: Arc<dyn ApplicationAuthenticator>,
     policy: Arc<dyn AuthorizationPolicy>,
     max_batch_operations: usize,
+    audit_sink: Arc<dyn SecurityAuditSink>,
 }
 
 impl ServiceSecurityConfig {
@@ -2116,6 +2412,7 @@ impl ServiceSecurityConfig {
             authenticator: Arc::new(NoApplicationAuthenticator),
             policy: Arc::new(AnonymousLocalPolicy),
             max_batch_operations: usize::MAX,
+            audit_sink: Arc::new(BoundedSecurityAuditSink::default_local()),
         }
     }
 
@@ -2131,6 +2428,7 @@ impl ServiceSecurityConfig {
             authenticator: Arc::new(NoApplicationAuthenticator),
             policy: Arc::new(AnonymousLocalPolicy),
             max_batch_operations: usize::MAX,
+            audit_sink: Arc::new(BoundedSecurityAuditSink::default_local()),
         }
     }
 
@@ -2140,6 +2438,7 @@ impl ServiceSecurityConfig {
             authenticator: Arc::new(NoApplicationAuthenticator),
             policy: Arc::new(DefaultDenyPolicy),
             max_batch_operations: 128,
+            audit_sink: Arc::new(BoundedSecurityAuditSink::default_local()),
         }
     }
 
@@ -2173,6 +2472,11 @@ impl ServiceSecurityConfig {
 
     pub fn with_max_batch_operations(mut self, max_batch_operations: usize) -> Self {
         self.max_batch_operations = max_batch_operations;
+        self
+    }
+
+    pub fn with_audit_sink(mut self, audit_sink: Arc<dyn SecurityAuditSink>) -> Self {
+        self.audit_sink = audit_sink;
         self
     }
 
@@ -2359,6 +2663,10 @@ fn transport_peer_is_loopback(peer: &TransportPeer) -> bool {
 pub struct GrpcWorkspaceService {
     inner: Arc<Mutex<InProcessWorkspaceService>>,
     security: ServiceSecurityConfig,
+    next_audit_request_id: Arc<AtomicU64>,
+    next_audit_event_id: Arc<AtomicU64>,
+    next_audit_sequence: Arc<AtomicU64>,
+    audit_degraded: Arc<AtomicBool>,
 }
 
 impl GrpcWorkspaceService {
@@ -2366,6 +2674,10 @@ impl GrpcWorkspaceService {
         Self {
             inner: Arc::new(Mutex::new(InProcessWorkspaceService::new())),
             security,
+            next_audit_request_id: Arc::new(AtomicU64::new(1)),
+            next_audit_event_id: Arc::new(AtomicU64::new(1)),
+            next_audit_sequence: Arc::new(AtomicU64::new(1)),
+            audit_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -2386,6 +2698,10 @@ impl GrpcWorkspaceService {
         Self {
             inner: Arc::new(Mutex::new(service)),
             security,
+            next_audit_request_id: Arc::new(AtomicU64::new(1)),
+            next_audit_event_id: Arc::new(AtomicU64::new(1)),
+            next_audit_sequence: Arc::new(AtomicU64::new(1)),
+            audit_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -2426,6 +2742,104 @@ impl GrpcWorkspaceService {
         Ok((transport_peer, authenticated_principal, asserted_actor))
     }
 
+    fn audit_mode(&self) -> SecurityAuditMode {
+        match self.security.profile {
+            ServiceSecurityProfile::Secured => SecurityAuditMode::Mandatory,
+            ServiceSecurityProfile::AnonymousLocal
+            | ServiceSecurityProfile::DockerLocalInsecure => SecurityAuditMode::BestEffort,
+        }
+    }
+
+    fn ensure_mandatory_audit_available(&self) -> Result<(), SecurityEnforcementError> {
+        if self.security.profile != ServiceSecurityProfile::Secured {
+            return Ok(());
+        }
+        if !self.audit_degraded.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.security.audit_sink.health() == SecurityAuditSinkHealth::Healthy {
+            self.audit_degraded.store(false, Ordering::Release);
+            return Ok(());
+        }
+        Err(SecurityEnforcementError::AuditSinkUnavailable)
+    }
+
+    fn start_audit_request(&self) -> SecurityAuditRequest {
+        SecurityAuditRequest {
+            request_id: self.next_audit_request_id.fetch_add(1, Ordering::Relaxed),
+            service_identity: "grm-local-workspace-service".into(),
+            mode: self.audit_mode(),
+            transport_peer: SecurityAuditTransportPeer {
+                remote_address_present: false,
+                client_certificate_present: false,
+            },
+            authenticated_principal: None,
+            asserted_actor: None,
+            workspace: None,
+            operations: Vec::new(),
+            policy_version: self.security.policy.policy_version().map(str::to_owned),
+        }
+    }
+
+    fn audit_append(
+        &self,
+        request: &SecurityAuditRequest,
+        mut event: SecurityAuditEvent,
+    ) -> Result<(), SecurityEnforcementError> {
+        event.event_id = self.next_audit_event_id.fetch_add(1, Ordering::Relaxed);
+        event.service_sequence = self.next_audit_sequence.fetch_add(1, Ordering::Relaxed);
+        match self.security.audit_sink.append(event) {
+            Ok(()) => Ok(()),
+            Err(_) if request.mode == SecurityAuditMode::BestEffort => Ok(()),
+            Err(_) => Err(SecurityEnforcementError::AuditSinkUnavailable),
+        }
+    }
+
+    fn audit_append_post_effect(&self, request: &SecurityAuditRequest, event: SecurityAuditEvent) {
+        if self.audit_append(request, event).is_err()
+            && request.mode == SecurityAuditMode::Mandatory
+        {
+            self.audit_degraded.store(true, Ordering::Release);
+            let emergency = self.audit_event(
+                request,
+                SecurityAuditStage::Delivery,
+                SecurityAuditDecision::Error,
+                SecurityAuditReason::SinkUnavailable,
+            );
+            let _ = self.audit_append(request, emergency);
+        }
+    }
+
+    fn audit_event(
+        &self,
+        request: &SecurityAuditRequest,
+        stage: SecurityAuditStage,
+        decision: SecurityAuditDecision,
+        reason: SecurityAuditReason,
+    ) -> SecurityAuditEvent {
+        SecurityAuditEvent {
+            schema_version: SECURITY_AUDIT_SCHEMA_VERSION,
+            event_id: 0,
+            request_id: request.request_id,
+            service_sequence: 0,
+            timestamp: SystemTime::now(),
+            service_identity: request.service_identity.clone(),
+            mode: request.mode,
+            stage,
+            transport_peer: request.transport_peer.clone(),
+            authenticated_principal: request.authenticated_principal.clone(),
+            asserted_actor: request.asserted_actor.clone(),
+            workspace: request.workspace.clone(),
+            operations: request.operations.clone(),
+            policy_version: request.policy_version.clone(),
+            decision,
+            reason,
+            runtime_outcome: SecurityAuditRuntimeOutcome::NotReached,
+            durability_outcome: SecurityAuditDurabilityOutcome::NotApplicable,
+            delivery_outcome: SecurityAuditDeliveryOutcome::NotReached,
+        }
+    }
+
     fn authorize(
         &self,
         transport_peer: TransportPeer,
@@ -2433,7 +2847,7 @@ impl GrpcWorkspaceService {
         asserted_actor: Option<ActorAssertion>,
         workspace: String,
         operations: Vec<SecurityOperation>,
-    ) -> Result<(), SecurityEnforcementError> {
+    ) -> Result<AuthorizationDecision, SecurityEnforcementError> {
         let context = SecurityRequestContext {
             transport_peer,
             authenticated_principal,
@@ -2443,15 +2857,287 @@ impl GrpcWorkspaceService {
             operations,
             policy_version: self.security.policy.policy_version().map(str::to_owned),
         };
-        match self
-            .security
+        self.security
             .policy
             .evaluate(&context)
-            .map_err(|_| SecurityEnforcementError::PolicyEvaluationFailed)?
-        {
-            AuthorizationDecision::Allow { .. } => Ok(()),
-            AuthorizationDecision::Deny { .. } => Err(SecurityEnforcementError::Denied),
+            .map_err(|_| SecurityEnforcementError::PolicyEvaluationFailed)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SecurityAuditRequest {
+    request_id: u64,
+    service_identity: String,
+    mode: SecurityAuditMode,
+    transport_peer: SecurityAuditTransportPeer,
+    authenticated_principal: Option<SecurityAuditPrincipal>,
+    asserted_actor: Option<SecurityAuditActorAssertion>,
+    workspace: Option<String>,
+    operations: Vec<SecurityAuditOperation>,
+    policy_version: Option<String>,
+}
+
+fn audit_transport_peer(peer: &TransportPeer) -> SecurityAuditTransportPeer {
+    SecurityAuditTransportPeer {
+        remote_address_present: peer.remote_address.is_some(),
+        client_certificate_present: peer.client_certificate_present,
+    }
+}
+
+fn audit_principal(
+    principal: Option<&Principal>,
+) -> Result<Option<SecurityAuditPrincipal>, SecurityEnforcementError> {
+    principal
+        .map(|principal| {
+            Ok(SecurityAuditPrincipal {
+                issuer: bounded_audit_field(&principal.issuer)?,
+                subject: bounded_audit_field(&principal.subject)?,
+                authentication_provider: bounded_audit_field(&principal.authentication_method)?,
+                authentication_method: bounded_audit_field(&principal.authentication_method)?,
+            })
+        })
+        .transpose()
+}
+
+fn audit_actor(
+    actor: Option<&ActorAssertion>,
+) -> Result<Option<SecurityAuditActorAssertion>, SecurityEnforcementError> {
+    actor
+        .map(|actor| {
+            Ok(SecurityAuditActorAssertion {
+                actor_id: bounded_audit_field(&actor.actor_id)?,
+                authenticated: false,
+            })
+        })
+        .transpose()
+}
+
+fn populate_audit_identity(
+    audit: &mut SecurityAuditRequest,
+    principal: Option<&Principal>,
+    actor: Option<&ActorAssertion>,
+) -> Result<(), SecurityEnforcementError> {
+    audit.authenticated_principal = audit_principal(principal)?;
+    audit.asserted_actor = audit_actor(actor)?;
+    Ok(())
+}
+
+fn audit_operations(
+    operations: &[SecurityOperation],
+) -> Result<Vec<SecurityAuditOperation>, SecurityEnforcementError> {
+    if operations.len() > SECURITY_AUDIT_MAX_OPERATIONS {
+        return Err(SecurityEnforcementError::AuditClassificationOverflow);
+    }
+    operations
+        .iter()
+        .map(|operation| {
+            Ok(SecurityAuditOperation {
+                action: operation.action,
+                resource_kind: operation.resource.kind,
+                workspace: bounded_audit_field(&operation.resource.workspace)?,
+                model: operation
+                    .resource
+                    .model
+                    .as_ref()
+                    .map(|model| bounded_audit_field(model))
+                    .transpose()?,
+            })
+        })
+        .collect()
+}
+
+fn bounded_audit_field(value: &str) -> Result<String, SecurityEnforcementError> {
+    if value.len() > SECURITY_AUDIT_MAX_FIELD_BYTES {
+        return Err(SecurityEnforcementError::AuditClassificationOverflow);
+    }
+    Ok(value.to_owned())
+}
+
+fn audit_reason_from_authorization(reason: AuthorizationReason) -> SecurityAuditReason {
+    match reason {
+        AuthorizationReason::AnonymousLocalProfile => SecurityAuditReason::AnonymousLocalProfile,
+        AuthorizationReason::ExplicitPolicyAllow => SecurityAuditReason::ExplicitPolicyAllow,
+        AuthorizationReason::NoMatchingPermission => SecurityAuditReason::NoMatchingPermission,
+    }
+}
+
+fn transport_peer_from_request<T>(request: &Request<T>) -> TransportPeer {
+    let peer_certs = request.peer_certs();
+    let client_certificate_leaf_der = peer_certs
+        .as_ref()
+        .and_then(|certificates| certificates.first())
+        .map(|certificate| certificate.as_ref().to_vec());
+    TransportPeer {
+        remote_address: request.remote_addr().map(|address| address.to_string()),
+        client_certificate_present: client_certificate_leaf_der.is_some(),
+        client_certificate_leaf_der,
+    }
+}
+
+fn audit_security_error(
+    service: &GrpcWorkspaceService,
+    request: &SecurityAuditRequest,
+    stage: SecurityAuditStage,
+    error: SecurityEnforcementError,
+) -> Status {
+    let reason = match error {
+        SecurityEnforcementError::AnonymousLocalRemotePeer | SecurityEnforcementError::Denied => {
+            SecurityAuditReason::NoMatchingPermission
         }
+        SecurityEnforcementError::InvalidActorAssertion => {
+            SecurityAuditReason::InvalidActorAssertion
+        }
+        SecurityEnforcementError::AuthenticationFailed => SecurityAuditReason::AuthenticationFailed,
+        SecurityEnforcementError::MissingPrincipal => SecurityAuditReason::MissingPrincipal,
+        SecurityEnforcementError::PolicyEvaluationFailed => {
+            SecurityAuditReason::PolicyEvaluationFailed
+        }
+        SecurityEnforcementError::AuditClassificationOverflow => {
+            SecurityAuditReason::ClassificationOverflow
+        }
+        SecurityEnforcementError::AuditSinkUnavailable => SecurityAuditReason::SinkUnavailable,
+    };
+    let decision = match error {
+        SecurityEnforcementError::AuthenticationFailed
+        | SecurityEnforcementError::MissingPrincipal => SecurityAuditDecision::Deny,
+        SecurityEnforcementError::PolicyEvaluationFailed
+        | SecurityEnforcementError::AuditSinkUnavailable => SecurityAuditDecision::Error,
+        _ => SecurityAuditDecision::Deny,
+    };
+    if let Err(audit_error) = service.audit_append(
+        request,
+        service.audit_event(request, stage, decision, reason),
+    ) {
+        return security_status(audit_error);
+    }
+    security_status(error)
+}
+
+fn audit_status_error(
+    service: &GrpcWorkspaceService,
+    request: &SecurityAuditRequest,
+    stage: SecurityAuditStage,
+    decision: SecurityAuditDecision,
+    reason: SecurityAuditReason,
+    status: Status,
+) -> Status {
+    if let Err(audit_error) = service.audit_append(
+        request,
+        service.audit_event(request, stage, decision, reason),
+    ) {
+        return security_status(audit_error);
+    }
+    status
+}
+
+fn audit_authorization_decision(
+    service: &GrpcWorkspaceService,
+    request: &SecurityAuditRequest,
+    decision: AuthorizationDecision,
+) -> Result<(), SecurityEnforcementError> {
+    match decision {
+        AuthorizationDecision::Allow { reason } => service.audit_append(
+            request,
+            service.audit_event(
+                request,
+                SecurityAuditStage::Authorization,
+                SecurityAuditDecision::Allow,
+                audit_reason_from_authorization(reason),
+            ),
+        ),
+        AuthorizationDecision::Deny { reason } => {
+            service.audit_append(
+                request,
+                service.audit_event(
+                    request,
+                    SecurityAuditStage::Authorization,
+                    SecurityAuditDecision::Deny,
+                    audit_reason_from_authorization(reason),
+                ),
+            )?;
+            Err(SecurityEnforcementError::Denied)
+        }
+    }
+}
+
+fn audit_admission_allow(
+    service: &GrpcWorkspaceService,
+    request: &SecurityAuditRequest,
+) -> Result<(), SecurityEnforcementError> {
+    service.audit_append(
+        request,
+        service.audit_event(
+            request,
+            SecurityAuditStage::Admission,
+            SecurityAuditDecision::Allow,
+            SecurityAuditReason::ExplicitPolicyAllow,
+        ),
+    )
+}
+
+fn audit_runtime_success(service: &GrpcWorkspaceService, request: &SecurityAuditRequest) {
+    let mut event = service.audit_event(
+        request,
+        SecurityAuditStage::Runtime,
+        SecurityAuditDecision::Allow,
+        SecurityAuditReason::RuntimeSucceeded,
+    );
+    event.runtime_outcome = SecurityAuditRuntimeOutcome::Succeeded;
+    service.audit_append_post_effect(request, event);
+}
+
+fn audit_runtime_failure(
+    service: &GrpcWorkspaceService,
+    request: &SecurityAuditRequest,
+    durability: SecurityAuditDurabilityOutcome,
+) {
+    let mut event = service.audit_event(
+        request,
+        SecurityAuditStage::Runtime,
+        SecurityAuditDecision::Error,
+        SecurityAuditReason::RuntimeFailed,
+    );
+    event.runtime_outcome = SecurityAuditRuntimeOutcome::Failed;
+    event.durability_outcome = durability;
+    service.audit_append_post_effect(request, event);
+}
+
+fn audit_durability(
+    service: &GrpcWorkspaceService,
+    request: &SecurityAuditRequest,
+    durability: SecurityAuditDurabilityOutcome,
+) {
+    let reason = match durability {
+        SecurityAuditDurabilityOutcome::NotApplicable => SecurityAuditReason::NotApplicable,
+        SecurityAuditDurabilityOutcome::Committed => SecurityAuditReason::Committed,
+        SecurityAuditDurabilityOutcome::NotCommitted => SecurityAuditReason::NotCommitted,
+        SecurityAuditDurabilityOutcome::Unknown => SecurityAuditReason::UnknownDurability,
+    };
+    let mut event = service.audit_event(
+        request,
+        SecurityAuditStage::Durability,
+        SecurityAuditDecision::NotApplicable,
+        reason,
+    );
+    event.durability_outcome = durability;
+    service.audit_append_post_effect(request, event);
+}
+
+fn audit_delivery_handoff(service: &GrpcWorkspaceService, request: &SecurityAuditRequest) {
+    let mut event = service.audit_event(
+        request,
+        SecurityAuditStage::Delivery,
+        SecurityAuditDecision::NotApplicable,
+        SecurityAuditReason::ResponseHandedOff,
+    );
+    event.delivery_outcome = SecurityAuditDeliveryOutcome::HandedOff;
+    service.audit_append_post_effect(request, event);
+}
+
+fn workspace_create_durability(request: &WorkspaceCreateRequest) -> SecurityAuditDurabilityOutcome {
+    match request.mode {
+        WorkspaceCreateMode::InMemory => SecurityAuditDurabilityOutcome::NotApplicable,
+        WorkspaceCreateMode::LocalAutocommit => SecurityAuditDurabilityOutcome::Committed,
     }
 }
 
@@ -2461,25 +3147,89 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCreateRequest>,
     ) -> Result<Response<proto::WorkspaceCreateResponse>, Status> {
-        let (transport_peer, authenticated_principal, asserted_actor) = self
-            .request_security_inputs(&request)
+        let mut audit = self.start_audit_request();
+        audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
+        self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
-        let request: WorkspaceCreateRequest =
-            request.into_inner().try_into().map_err(proto_status)?;
-        self.authorize(
-            transport_peer,
-            authenticated_principal,
-            asserted_actor,
-            "service".into(),
-            vec![service_security_operation(SecurityAction::WorkspaceCreate)],
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Attempt,
+                SecurityAuditDecision::NotApplicable,
+                SecurityAuditReason::RequestReceived,
+            ),
         )
         .map_err(security_status)?;
-        let response = self
-            .inner
-            .lock()
-            .await
-            .create_workspace(request)
-            .map_err(workspace_status)?;
+        let (transport_peer, authenticated_principal, asserted_actor) =
+            self.request_security_inputs(&request).map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+            })?;
+        audit.transport_peer = audit_transport_peer(&transport_peer);
+        populate_audit_identity(
+            &mut audit,
+            authenticated_principal.as_ref(),
+            asserted_actor.as_ref(),
+        )
+        .map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+        })?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Authentication,
+                SecurityAuditDecision::Allow,
+                SecurityAuditReason::ExplicitPolicyAllow,
+            ),
+        )
+        .map_err(security_status)?;
+        let request: WorkspaceCreateRequest = request.into_inner().try_into().map_err(|error| {
+            audit_status_error(
+                self,
+                &audit,
+                SecurityAuditStage::Admission,
+                SecurityAuditDecision::Error,
+                SecurityAuditReason::MalformedRequest,
+                proto_status(error),
+            )
+        })?;
+        let durability = workspace_create_durability(&request);
+        let operations = vec![service_security_operation(SecurityAction::WorkspaceCreate)];
+        audit.workspace = Some("service".into());
+        audit.operations = audit_operations(&operations).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?;
+        let decision = self
+            .authorize(
+                transport_peer,
+                authenticated_principal,
+                asserted_actor,
+                "service".into(),
+                operations,
+            )
+            .map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authorization, error)
+            })?;
+        audit_authorization_decision(self, &audit, decision).map_err(security_status)?;
+        audit_admission_allow(self, &audit).map_err(security_status)?;
+        let response = match self.inner.lock().await.create_workspace(request) {
+            Ok(response) => response,
+            Err(error) => {
+                let mut event = self.audit_event(
+                    &audit,
+                    SecurityAuditStage::Runtime,
+                    SecurityAuditDecision::Error,
+                    SecurityAuditReason::RuntimeFailed,
+                );
+                event.runtime_outcome = SecurityAuditRuntimeOutcome::Failed;
+                event.durability_outcome = SecurityAuditDurabilityOutcome::NotCommitted;
+                self.audit_append_post_effect(&audit, event);
+                return Err(workspace_status(error));
+            }
+        };
+        audit_runtime_success(self, &audit);
+        audit_durability(self, &audit, durability);
         log_workspace_lifecycle(
             response
                 .workspace
@@ -2488,6 +3238,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
                 .unwrap_or(response.handle.id.as_str()),
             "workspace.create",
         );
+        audit_delivery_handoff(self, &audit);
         Ok(Response::new(response.into()))
     }
 
@@ -2495,11 +3246,53 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceOpenRequest>,
     ) -> Result<Response<proto::WorkspaceOpenResponse>, Status> {
-        let (transport_peer, authenticated_principal, asserted_actor) = self
-            .request_security_inputs(&request)
+        let mut audit = self.start_audit_request();
+        audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
+        self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
-        let request: WorkspaceOpenRequest =
-            request.into_inner().try_into().map_err(proto_status)?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Attempt,
+                SecurityAuditDecision::NotApplicable,
+                SecurityAuditReason::RequestReceived,
+            ),
+        )
+        .map_err(security_status)?;
+        let (transport_peer, authenticated_principal, asserted_actor) =
+            self.request_security_inputs(&request).map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+            })?;
+        audit.transport_peer = audit_transport_peer(&transport_peer);
+        populate_audit_identity(
+            &mut audit,
+            authenticated_principal.as_ref(),
+            asserted_actor.as_ref(),
+        )
+        .map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+        })?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Authentication,
+                SecurityAuditDecision::Allow,
+                SecurityAuditReason::ExplicitPolicyAllow,
+            ),
+        )
+        .map_err(security_status)?;
+        let request: WorkspaceOpenRequest = request.into_inner().try_into().map_err(|error| {
+            audit_status_error(
+                self,
+                &audit,
+                SecurityAuditStage::Admission,
+                SecurityAuditDecision::Error,
+                SecurityAuditReason::MalformedRequest,
+                proto_status(error),
+            )
+        })?;
         let workspace = request
             .workspace
             .as_ref()
@@ -2511,23 +3304,38 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
                     .map(|snapshot| snapshot.id.clone())
             })
             .unwrap_or_else(|| "unknown-workspace".into());
-        self.authorize(
-            transport_peer,
-            authenticated_principal,
-            asserted_actor,
-            workspace.clone(),
-            vec![workspace_security_operation(
-                SecurityAction::WorkspaceOpen,
-                &workspace,
-            )],
-        )
-        .map_err(security_status)?;
-        let response = self
-            .inner
-            .lock()
-            .await
-            .open_workspace(request)
-            .map_err(workspace_status)?;
+        let operations = vec![workspace_security_operation(
+            SecurityAction::WorkspaceOpen,
+            &workspace,
+        )];
+        audit.workspace = Some(bounded_audit_field(&workspace).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?);
+        audit.operations = audit_operations(&operations).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?;
+        let decision = self
+            .authorize(
+                transport_peer,
+                authenticated_principal,
+                asserted_actor,
+                workspace.clone(),
+                operations,
+            )
+            .map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authorization, error)
+            })?;
+        audit_authorization_decision(self, &audit, decision).map_err(security_status)?;
+        audit_admission_allow(self, &audit).map_err(security_status)?;
+        let response = match self.inner.lock().await.open_workspace(request) {
+            Ok(response) => response,
+            Err(error) => {
+                audit_runtime_failure(self, &audit, SecurityAuditDurabilityOutcome::NotCommitted);
+                return Err(workspace_status(error));
+            }
+        };
+        audit_runtime_success(self, &audit);
+        audit_durability(self, &audit, SecurityAuditDurabilityOutcome::NotApplicable);
         log_workspace_lifecycle(
             response
                 .workspace
@@ -2536,6 +3344,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
                 .unwrap_or(response.handle.id.as_str()),
             "workspace.open",
         );
+        audit_delivery_handoff(self, &audit);
         Ok(Response::new(response.into()))
     }
 
@@ -2543,39 +3352,122 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceRuntimeRequest>,
     ) -> Result<Response<proto::WorkspaceRuntimeResponse>, Status> {
-        let (transport_peer, authenticated_principal, asserted_actor) = self
-            .request_security_inputs(&request)
+        let mut audit = self.start_audit_request();
+        audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
+        self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Attempt,
+                SecurityAuditDecision::NotApplicable,
+                SecurityAuditReason::RequestReceived,
+            ),
+        )
+        .map_err(security_status)?;
+        let (transport_peer, authenticated_principal, asserted_actor) =
+            self.request_security_inputs(&request).map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+            })?;
+        audit.transport_peer = audit_transport_peer(&transport_peer);
+        populate_audit_identity(
+            &mut audit,
+            authenticated_principal.as_ref(),
+            asserted_actor.as_ref(),
+        )
+        .map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+        })?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Authentication,
+                SecurityAuditDecision::Allow,
+                SecurityAuditReason::ExplicitPolicyAllow,
+            ),
+        )
+        .map_err(security_status)?;
         let request: WorkspaceRuntimeRequest =
-            request.into_inner().try_into().map_err(proto_status)?;
+            request.into_inner().try_into().map_err(|error| {
+                audit_status_error(
+                    self,
+                    &audit,
+                    SecurityAuditStage::Admission,
+                    SecurityAuditDecision::Error,
+                    SecurityAuditReason::MalformedRequest,
+                    proto_status(error),
+                )
+            })?;
         let mut service = self.inner.lock().await;
         let workspace = service.workspace_log_name(&request.handle);
         if self.security.profile == ServiceSecurityProfile::Secured {
-            validate_secured_operation_scope(&request.request)
-                .map_err(|_| Status::invalid_argument("secured traversal requires edge_model"))?;
+            validate_secured_operation_scope(&request.request).map_err(|_| {
+                audit_status_error(
+                    self,
+                    &audit,
+                    SecurityAuditStage::Admission,
+                    SecurityAuditDecision::Deny,
+                    SecurityAuditReason::ScopeRejected,
+                    Status::invalid_argument("secured traversal requires edge_model"),
+                )
+            })?;
         }
         let operations = security_operations(&request.request, &workspace);
-        self.authorize(
-            transport_peer,
-            authenticated_principal,
-            asserted_actor,
-            workspace.clone(),
-            operations,
-        )
-        .map_err(security_status)?;
+        audit.workspace = Some(bounded_audit_field(&workspace).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?);
+        audit.operations = audit_operations(&operations).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?;
+        let decision = self
+            .authorize(
+                transport_peer,
+                authenticated_principal,
+                asserted_actor,
+                workspace.clone(),
+                operations,
+            )
+            .map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authorization, error)
+            })?;
+        audit_authorization_decision(self, &audit, decision).map_err(security_status)?;
         service
             .workspace(&request.handle)
             .map_err(workspace_status)?;
-        enforce_security_limits(&request.request, self.security.max_batch_operations)
-            .map_err(|_| Status::resource_exhausted("batch operation limit exceeded"))?;
-        let response = service
-            .execute_runtime(request)
-            .await
-            .map_err(workspace_status)?;
+        enforce_security_limits(&request.request, self.security.max_batch_operations).map_err(
+            |_| {
+                audit_status_error(
+                    self,
+                    &audit,
+                    SecurityAuditStage::Admission,
+                    SecurityAuditDecision::Deny,
+                    SecurityAuditReason::LimitExceeded,
+                    Status::resource_exhausted("batch operation limit exceeded"),
+                )
+            },
+        )?;
+        audit_admission_allow(self, &audit).map_err(security_status)?;
+        let response = match service.execute_runtime(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                audit_runtime_failure(self, &audit, SecurityAuditDurabilityOutcome::NotCommitted);
+                return Err(workspace_status(error));
+            }
+        };
         let summary = WorkspaceOperationSummary::from_response(&response.response);
+        let durability = if response.durable_operations.is_empty() {
+            SecurityAuditDurabilityOutcome::NotApplicable
+        } else {
+            SecurityAuditDurabilityOutcome::Committed
+        };
         drop(service);
         let response = response.try_into().map_err(proto_status)?;
+        audit_runtime_success(self, &audit);
+        audit_durability(self, &audit, durability);
         println!("{}", summary.render(&workspace));
+        audit_delivery_handoff(self, &audit);
         Ok(Response::new(response))
     }
 
@@ -2583,30 +3475,93 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCloseRequest>,
     ) -> Result<Response<proto::WorkspaceCloseResponse>, Status> {
-        let (transport_peer, authenticated_principal, asserted_actor) = self
-            .request_security_inputs(&request)
+        let mut audit = self.start_audit_request();
+        audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
+        self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
-        let request: WorkspaceCloseRequest =
-            request.into_inner().try_into().map_err(proto_status)?;
-        let mut service = self.inner.lock().await;
-        let workspace = service.workspace_log_name(&request.handle);
-        self.authorize(
-            transport_peer,
-            authenticated_principal,
-            asserted_actor,
-            workspace.clone(),
-            vec![workspace_security_operation(
-                SecurityAction::WorkspaceClose,
-                &workspace,
-            )],
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Attempt,
+                SecurityAuditDecision::NotApplicable,
+                SecurityAuditReason::RequestReceived,
+            ),
         )
         .map_err(security_status)?;
+        let (transport_peer, authenticated_principal, asserted_actor) =
+            self.request_security_inputs(&request).map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+            })?;
+        audit.transport_peer = audit_transport_peer(&transport_peer);
+        populate_audit_identity(
+            &mut audit,
+            authenticated_principal.as_ref(),
+            asserted_actor.as_ref(),
+        )
+        .map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+        })?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Authentication,
+                SecurityAuditDecision::Allow,
+                SecurityAuditReason::ExplicitPolicyAllow,
+            ),
+        )
+        .map_err(security_status)?;
+        let request: WorkspaceCloseRequest = request.into_inner().try_into().map_err(|error| {
+            audit_status_error(
+                self,
+                &audit,
+                SecurityAuditStage::Admission,
+                SecurityAuditDecision::Error,
+                SecurityAuditReason::MalformedRequest,
+                proto_status(error),
+            )
+        })?;
+        let mut service = self.inner.lock().await;
+        let workspace = service.workspace_log_name(&request.handle);
+        let operations = vec![workspace_security_operation(
+            SecurityAction::WorkspaceClose,
+            &workspace,
+        )];
+        audit.workspace = Some(bounded_audit_field(&workspace).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?);
+        audit.operations = audit_operations(&operations).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?;
+        let decision = self
+            .authorize(
+                transport_peer,
+                authenticated_principal,
+                asserted_actor,
+                workspace.clone(),
+                operations,
+            )
+            .map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authorization, error)
+            })?;
+        audit_authorization_decision(self, &audit, decision).map_err(security_status)?;
         service
             .workspace(&request.handle)
             .map_err(workspace_status)?;
-        let response = service.close_workspace(request).map_err(workspace_status)?;
+        audit_admission_allow(self, &audit).map_err(security_status)?;
+        let response = match service.close_workspace(request) {
+            Ok(response) => response,
+            Err(error) => {
+                audit_runtime_failure(self, &audit, SecurityAuditDurabilityOutcome::NotCommitted);
+                return Err(workspace_status(error));
+            }
+        };
         drop(service);
+        audit_runtime_success(self, &audit);
+        audit_durability(self, &audit, SecurityAuditDurabilityOutcome::NotApplicable);
         log_workspace_lifecycle(&workspace, "workspace.close");
+        audit_delivery_handoff(self, &audit);
         Ok(Response::new(response.into()))
     }
 
@@ -2918,6 +3873,8 @@ enum SecurityEnforcementError {
     MissingPrincipal,
     PolicyEvaluationFailed,
     Denied,
+    AuditClassificationOverflow,
+    AuditSinkUnavailable,
 }
 
 fn security_status(error: SecurityEnforcementError) -> Status {
@@ -2938,6 +3895,12 @@ fn security_status(error: SecurityEnforcementError) -> Status {
             Status::unavailable("authorization policy evaluation failed")
         }
         SecurityEnforcementError::Denied => Status::permission_denied("authorization denied"),
+        SecurityEnforcementError::AuditClassificationOverflow => {
+            Status::invalid_argument("audit classification exceeds bounded security audit limits")
+        }
+        SecurityEnforcementError::AuditSinkUnavailable => {
+            Status::unavailable("authoritative security audit sink unavailable")
+        }
     }
 }
 
