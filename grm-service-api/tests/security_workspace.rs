@@ -1,13 +1,19 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use grm_service_api::{
     ApplicationAuthenticator, AuthenticationError, AuthorizationDecision, AuthorizationPolicy,
-    AuthorizationReason, GrpcWorkspaceService, Permission, PermissionAssignment, PermissionRole,
-    PermissionScope, PermissionTableConfig, PermissionTablePolicy, PolicyEvaluationError,
-    Principal, ResourceSelector, RolePermissionAssignment, RolePermissionTableConfig,
-    SecurityAction, SecurityRequestContext, SecurityResourceKind, ServiceSecurityConfig,
-    TransportPeer, proto,
+    AuthorizationReason, BoundedSecurityAuditSink, GrpcWorkspaceService, Permission,
+    PermissionAssignment, PermissionRole, PermissionScope, PermissionTableConfig,
+    PermissionTablePolicy, PolicyEvaluationError, Principal, ResourceSelector,
+    RolePermissionAssignment, RolePermissionTableConfig, SecurityAction, SecurityAuditDecision,
+    SecurityAuditDeliveryOutcome, SecurityAuditDurabilityOutcome, SecurityAuditEvent,
+    SecurityAuditMode, SecurityAuditReason, SecurityAuditRuntimeOutcome, SecurityAuditSink,
+    SecurityAuditSinkError, SecurityAuditSinkHealth, SecurityAuditStage, SecurityRequestContext,
+    SecurityResourceKind, ServiceSecurityConfig, TransportPeer, proto,
 };
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -1388,10 +1394,694 @@ async fn secured_profile_rejects_implicit_edge_traversal_before_authorization() 
     server.await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn security_audit_records_allowed_request_stages_and_service_authored_fields() {
+    let audit = BoundedSecurityAuditSink::default_local();
+    let security = secured_with_policy(Arc::new(PolicyVersionAssertingPolicy {
+        expected: "audit-policy-v1",
+    }))
+    .with_audit_sink(Arc::new(audit.clone()));
+    let (mut client, shutdown, server) = start_service(security).await;
+    let handle = create_workspace(&mut client).await;
+
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::SchemaList(proto::SchemaListRequest {}),
+    )
+    .await
+    .unwrap();
+
+    let events = audit.retained_events();
+    let request_id = events.iter().map(|event| event.request_id).max().unwrap();
+    let request_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.request_id == request_id)
+        .collect();
+    assert_eq!(
+        stages(&request_events),
+        vec![
+            SecurityAuditStage::Attempt,
+            SecurityAuditStage::Authentication,
+            SecurityAuditStage::Authorization,
+            SecurityAuditStage::Admission,
+            SecurityAuditStage::Runtime,
+            SecurityAuditStage::Durability,
+            SecurityAuditStage::Delivery,
+        ]
+    );
+    assert!(request_events.windows(2).all(|pair| {
+        pair[0].service_sequence < pair[1].service_sequence
+            && pair[0].request_id == pair[1].request_id
+    }));
+
+    let authorization = event(&request_events, SecurityAuditStage::Authorization);
+    assert_eq!(
+        authorization.policy_version.as_deref(),
+        Some("audit-policy-v1")
+    );
+    assert_eq!(authorization.decision, SecurityAuditDecision::Allow);
+    assert_eq!(
+        authorization.operations[0].action,
+        SecurityAction::SchemaInspect
+    );
+    assert_eq!(
+        authorization.operations[0].resource_kind,
+        SecurityResourceKind::Workspace
+    );
+    let principal = authorization.authenticated_principal.as_ref().unwrap();
+    assert_eq!(principal.issuer, "test-service");
+    assert_eq!(principal.subject, "test-principal");
+    assert_eq!(principal.authentication_method, "server-test-fixture");
+
+    let runtime = event(&request_events, SecurityAuditStage::Runtime);
+    assert_eq!(
+        runtime.runtime_outcome,
+        SecurityAuditRuntimeOutcome::Succeeded
+    );
+    let durability = event(&request_events, SecurityAuditStage::Durability);
+    assert_eq!(
+        durability.durability_outcome,
+        SecurityAuditDurabilityOutcome::NotApplicable
+    );
+    let delivery = event(&request_events, SecurityAuditStage::Delivery);
+    assert_eq!(
+        delivery.delivery_outcome,
+        SecurityAuditDeliveryOutcome::HandedOff
+    );
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn security_audit_records_bounded_identity_overflow_without_retaining_oversized_fields() {
+    let actor_audit = BoundedSecurityAuditSink::default_local();
+    let actor_security =
+        secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(Arc::new(actor_audit.clone()));
+    let (mut actor_client, actor_shutdown, actor_server) = start_service(actor_security).await;
+    let oversized_actor = "actor".repeat(40);
+    let mut actor_request = Request::new(in_memory_workspace_create_request());
+    actor_request
+        .metadata_mut()
+        .insert("x-grm-actor-id", oversized_actor.parse().unwrap());
+    let actor_error = actor_client
+        .create_workspace(actor_request)
+        .await
+        .unwrap_err();
+    assert_eq!(actor_error.code(), Code::InvalidArgument);
+    let actor_events = actor_audit.retained_events();
+    let actor_overflow = actor_events
+        .iter()
+        .find(|event| {
+            event.stage == SecurityAuditStage::Authentication
+                && event.reason == SecurityAuditReason::ClassificationOverflow
+        })
+        .unwrap();
+    assert!(actor_overflow.asserted_actor.is_none());
+    assert!(!format!("{actor_events:?}").contains("actoractoractor"));
+    actor_shutdown.send(()).unwrap();
+    actor_server.await.unwrap().unwrap();
+
+    let principal_audit = BoundedSecurityAuditSink::default_local();
+    let oversized_principal = Principal {
+        issuer: "issuer".repeat(40),
+        subject: "principal".into(),
+        authentication_method: "server-test-fixture".into(),
+    };
+    let principal_security = secured_with_policy(Arc::new(AllowPolicy))
+        .with_authenticator(Arc::new(PrincipalAuthenticator(oversized_principal)))
+        .with_audit_sink(Arc::new(principal_audit.clone()));
+    let (mut principal_client, principal_shutdown, principal_server) =
+        start_service(principal_security).await;
+    let principal_error = principal_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(principal_error.code(), Code::InvalidArgument);
+    let principal_events = principal_audit.retained_events();
+    let principal_overflow = principal_events
+        .iter()
+        .find(|event| {
+            event.stage == SecurityAuditStage::Authentication
+                && event.reason == SecurityAuditReason::ClassificationOverflow
+        })
+        .unwrap();
+    assert!(principal_overflow.authenticated_principal.is_none());
+    assert!(!format!("{principal_events:?}").contains("issuerissuerissuer"));
+    principal_shutdown.send(()).unwrap();
+    principal_server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn security_audit_lifecycle_durability_reports_only_supported_evidence() {
+    let memory_audit = BoundedSecurityAuditSink::default_local();
+    let memory_security =
+        secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(Arc::new(memory_audit.clone()));
+    let (mut memory_client, memory_shutdown, memory_server) = start_service(memory_security).await;
+    let memory_handle = create_workspace(&mut memory_client).await;
+    memory_client
+        .close_workspace(proto::WorkspaceCloseRequest {
+            handle: Some(memory_handle),
+        })
+        .await
+        .unwrap();
+    let memory_events = memory_audit.retained_events();
+    let create_id = memory_events
+        .iter()
+        .find(|event| {
+            event.stage == SecurityAuditStage::Authorization
+                && event
+                    .operations
+                    .iter()
+                    .any(|operation| operation.action == SecurityAction::WorkspaceCreate)
+        })
+        .unwrap()
+        .request_id;
+    let close_id = memory_events
+        .iter()
+        .find(|event| {
+            event.stage == SecurityAuditStage::Authorization
+                && event
+                    .operations
+                    .iter()
+                    .any(|operation| operation.action == SecurityAction::WorkspaceClose)
+        })
+        .unwrap()
+        .request_id;
+    assert_eq!(
+        durability_for_request(&memory_events, create_id),
+        SecurityAuditDurabilityOutcome::NotApplicable
+    );
+    assert_eq!(
+        durability_for_request(&memory_events, close_id),
+        SecurityAuditDurabilityOutcome::NotApplicable
+    );
+    memory_shutdown.send(()).unwrap();
+    memory_server.await.unwrap().unwrap();
+
+    let local_audit = BoundedSecurityAuditSink::default_local();
+    let temp = tempfile::tempdir().unwrap();
+    let (mut local_client, local_shutdown, local_server) = start_local_service(
+        temp.path(),
+        secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(Arc::new(local_audit.clone())),
+    )
+    .await;
+    local_client
+        .create_workspace(proto::WorkspaceCreateRequest {
+            mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+            workspace: Some(proto::WorkspaceRef {
+                id: "durable-audit".into(),
+            }),
+            format: proto::DurabilityFormat::Json as i32,
+        })
+        .await
+        .unwrap();
+    let local_events = local_audit.retained_events();
+    let local_create_id = local_events
+        .iter()
+        .find(|event| {
+            event.stage == SecurityAuditStage::Authorization
+                && event
+                    .operations
+                    .iter()
+                    .any(|operation| operation.action == SecurityAction::WorkspaceCreate)
+        })
+        .unwrap()
+        .request_id;
+    assert_eq!(
+        durability_for_request(&local_events, local_create_id),
+        SecurityAuditDurabilityOutcome::Committed
+    );
+    local_shutdown.send(()).unwrap();
+    local_server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn security_audit_keeps_asserted_actor_separate_from_authenticated_principal() {
+    let audit = BoundedSecurityAuditSink::default_local();
+    let security =
+        secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(Arc::new(audit.clone()));
+    let (mut client, shutdown, server) = start_service(security).await;
+    let mut request = Request::new(in_memory_workspace_create_request());
+    request
+        .metadata_mut()
+        .insert("x-grm-actor-id", "claimed-admin".parse().unwrap());
+
+    client.create_workspace(request).await.unwrap();
+
+    let events = audit.retained_events();
+    let authorization = events
+        .iter()
+        .find(|event| event.stage == SecurityAuditStage::Authorization)
+        .unwrap();
+    let principal = authorization.authenticated_principal.as_ref().unwrap();
+    let asserted = authorization.asserted_actor.as_ref().unwrap();
+    assert_eq!(principal.subject, "test-principal");
+    assert_eq!(asserted.actor_id, "claimed-admin");
+    assert!(!asserted.authenticated);
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn security_audit_records_denied_unauthenticated_policy_error_and_malformed_paths() {
+    let unauth_audit = BoundedSecurityAuditSink::default_local();
+    let (mut unauth_client, unauth_shutdown, unauth_server) = start_service(
+        ServiceSecurityConfig::secured().with_audit_sink(Arc::new(unauth_audit.clone())),
+    )
+    .await;
+    let unauth = unauth_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(unauth.code(), Code::Unauthenticated);
+    assert_audit_reason(
+        &unauth_audit.retained_events(),
+        SecurityAuditStage::Authentication,
+        SecurityAuditReason::MissingPrincipal,
+    );
+    unauth_shutdown.send(()).unwrap();
+    unauth_server.await.unwrap().unwrap();
+
+    let denied_audit = BoundedSecurityAuditSink::default_local();
+    let (mut denied_client, denied_shutdown, denied_server) = start_service(
+        ServiceSecurityConfig::secured()
+            .with_authenticator(Arc::new(FixedAuthenticator))
+            .with_audit_sink(Arc::new(denied_audit.clone())),
+    )
+    .await;
+    let denied = denied_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    assert_audit_reason(
+        &denied_audit.retained_events(),
+        SecurityAuditStage::Authorization,
+        SecurityAuditReason::NoMatchingPermission,
+    );
+    denied_shutdown.send(()).unwrap();
+    denied_server.await.unwrap().unwrap();
+
+    let policy_error_audit = BoundedSecurityAuditSink::default_local();
+    let (mut policy_client, policy_shutdown, policy_server) = start_service(
+        secured_with_policy(Arc::new(ErrorActionPolicy(SecurityAction::WorkspaceCreate)))
+            .with_audit_sink(Arc::new(policy_error_audit.clone())),
+    )
+    .await;
+    let policy_error = policy_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(policy_error.code(), Code::Unavailable);
+    assert_audit_reason(
+        &policy_error_audit.retained_events(),
+        SecurityAuditStage::Authorization,
+        SecurityAuditReason::PolicyEvaluationFailed,
+    );
+    policy_shutdown.send(()).unwrap();
+    policy_server.await.unwrap().unwrap();
+
+    let malformed_audit = BoundedSecurityAuditSink::default_local();
+    let (mut malformed_client, malformed_shutdown, malformed_server) = start_service(
+        secured_with_policy(Arc::new(AllowPolicy))
+            .with_audit_sink(Arc::new(malformed_audit.clone())),
+    )
+    .await;
+    let malformed = malformed_client
+        .execute_workspace(proto::WorkspaceRuntimeRequest {
+            handle: None,
+            request: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(malformed.code(), Code::InvalidArgument);
+    assert_audit_reason(
+        &malformed_audit.retained_events(),
+        SecurityAuditStage::Admission,
+        SecurityAuditReason::MalformedRequest,
+    );
+    malformed_shutdown.send(()).unwrap();
+    malformed_server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn security_audit_records_limit_and_runtime_failures() {
+    let limit_audit = BoundedSecurityAuditSink::default_local();
+    let limit_security = secured_with_policy(Arc::new(AllowPolicy))
+        .with_max_batch_operations(0)
+        .with_audit_sink(Arc::new(limit_audit.clone()));
+    let (mut limit_client, limit_shutdown, limit_server) = start_service(limit_security).await;
+    let limit_handle = create_workspace(&mut limit_client).await;
+    let over_limit = execute(
+        &mut limit_client,
+        &limit_handle,
+        proto::runtime_request::Request::ApplyBatch(proto::BatchRequest {
+            atomic: true,
+            allow_deletes: false,
+            response_mode: proto::BatchResponseMode::Summary as i32,
+            ops: vec![proto::BatchOperation {
+                op: Some(proto::batch_operation::Op::SchemaDefineNode(user_model())),
+            }],
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(over_limit.code(), Code::ResourceExhausted);
+    assert_audit_reason(
+        &limit_audit.retained_events(),
+        SecurityAuditStage::Admission,
+        SecurityAuditReason::LimitExceeded,
+    );
+    limit_shutdown.send(()).unwrap();
+    limit_server.await.unwrap().unwrap();
+
+    let runtime_audit = BoundedSecurityAuditSink::default_local();
+    let (mut runtime_client, runtime_shutdown, runtime_server) = start_service(
+        secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(Arc::new(runtime_audit.clone())),
+    )
+    .await;
+    let runtime_handle = create_workspace(&mut runtime_client).await;
+    let runtime_failure = execute(
+        &mut runtime_client,
+        &runtime_handle,
+        proto::runtime_request::Request::CreateNode(user_create("value-before-schema")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(runtime_failure.code(), Code::InvalidArgument);
+    let events = runtime_audit.retained_events();
+    let runtime = events
+        .iter()
+        .rev()
+        .find(|event| event.stage == SecurityAuditStage::Runtime)
+        .unwrap();
+    assert_eq!(runtime.reason, SecurityAuditReason::RuntimeFailed);
+    assert_eq!(runtime.runtime_outcome, SecurityAuditRuntimeOutcome::Failed);
+    assert_eq!(
+        runtime.durability_outcome,
+        SecurityAuditDurabilityOutcome::NotCommitted
+    );
+    runtime_shutdown.send(()).unwrap();
+    runtime_server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn security_audit_redacts_values_and_enforces_bounds_and_retention() {
+    let audit = BoundedSecurityAuditSink::new(3, 100_000, Duration::from_secs(60));
+    let security =
+        secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(Arc::new(audit.clone()));
+    let (mut client, shutdown, server) = start_service(security).await;
+    let handle = create_workspace(&mut client).await;
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::DefineNode(user_model()),
+    )
+    .await
+    .unwrap();
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::CreateNode(user_create("SUPERSECRET")),
+    )
+    .await
+    .unwrap();
+
+    let retained = audit.retained_events();
+    assert!(retained.len() <= 3);
+    assert!(audit.retained_bytes() <= 100_000);
+    let rendered = format!("{retained:?}");
+    assert!(!rendered.contains("SUPERSECRET"));
+    assert!(!rendered.contains("BEGIN CERTIFICATE"));
+    assert!(!rendered.contains("/tmp/"));
+
+    let overflow = execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::DefineNode(proto::DefineNodeRequest {
+            name: "X".repeat(129),
+            id_field: "id".into(),
+            fields: vec![],
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(overflow.code(), Code::InvalidArgument);
+    assert_audit_reason(
+        &audit.retained_events(),
+        SecurityAuditStage::Admission,
+        SecurityAuditReason::ClassificationOverflow,
+    );
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn secured_profile_audit_backpressure_denies_before_effect_but_anonymous_is_best_effort() {
+    let failing = Arc::new(FailingAuditSink::always());
+    let (mut secured_client, secured_shutdown, secured_server) =
+        start_service(secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(failing.clone()))
+            .await;
+    let denied = secured_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::Unavailable);
+    assert_eq!(failing.attempts(), 1);
+    secured_shutdown.send(()).unwrap();
+    secured_server.await.unwrap().unwrap();
+
+    let best_effort = Arc::new(FailingAuditSink::always());
+    let (mut anonymous_client, anonymous_shutdown, anonymous_server) = start_service(
+        ServiceSecurityConfig::anonymous_local().with_audit_sink(best_effort.clone()),
+    )
+    .await;
+    anonymous_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap();
+    assert!(best_effort.attempts() >= 1);
+    anonymous_shutdown.send(()).unwrap();
+    anonymous_server.await.unwrap().unwrap();
+
+    let visible = BoundedSecurityAuditSink::default_local();
+    let (mut visible_client, visible_shutdown, visible_server) = start_service(
+        ServiceSecurityConfig::anonymous_local().with_audit_sink(Arc::new(visible.clone())),
+    )
+    .await;
+    visible_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap();
+    assert!(
+        visible
+            .retained_events()
+            .iter()
+            .all(|event| event.mode == SecurityAuditMode::BestEffort)
+    );
+    visible_shutdown.send(()).unwrap();
+    visible_server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn secured_profile_post_effect_audit_failure_degrades_and_blocks_later_effects() {
+    let audit = Arc::new(FailAfterAuditSink::new(4));
+    let (mut client, shutdown, server) =
+        start_service(secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(audit.clone()))
+            .await;
+
+    let first = client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(first.handle.is_some());
+    let accepted = audit.accepted_events();
+    let accepted_refs: Vec<_> = accepted.iter().collect();
+    assert_eq!(
+        stages(&accepted_refs),
+        vec![
+            SecurityAuditStage::Attempt,
+            SecurityAuditStage::Authentication,
+            SecurityAuditStage::Authorization,
+            SecurityAuditStage::Admission,
+        ]
+    );
+    assert!(audit.attempts() > 4);
+
+    let blocked = client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(blocked.code(), Code::Unavailable);
+    assert_eq!(
+        blocked.message(),
+        "authoritative security audit sink unavailable"
+    );
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn mcp_proxy_identity_is_audit_principal_and_caller_is_only_asserted_context() {
+    let audit = BoundedSecurityAuditSink::default_local();
+    let backend_principal = Principal {
+        issuer: "local-mcp-adapter".into(),
+        subject: "configured-mtls-client".into(),
+        authentication_method: "mtls-certificate".into(),
+    };
+    let security = secured_with_policy(Arc::new(AllowPolicy))
+        .with_authenticator(Arc::new(PrincipalAuthenticator(backend_principal)))
+        .with_audit_sink(Arc::new(audit.clone()));
+    let (mut client, shutdown, server) = start_service(security).await;
+    let mut request = Request::new(in_memory_workspace_create_request());
+    request
+        .metadata_mut()
+        .insert("x-grm-actor-id", "mcp-caller@example.test".parse().unwrap());
+
+    client.create_workspace(request).await.unwrap();
+
+    let events = audit.retained_events();
+    let authz = events
+        .iter()
+        .find(|event| event.stage == SecurityAuditStage::Authorization)
+        .unwrap();
+    assert_eq!(
+        authz.authenticated_principal.as_ref().unwrap().issuer,
+        "local-mcp-adapter"
+    );
+    assert_eq!(
+        authz.authenticated_principal.as_ref().unwrap().subject,
+        "configured-mtls-client"
+    );
+    assert_eq!(
+        authz.asserted_actor.as_ref().unwrap().actor_id,
+        "mcp-caller@example.test"
+    );
+    assert!(!authz.asserted_actor.as_ref().unwrap().authenticated);
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
 fn secured_with_policy(policy: Arc<dyn AuthorizationPolicy>) -> ServiceSecurityConfig {
     ServiceSecurityConfig::secured()
         .with_authenticator(Arc::new(FixedAuthenticator))
         .with_policy(policy)
+}
+
+fn stages(events: &[&SecurityAuditEvent]) -> Vec<SecurityAuditStage> {
+    events.iter().map(|event| event.stage).collect()
+}
+
+fn event<'a>(
+    events: &'a [&SecurityAuditEvent],
+    stage: SecurityAuditStage,
+) -> &'a SecurityAuditEvent {
+    events.iter().find(|event| event.stage == stage).unwrap()
+}
+
+fn assert_audit_reason(
+    events: &[SecurityAuditEvent],
+    stage: SecurityAuditStage,
+    reason: SecurityAuditReason,
+) {
+    assert!(
+        events
+            .iter()
+            .any(|event| event.stage == stage && event.reason == reason),
+        "missing {stage:?}/{reason:?} in {events:#?}"
+    );
+}
+
+fn durability_for_request(
+    events: &[SecurityAuditEvent],
+    request_id: u64,
+) -> SecurityAuditDurabilityOutcome {
+    events
+        .iter()
+        .find(|event| {
+            event.request_id == request_id && event.stage == SecurityAuditStage::Durability
+        })
+        .unwrap()
+        .durability_outcome
+}
+
+#[derive(Debug)]
+struct FailingAuditSink {
+    attempts: AtomicUsize,
+}
+
+impl FailingAuditSink {
+    fn always() -> Self {
+        Self {
+            attempts: AtomicUsize::new(0),
+        }
+    }
+
+    fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+}
+
+impl SecurityAuditSink for FailingAuditSink {
+    fn append(&self, _event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        Err(SecurityAuditSinkError::Backpressure)
+    }
+
+    fn health(&self) -> SecurityAuditSinkHealth {
+        SecurityAuditSinkHealth::Degraded
+    }
+}
+
+#[derive(Debug)]
+struct FailAfterAuditSink {
+    attempts: AtomicUsize,
+    fail_after: usize,
+    accepted: Mutex<Vec<SecurityAuditEvent>>,
+}
+
+impl FailAfterAuditSink {
+    fn new(fail_after: usize) -> Self {
+        Self {
+            attempts: AtomicUsize::new(0),
+            fail_after,
+            accepted: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+
+    fn accepted_events(&self) -> Vec<SecurityAuditEvent> {
+        self.accepted.lock().unwrap().clone()
+    }
+}
+
+impl SecurityAuditSink for FailAfterAuditSink {
+    fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError> {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempt > self.fail_after {
+            return Err(SecurityAuditSinkError::Backpressure);
+        }
+        self.accepted.lock().unwrap().push(event);
+        Ok(())
+    }
+
+    fn health(&self) -> SecurityAuditSinkHealth {
+        if self.attempts() > self.fail_after {
+            SecurityAuditSinkHealth::Degraded
+        } else {
+            SecurityAuditSinkHealth::Healthy
+        }
+    }
 }
 
 fn secured_with_table(
