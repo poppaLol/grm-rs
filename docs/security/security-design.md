@@ -427,6 +427,8 @@ contract. The event meaning is independent of authentication provider and
 storage architecture. Transport peer, canonical authenticated principal,
 asserted actor, delegated actor, authorization decision, runtime outcome,
 durable outcome, and observable delivery state remain separately labelled.
+The reviewer and operator-facing concept guide is
+[GRM Security Audit Concepts](security-audit.md).
 
 Audit strictness is deployment-scoped:
 
@@ -603,7 +605,7 @@ signing.
 | Trusted application-principal abstraction | Implemented; no production credential provider |
 | Authorization and policy versioning | Exact versioned workspace permission table, default-deny enforcement, and public negative authorization tests implemented; durable policy storage and administration not implemented |
 | Request limits and admission policy | Batch operation count enforced in secured profile; broader limits not implemented |
-| Bounded security audit sink | Not implemented |
+| Bounded security audit sink | First local bounded authoritative audit slice implemented and publicly tested; external audit, tamper evidence, recovery persistence, hosted/public MCP identity, receipts, state commitments, and attestation not implemented |
 | GRM-managed encryption at rest | Not implemented |
 | Signed durable receipts and state commitments | Not implemented |
 | Rollback, fork, and equivocation detection | Not implemented |
@@ -646,6 +648,17 @@ fixtures; it is not a hosted isolation, tenancy, or ownership contract. Durable
 policy storage, administrative policy RPCs, delegation, tenant ownership, audit
 receipts, encryption at rest, attestation, and hosted-security claims remain
 unimplemented.
+
+The secured profile also records bounded redacted audit events for the
+service-authored security pipeline. Public gRPC tests cover allowed, denied,
+unauthenticated, policy-error, malformed, over-limit, runtime-failure,
+redaction, retention, backpressure, classification-overflow, asserted actor
+separation, MCP adapter principal attribution, lifecycle durability evidence,
+and post-effect audit degradation behavior. This is the first local bounded
+authoritative audit slice only; external audit forwarding, tamper-evident
+storage, audit recovery persistence, hosted/public MCP identity, signed
+receipts, state commitments, attestation, and high-assurance audit remain future
+work.
 
 Secured mode rejects traversal steps that omit `edge_model`. The runtime may
 infer an edge model in local workflows, but secured authorization does not
