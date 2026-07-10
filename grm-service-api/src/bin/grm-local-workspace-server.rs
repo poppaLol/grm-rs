@@ -20,7 +20,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let workspace_root = prepare_workspace_root(args.next().map(PathBuf::from))?;
 
-    let security = service_security_config_from_env(|key| env::var_os(key))?;
+    let security = service_security_config_from_env(|key| env::var_os(key))?
+        .with_durable_audit_store(&workspace_root)?;
     security.validate_bind_addr(addr)?;
     let service =
         GrpcWorkspaceService::with_local_workspace_root(&workspace_root, security).into_server();
@@ -230,6 +231,25 @@ mod tests {
 
         assert_eq!(prepared, root);
         assert!(prepared.is_dir());
+    }
+
+    #[test]
+    fn local_server_durable_audit_wiring_reopens_after_service_reconstruction() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = prepare_workspace_root(Some(temp.path().join("private-root"))).unwrap();
+        let security = ServiceSecurityConfig::anonymous_local()
+            .with_durable_audit_store(&root)
+            .unwrap();
+        drop(GrpcWorkspaceService::with_local_workspace_root(
+            &root, security,
+        ));
+        let security = ServiceSecurityConfig::anonymous_local()
+            .with_durable_audit_store(&root)
+            .unwrap();
+        drop(GrpcWorkspaceService::with_local_workspace_root(
+            &root, security,
+        ));
+        assert!(root.join("audit/store-metadata").is_file());
     }
 
     #[test]

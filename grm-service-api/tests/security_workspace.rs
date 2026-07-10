@@ -1,12 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use grm_service_api::{
-    ApplicationAuthenticator, AuthenticationError, AuthorizationDecision, AuthorizationPolicy,
-    AuthorizationReason, BoundedSecurityAuditSink, GrpcWorkspaceService, Permission,
+    ApplicationAuthenticator, AuditStoreFailurePoint, AuditStoreInstrumentation,
+    AuthenticationError, AuthorizationDecision, AuthorizationPolicy, AuthorizationReason,
+    BoundedSecurityAuditSink, DurableSecurityAuditStore, GrpcWorkspaceService, Permission,
     PermissionAssignment, PermissionRole, PermissionScope, PermissionTableConfig,
     PermissionTablePolicy, PolicyEvaluationError, Principal, ResourceSelector,
     RolePermissionAssignment, RolePermissionTableConfig, SecurityAction, SecurityAuditDecision,
@@ -1888,6 +1889,178 @@ async fn secured_profile_audit_backpressure_denies_before_effect_but_anonymous_i
 }
 
 #[tokio::test]
+async fn audit_identity_allocation_failure_is_best_effort_only_for_weaker_profiles() {
+    for sink in [
+        Arc::new(AllocationFailAuditSink::request()),
+        Arc::new(AllocationFailAuditSink::event()),
+    ] {
+        let (mut client, shutdown, server) =
+            start_service(ServiceSecurityConfig::anonymous_local().with_audit_sink(sink.clone()))
+                .await;
+        client
+            .create_workspace(in_memory_workspace_create_request())
+            .await
+            .unwrap();
+        assert!(sink.accepted.lock().unwrap().is_empty());
+        assert!(sink.event_allocations.load(Ordering::SeqCst) <= 1);
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    for sink in [
+        Arc::new(AllocationFailAuditSink::request()),
+        Arc::new(AllocationFailAuditSink::event()),
+    ] {
+        let (mut client, shutdown, server) =
+            start_service(secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(sink.clone()))
+                .await;
+        let denied = client
+            .create_workspace(in_memory_workspace_create_request())
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), Code::Unavailable);
+        assert!(sink.accepted.lock().unwrap().is_empty());
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn durable_sink_failures_preserve_profile_specific_enforcement() {
+    let secured_temp = tempfile::tempdir().unwrap();
+    let secured_hooks = AuditStoreInstrumentation::default();
+    let secured_store = Arc::new(
+        DurableSecurityAuditStore::open_with_instrumentation(
+            secured_temp.path(),
+            32,
+            64 * 1024,
+            Duration::from_secs(3600),
+            secured_hooks.clone(),
+        )
+        .unwrap(),
+    );
+    secured_hooks.fail_next(AuditStoreFailurePoint::MetadataTempWrite);
+    let (mut secured_client, secured_shutdown, secured_server) = start_service(
+        secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(secured_store.clone()),
+    )
+    .await;
+    assert_eq!(
+        secured_client
+            .create_workspace(in_memory_workspace_create_request())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
+    assert!(secured_store.retained_events().is_empty());
+    secured_shutdown.send(()).unwrap();
+    secured_server.await.unwrap().unwrap();
+
+    let best_effort_temp = tempfile::tempdir().unwrap();
+    let best_effort_hooks = AuditStoreInstrumentation::default();
+    let best_effort_store = Arc::new(
+        DurableSecurityAuditStore::open_with_instrumentation(
+            best_effort_temp.path(),
+            32,
+            64 * 1024,
+            Duration::from_secs(3600),
+            best_effort_hooks.clone(),
+        )
+        .unwrap(),
+    );
+    best_effort_hooks.fail_next(AuditStoreFailurePoint::MetadataTempWrite);
+    let (mut best_effort_client, best_effort_shutdown, best_effort_server) = start_service(
+        ServiceSecurityConfig::anonymous_local().with_audit_sink(best_effort_store.clone()),
+    )
+    .await;
+    best_effort_client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap();
+    assert!(best_effort_store.retained_events().is_empty());
+    best_effort_shutdown.send(()).unwrap();
+    best_effort_server.await.unwrap().unwrap();
+
+    let post_effect_temp = tempfile::tempdir().unwrap();
+    let post_effect_hooks = AuditStoreInstrumentation::default();
+    let post_effect_store = DurableSecurityAuditStore::open_with_instrumentation(
+        post_effect_temp.path(),
+        32,
+        64 * 1024,
+        Duration::from_secs(3600),
+        post_effect_hooks.clone(),
+    )
+    .unwrap();
+    let failing = Arc::new(FailDurableAfter {
+        store: post_effect_store,
+        hooks: post_effect_hooks.clone(),
+        fail_after: 4,
+        appends: AtomicUsize::new(0),
+        failed_once: AtomicBool::new(false),
+    });
+    let (mut client, shutdown, server) =
+        start_service(secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(failing)).await;
+    assert!(
+        client
+            .create_workspace(in_memory_workspace_create_request())
+            .await
+            .unwrap()
+            .into_inner()
+            .handle
+            .is_some()
+    );
+    assert!(
+        client
+            .create_workspace(in_memory_workspace_create_request())
+            .await
+            .unwrap()
+            .into_inner()
+            .handle
+            .is_some()
+    );
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn persistent_durable_recovery_failure_keeps_secured_effects_blocked() {
+    let temp = tempfile::tempdir().unwrap();
+    let hooks = AuditStoreInstrumentation::default();
+    let store = DurableSecurityAuditStore::open_with_instrumentation(
+        temp.path(),
+        32,
+        64 * 1024,
+        Duration::from_secs(3600),
+        hooks.clone(),
+    )
+    .unwrap();
+    let failing = Arc::new(FailDurableAfter {
+        store,
+        hooks: hooks.clone(),
+        fail_after: 4,
+        appends: AtomicUsize::new(0),
+        failed_once: AtomicBool::new(false),
+    });
+    let (mut client, shutdown, server) =
+        start_service(secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(failing)).await;
+    client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap();
+    hooks.fail_next(AuditStoreFailurePoint::RecoveryDirectorySync);
+    assert_eq!(
+        client
+            .create_workspace(in_memory_workspace_create_request())
+            .await
+            .unwrap_err()
+            .code(),
+        Code::Unavailable
+    );
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn secured_profile_post_effect_audit_failure_degrades_and_blocks_later_effects() {
     let audit = Arc::new(FailAfterAuditSink::new(4));
     let (mut client, shutdown, server) =
@@ -2081,6 +2254,93 @@ impl SecurityAuditSink for FailAfterAuditSink {
         } else {
             SecurityAuditSinkHealth::Healthy
         }
+    }
+}
+
+#[derive(Debug)]
+struct AllocationFailAuditSink {
+    fail_request: bool,
+    fail_event: bool,
+    event_allocations: AtomicUsize,
+    accepted: Mutex<Vec<SecurityAuditEvent>>,
+}
+
+impl AllocationFailAuditSink {
+    fn request() -> Self {
+        Self {
+            fail_request: true,
+            fail_event: false,
+            event_allocations: AtomicUsize::new(0),
+            accepted: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn event() -> Self {
+        Self {
+            fail_request: false,
+            fail_event: true,
+            event_allocations: AtomicUsize::new(0),
+            accepted: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl SecurityAuditSink for AllocationFailAuditSink {
+    fn allocate_request_id(&self) -> Result<u64, SecurityAuditSinkError> {
+        if self.fail_request {
+            Err(SecurityAuditSinkError::Unavailable)
+        } else {
+            Ok(100)
+        }
+    }
+
+    fn allocate_event_identity(&self) -> Result<(u64, u64), SecurityAuditSinkError> {
+        self.event_allocations.fetch_add(1, Ordering::SeqCst);
+        if self.fail_event {
+            Err(SecurityAuditSinkError::Unavailable)
+        } else {
+            Ok((100, 100))
+        }
+    }
+
+    fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError> {
+        self.accepted.lock().unwrap().push(event);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FailDurableAfter {
+    store: DurableSecurityAuditStore,
+    hooks: AuditStoreInstrumentation,
+    fail_after: usize,
+    appends: AtomicUsize,
+    failed_once: AtomicBool,
+}
+
+impl SecurityAuditSink for FailDurableAfter {
+    fn allocate_request_id(&self) -> Result<u64, SecurityAuditSinkError> {
+        self.store.allocate_request_id()
+    }
+
+    fn allocate_event_identity(&self) -> Result<(u64, u64), SecurityAuditSinkError> {
+        self.store.allocate_event_identity()
+    }
+
+    fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError> {
+        let append = self.appends.fetch_add(1, Ordering::SeqCst) + 1;
+        if append > self.fail_after && !self.failed_once.swap(true, Ordering::SeqCst) {
+            self.hooks.fail_next(AuditStoreFailurePoint::AuditLogWrite);
+        }
+        self.store.append(event)
+    }
+
+    fn health(&self) -> SecurityAuditSinkHealth {
+        self.store.health()
+    }
+
+    fn try_recover(&self) -> Result<SecurityAuditSinkHealth, SecurityAuditSinkError> {
+        self.store.try_recover()
     }
 }
 

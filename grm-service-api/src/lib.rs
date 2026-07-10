@@ -27,6 +27,13 @@ use tonic::transport::{
 };
 use tonic::{Request, Response, Status};
 
+mod audit_store;
+pub use audit_store::{
+    AuditStoreFailurePoint, AuditStoreInstrumentation, AuditStoreIoStats,
+    DurableSecurityAuditStore, SecurityAuditStoreOpenError, SecurityAuditStoreOpenState,
+    SecurityAuditStoreRecovery,
+};
+
 #[allow(warnings)]
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/grm.service.v1.rs"));
@@ -1248,7 +1255,9 @@ pub struct DelegatedActor {
     pub delegation_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum SecurityAction {
     WorkspaceCreate,
     WorkspaceOpen,
@@ -1276,7 +1285,7 @@ pub enum SecurityAction {
     IndexInspect,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityResourceKind {
     Service,
     Workspace,
@@ -1320,13 +1329,13 @@ const SECURITY_AUDIT_MAX_FIELD_BYTES: usize = 128;
 const SECURITY_AUDIT_MAX_OPERATIONS: usize = 64;
 const SECURITY_AUDIT_MAX_EVENT_BYTES: usize = 4096;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityAuditMode {
     BestEffort,
     Mandatory,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityAuditStage {
     Attempt,
     Authentication,
@@ -1337,7 +1346,7 @@ pub enum SecurityAuditStage {
     Delivery,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityAuditDecision {
     NotApplicable,
     Allow,
@@ -1345,7 +1354,7 @@ pub enum SecurityAuditDecision {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityAuditReason {
     RequestReceived,
     AnonymousLocalProfile,
@@ -1370,14 +1379,14 @@ pub enum SecurityAuditReason {
     SinkUnavailable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityAuditRuntimeOutcome {
     NotReached,
     Succeeded,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityAuditDurabilityOutcome {
     NotApplicable,
     Committed,
@@ -1385,14 +1394,14 @@ pub enum SecurityAuditDurabilityOutcome {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SecurityAuditDeliveryOutcome {
     NotReached,
     HandedOff,
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecurityAuditPrincipal {
     pub issuer: String,
     pub subject: String,
@@ -1400,19 +1409,19 @@ pub struct SecurityAuditPrincipal {
     pub authentication_method: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecurityAuditActorAssertion {
     pub actor_id: String,
     pub authenticated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecurityAuditTransportPeer {
     pub remote_address_present: bool,
     pub client_certificate_present: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecurityAuditOperation {
     pub action: SecurityAction,
     pub resource_kind: SecurityResourceKind,
@@ -1420,7 +1429,7 @@ pub struct SecurityAuditOperation {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecurityAuditEvent {
     pub schema_version: u16,
     pub event_id: u64,
@@ -1459,8 +1468,20 @@ pub enum SecurityAuditSinkHealth {
 pub trait SecurityAuditSink: Send + Sync {
     fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError>;
 
+    fn allocate_request_id(&self) -> Result<u64, SecurityAuditSinkError> {
+        Ok(0)
+    }
+
+    fn allocate_event_identity(&self) -> Result<(u64, u64), SecurityAuditSinkError> {
+        Ok((0, 0))
+    }
+
     fn health(&self) -> SecurityAuditSinkHealth {
         SecurityAuditSinkHealth::Healthy
+    }
+
+    fn try_recover(&self) -> Result<SecurityAuditSinkHealth, SecurityAuditSinkError> {
+        Ok(self.health())
     }
 }
 
@@ -1477,6 +1498,9 @@ struct BoundedSecurityAuditState {
     events: VecDeque<SecurityAuditEvent>,
     retained_bytes: usize,
     degraded: bool,
+    next_request_id: u64,
+    next_event_id: u64,
+    next_sequence: u64,
 }
 
 impl BoundedSecurityAuditSink {
@@ -1486,6 +1510,9 @@ impl BoundedSecurityAuditSink {
                 events: VecDeque::new(),
                 retained_bytes: 0,
                 degraded: false,
+                next_request_id: 1,
+                next_event_id: 1,
+                next_sequence: 1,
             })),
             max_events,
             max_bytes,
@@ -1527,6 +1554,34 @@ impl Default for BoundedSecurityAuditSink {
 }
 
 impl SecurityAuditSink for BoundedSecurityAuditSink {
+    fn allocate_request_id(&self) -> Result<u64, SecurityAuditSinkError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| SecurityAuditSinkError::Unavailable)?;
+        let id = state.next_request_id;
+        state.next_request_id = id
+            .checked_add(1)
+            .ok_or(SecurityAuditSinkError::Unavailable)?;
+        Ok(id)
+    }
+
+    fn allocate_event_identity(&self) -> Result<(u64, u64), SecurityAuditSinkError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| SecurityAuditSinkError::Unavailable)?;
+        let event_id = state.next_event_id;
+        let sequence = state.next_sequence;
+        state.next_event_id = event_id
+            .checked_add(1)
+            .ok_or(SecurityAuditSinkError::Unavailable)?;
+        state.next_sequence = sequence
+            .checked_add(1)
+            .ok_or(SecurityAuditSinkError::Unavailable)?;
+        Ok((event_id, sequence))
+    }
+
     fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError> {
         let event_size = security_audit_event_size(&event);
         if event_size > SECURITY_AUDIT_MAX_EVENT_BYTES || event_size > self.max_bytes {
@@ -2480,6 +2535,18 @@ impl ServiceSecurityConfig {
         self
     }
 
+    /// Select the service-owned durable local audit store under `service_root/audit`.
+    pub fn with_durable_audit_store(
+        self,
+        service_root: impl AsRef<Path>,
+    ) -> Result<Self, SecurityAuditStoreOpenError> {
+        Ok(
+            self.with_audit_sink(Arc::new(DurableSecurityAuditStore::open_default(
+                service_root,
+            )?)),
+        )
+    }
+
     pub fn validate_bind_addr(
         &self,
         bind_addr: SocketAddr,
@@ -2663,9 +2730,10 @@ fn transport_peer_is_loopback(peer: &TransportPeer) -> bool {
 pub struct GrpcWorkspaceService {
     inner: Arc<Mutex<InProcessWorkspaceService>>,
     security: ServiceSecurityConfig,
-    next_audit_request_id: Arc<AtomicU64>,
-    next_audit_event_id: Arc<AtomicU64>,
-    next_audit_sequence: Arc<AtomicU64>,
+    fallback_audit_request_id: Arc<AtomicU64>,
+    fallback_audit_event_id: Arc<AtomicU64>,
+    fallback_audit_sequence: Arc<AtomicU64>,
+    best_effort_audit_failures: Arc<AtomicU64>,
     audit_degraded: Arc<AtomicBool>,
 }
 
@@ -2674,9 +2742,10 @@ impl GrpcWorkspaceService {
         Self {
             inner: Arc::new(Mutex::new(InProcessWorkspaceService::new())),
             security,
-            next_audit_request_id: Arc::new(AtomicU64::new(1)),
-            next_audit_event_id: Arc::new(AtomicU64::new(1)),
-            next_audit_sequence: Arc::new(AtomicU64::new(1)),
+            fallback_audit_request_id: Arc::new(AtomicU64::new(1)),
+            fallback_audit_event_id: Arc::new(AtomicU64::new(1)),
+            fallback_audit_sequence: Arc::new(AtomicU64::new(1)),
+            best_effort_audit_failures: Arc::new(AtomicU64::new(0)),
             audit_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -2698,15 +2767,28 @@ impl GrpcWorkspaceService {
         Self {
             inner: Arc::new(Mutex::new(service)),
             security,
-            next_audit_request_id: Arc::new(AtomicU64::new(1)),
-            next_audit_event_id: Arc::new(AtomicU64::new(1)),
-            next_audit_sequence: Arc::new(AtomicU64::new(1)),
+            fallback_audit_request_id: Arc::new(AtomicU64::new(1)),
+            fallback_audit_event_id: Arc::new(AtomicU64::new(1)),
+            fallback_audit_sequence: Arc::new(AtomicU64::new(1)),
+            best_effort_audit_failures: Arc::new(AtomicU64::new(0)),
             audit_degraded: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn into_server(self) -> GrmServiceServer<Self> {
         GrmServiceServer::new(self)
+    }
+
+    pub fn best_effort_audit_failure_count(&self) -> u64 {
+        self.best_effort_audit_failures.load(Ordering::Acquire)
+    }
+
+    fn record_best_effort_audit_failure(&self) {
+        let _ = self.best_effort_audit_failures.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |value| Some(value.saturating_add(1)),
+        );
     }
 
     fn request_security_inputs<T>(
@@ -2757,18 +2839,38 @@ impl GrpcWorkspaceService {
         if !self.audit_degraded.load(Ordering::Acquire) {
             return Ok(());
         }
-        if self.security.audit_sink.health() == SecurityAuditSinkHealth::Healthy {
+        if let Ok(SecurityAuditSinkHealth::Healthy) = self.security.audit_sink.try_recover() {
             self.audit_degraded.store(false, Ordering::Release);
             return Ok(());
         }
         Err(SecurityEnforcementError::AuditSinkUnavailable)
     }
 
-    fn start_audit_request(&self) -> SecurityAuditRequest {
-        SecurityAuditRequest {
-            request_id: self.next_audit_request_id.fetch_add(1, Ordering::Relaxed),
+    fn start_audit_request(&self) -> Result<SecurityAuditRequest, SecurityEnforcementError> {
+        let mode = self.audit_mode();
+        let (request_id, authoritative_persistence) =
+            match self.security.audit_sink.allocate_request_id() {
+                Ok(0) => (
+                    self.fallback_audit_request_id
+                        .fetch_add(1, Ordering::Relaxed),
+                    true,
+                ),
+                Ok(id) => (id, true),
+                Err(_) if mode == SecurityAuditMode::BestEffort => (
+                    {
+                        self.record_best_effort_audit_failure();
+                        self.fallback_audit_request_id
+                            .fetch_add(1, Ordering::Relaxed)
+                    },
+                    false,
+                ),
+                Err(_) => return Err(SecurityEnforcementError::AuditSinkUnavailable),
+            };
+        Ok(SecurityAuditRequest {
+            request_id,
             service_identity: "grm-local-workspace-service".into(),
-            mode: self.audit_mode(),
+            mode,
+            authoritative_persistence: Arc::new(AtomicBool::new(authoritative_persistence)),
             transport_peer: SecurityAuditTransportPeer {
                 remote_address_present: false,
                 client_certificate_present: false,
@@ -2778,7 +2880,7 @@ impl GrpcWorkspaceService {
             workspace: None,
             operations: Vec::new(),
             policy_version: self.security.policy.policy_version().map(str::to_owned),
-        }
+        })
     }
 
     fn audit_append(
@@ -2786,11 +2888,39 @@ impl GrpcWorkspaceService {
         request: &SecurityAuditRequest,
         mut event: SecurityAuditEvent,
     ) -> Result<(), SecurityEnforcementError> {
-        event.event_id = self.next_audit_event_id.fetch_add(1, Ordering::Relaxed);
-        event.service_sequence = self.next_audit_sequence.fetch_add(1, Ordering::Relaxed);
+        if !request.authoritative_persistence.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let (event_id, sequence) = match self.security.audit_sink.allocate_event_identity() {
+            Ok(identity) => identity,
+            Err(_) if request.mode == SecurityAuditMode::BestEffort => {
+                self.record_best_effort_audit_failure();
+                request
+                    .authoritative_persistence
+                    .store(false, Ordering::Release);
+                return Ok(());
+            }
+            Err(_) => return Err(SecurityEnforcementError::AuditSinkUnavailable),
+        };
+        event.event_id = if event_id == 0 {
+            self.fallback_audit_event_id.fetch_add(1, Ordering::Relaxed)
+        } else {
+            event_id
+        };
+        event.service_sequence = if sequence == 0 {
+            self.fallback_audit_sequence.fetch_add(1, Ordering::Relaxed)
+        } else {
+            sequence
+        };
         match self.security.audit_sink.append(event) {
             Ok(()) => Ok(()),
-            Err(_) if request.mode == SecurityAuditMode::BestEffort => Ok(()),
+            Err(_) if request.mode == SecurityAuditMode::BestEffort => {
+                self.record_best_effort_audit_failure();
+                request
+                    .authoritative_persistence
+                    .store(false, Ordering::Release);
+                Ok(())
+            }
             Err(_) => Err(SecurityEnforcementError::AuditSinkUnavailable),
         }
     }
@@ -2869,6 +2999,7 @@ struct SecurityAuditRequest {
     request_id: u64,
     service_identity: String,
     mode: SecurityAuditMode,
+    authoritative_persistence: Arc<AtomicBool>,
     transport_peer: SecurityAuditTransportPeer,
     authenticated_principal: Option<SecurityAuditPrincipal>,
     asserted_actor: Option<SecurityAuditActorAssertion>,
@@ -3147,7 +3278,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCreateRequest>,
     ) -> Result<Response<proto::WorkspaceCreateResponse>, Status> {
-        let mut audit = self.start_audit_request();
+        let mut audit = self.start_audit_request().map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3246,7 +3377,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceOpenRequest>,
     ) -> Result<Response<proto::WorkspaceOpenResponse>, Status> {
-        let mut audit = self.start_audit_request();
+        let mut audit = self.start_audit_request().map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3352,7 +3483,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceRuntimeRequest>,
     ) -> Result<Response<proto::WorkspaceRuntimeResponse>, Status> {
-        let mut audit = self.start_audit_request();
+        let mut audit = self.start_audit_request().map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3475,7 +3606,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCloseRequest>,
     ) -> Result<Response<proto::WorkspaceCloseResponse>, Status> {
-        let mut audit = self.start_audit_request();
+        let mut audit = self.start_audit_request().map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;

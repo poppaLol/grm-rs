@@ -6,9 +6,9 @@ companion to [ADR 0008](../adr/0008-bounded-authoritative-security-audit.md),
 which records the durable design decision.
 
 The current implementation is intentionally narrow. It gives the secured local
-service a service-authored, bounded, redacted audit trail for security-relevant
+service a service-authored, durable local, bounded, redacted audit trail for security-relevant
 workspace requests. It does not provide external audit forwarding,
-tamper-evident storage, recovery persistence, hosted or public MCP identity,
+tamper-evident storage, arbitrary-failure recovery, hosted or public MCP identity,
 signed receipts, state commitments, attestation, or high-assurance compliance
 claims.
 
@@ -149,9 +149,38 @@ or acted on that response.
 
 ## Sink Behavior
 
-The first implementation uses a bounded local audit sink. Its retention is
-finite by event count, retained bytes, and age. This avoids an unbounded
-process-local security history.
+The local service binary uses a service-owned store under
+`<service-root>/audit/`, physically separate from workspace checkpoints,
+workspace append logs, user graph data, schema memory, and Neo4j project
+memory. Its authoritative representation is an ordered list of typed immutable
+`SecurityAuditEvent` records. Stable identifiers and service sequence carry
+correlation; graph relationships are optional rebuildable cockpit projections.
+
+Acceptance writes one complete versioned record and newline, synchronizes the
+file, and synchronizes the audit directory when the log is first created.
+Initialization synchronizes generation metadata and newly created directory
+entries through the service root. A final unterminated record is ignored as a
+torn tail; a malformed complete record, unsupported version, conflicting
+generation, or exhausted counter makes mandatory audit unavailable.
+
+The generation ID persists across normal restart. Request IDs reserve bounded
+ranges of 64; event IDs and service sequences reserve paired ranges of 64 in a
+single synchronized metadata replacement. Accepted high-water marks advance
+only after the event is durable. A crash can lose at most one reserved range
+per counter at a reservation boundary, but reopening starts above the durable
+range ceiling and cannot duplicate identity within one generation.
+
+Best-effort profiles do not turn audit identity-allocation failure into an
+application failure. If durable request or event identity allocation fails,
+that request switches permanently to process-local-only correlation and makes
+no further durable audit calls. Fallback identifiers are never written to the
+durable store. Mandatory secured audit continues to fail closed.
+
+Retention is finite by event count, serialized retained bytes, age, and maximum
+record size. When expiry removes events, the store atomically replaces the
+physical log with a synchronized retained suffix and syncs the directory.
+Events are immutable while retained; ordinary writes append, while physical
+compaction may replace the file.
 
 Sink append can fail because the sink is unavailable, under backpressure, or
 because the event is too large. In mandatory audit, failures before an effect
@@ -170,6 +199,27 @@ health problem. The current slice blocks later secured effects. Future
 operability work should expose this state through health/readiness reporting,
 operator-visible cockpit state, and any configured process-stop or failover
 policy.
+
+The next secured request may perform a bounded synchronous recovery probe before
+remaining blocked. Recovery validates durable metadata and generation, every
+complete bounded event, ordering, reservation high-water marks, retention, and
+directory durability. Torn tails and retention changes use the normal atomic
+compaction protocol. Without compaction, the active log is explicitly synced;
+accepted high-water metadata is then reconciled and durably replaced before the
+directory is synced. Only a completely successful probe replaces memory,
+clears sink and service degradation, and permits the request to continue.
+Malformed complete records, generation conflicts, metadata inconsistency, or
+filesystem failure remain fail-closed. Anonymous-local and Docker-local do not
+require this recovery before application effects because their audit posture is
+explicitly best effort.
+
+Audit timestamps come from the service wall clock. They are useful evidence but
+are neither monotonic nor tamper-proof. If NTP correction, VM restoration, or an
+operator clock change makes a persisted event appear future-dated, recovery
+retains the original timestamp and reports a bounded anomaly count instead of
+making the store unavailable. Future-dated events remain subject to count and
+byte retention and are not expired by age until wall time passes their timestamp
+plus the configured maximum age.
 
 ## Cockpit Direction
 
@@ -199,7 +249,7 @@ bodies.
 The first local bounded authoritative audit slice does not claim:
 
 - external authoritative audit;
-- durable audit recovery across every process or storage failure;
+- durable audit recovery beyond the tested single-process honest-local-filesystem scope;
 - tamper-evident audit storage;
 - signed receipts;
 - state commitments;
