@@ -24,9 +24,14 @@ It proves only this local onboarding path:
 
 It does not claim production PKI, certificate lifecycle management, hosted
 tenancy, Cloudflare-edge identity, hosted or public HTTP MCP security, browser
-auth, OAuth, bearer-token auth, bounded authoritative audit, encryption at rest,
+auth, OAuth, bearer-token auth, external or high-assurance audit, encryption at rest,
 attestation, receipts, state commitments, admin RPCs, policy hot reload, or a
 general policy language.
+
+The secured service does use GRM's bounded service-owned durable local audit
+store under `/workspaces/audit`. This is the tested single-process local
+filesystem posture only; it is not tamper-evident, encrypted, externally
+authoritative, replicated, or a regulated/high-assurance claim.
 
 ## Files And Artifacts
 

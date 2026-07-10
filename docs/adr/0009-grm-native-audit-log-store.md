@@ -40,14 +40,19 @@ shows a table/index projection is required.
 
 ## Decision
 
-GRM will use a service-owned GRM-native audit log store as the future durable
+GRM uses a service-owned GRM-native audit log store as the durable
 local persistence direction for security audit events.
 
 The audit log store is a distinct service storage component. It is not the
 workspace WAL, not user graph state, not Neo4j project memory, and not an
-external monitoring system. It stores a bounded append-only list of
+external monitoring system. It stores a bounded append-oriented ordered list of
 `SecurityAuditEvent` records under service-owned storage, with recovery and
 retention semantics designed for local secured-service audit evidence.
+
+The authoritative representation is a list of typed immutable events, not an
+ordinary GRM user graph. Stable typed identifiers and service ordering carry
+correlation. Graph-like relationships may be derived later for cockpit use,
+but are rebuildable views and never participate in append acceptance.
 
 The first durable implementation should extract or reuse a small generic
 append-log primitive from the existing durability code rather than introducing
@@ -76,6 +81,7 @@ under the configured local service workspace root, for example:
 ```text
 <service-root>/
   audit/
+    store-metadata
     security-audit.log
 ```
 
@@ -91,10 +97,38 @@ implementation details, but they must preserve these boundaries:
 
 ## Acceptance And Recovery Semantics
 
-For mandatory secured-profile audit, appending to the durable audit store is
-authoritative only after the configured local acceptance rule succeeds. The
-first local rule should be explicit about whether acceptance means write,
-flush, file sync, parent-directory sync on create, or a stronger operation.
+For mandatory secured-profile audit, the local rule is "file plus directory
+acceptance": the complete versioned record and newline are written,
+`File::sync_all()` succeeds, and a newly created log is made durable by syncing
+the audit directory. Initialization likewise syncs the metadata file, its
+audit-directory entry, and a newly created audit-directory entry through the
+service root. `append` returns `Ok` only after the operations required for that
+append succeed.
+
+Metadata contains a random 128-bit hexadecimal store-generation ID. Normal
+reopen recovers it; a newly initialized store receives another ID; malformed,
+unsupported, or record-conflicting metadata fails closed. Event and request
+identity are `(store_generation_id, event_id)` and
+`(store_generation_id, request_id)`.
+
+Counters use synchronized bounded range reservations plus separate accepted
+high-water marks. Request IDs reserve 64 identifiers at a time. Event IDs and
+service sequences reserve their corresponding 64-identifier ranges together in
+one atomic metadata replacement. A range is atomically replaced and
+directory-synced before any identifier in it is issued, so a crash may lose at
+most 64 identifiers per counter at a reservation boundary but cannot reuse an
+issued identifier. Accepted high-water fields advance only after the event
+record is durable. Recovery validates ordering, starts above the durable range
+ceilings even when compaction removed older records, detects exhaustion, and
+continues service sequence strictly above recovered history.
+
+For a seven-stage request starting with empty reservation ranges, the original
+per-identifier design required 22 metadata replacements: one request-ID
+reservation, fourteen separate event/sequence reservations, and seven accepted
+high-water updates. The bounded combined-range design requires nine: one
+request range, one combined event/sequence range, and seven accepted updates.
+Within an existing range it requires only the seven accepted updates. Event
+file and directory acceptance synchronization is unchanged.
 
 The implementation should preserve the existing local append-log recovery
 discipline unless a stronger format is introduced:
@@ -110,6 +144,27 @@ discipline unless a stronger format is introduced:
 This does not promise atomic transactionality between workspace state and audit
 storage. Post-effect audit failure still preserves the truthful workspace
 outcome and degrades audit health, as accepted in ADR 0008.
+
+Before a degraded mandatory service requires restart, the service performs one
+bounded in-process recovery probe before permitting the next protected effect.
+The probe re-reads and validates metadata version and generation, all complete
+records, bounded event fields, ordering, reservation ceilings, and retention.
+It repairs a torn final record or retention change through the same synchronized
+temporary-file compaction path and re-synchronizes the audit directory. The
+active log is explicitly file-synchronized when compaction is unnecessary;
+recovered complete records advance accepted high-water metadata through the
+normal synchronized metadata-replacement protocol. The
+in-memory retained view and counter positions are replaced only after every
+validation, repair, and synchronization succeeds. Any inconsistency or storage
+failure leaves both sink and service degraded and secured effects fail closed.
+
+Audit timestamps are service-authored wall-clock evidence, not a trusted
+monotonic clock or tamper-proof chronology. Append rejects pre-epoch timestamps
+and excessive newly authored future skew. Recovery does not reject an otherwise
+valid record merely because wall-clock rollback makes its timestamp appear in
+the future. Such records retain their original timestamp, are reported through
+a bounded future-record count, and do not expire by age until wall time catches
+up. Count and retained-byte limits still apply normally.
 
 ## Cockpit And Query Direction
 
@@ -133,6 +188,30 @@ If later cockpit or hosted requirements need secondary indexes, richer
 queries, or large-volume retention, GRM may add a projection over the audit log.
 That projection may be table-like, graph-like, or external, but it must not
 replace the authoritative audit log without a separate decision.
+
+## Retention And Physical Replacement
+
+Events are immutable while retained and ordinary acceptance appends complete
+records. Count, serialized retained bytes, age, and individual record size are
+finite. When retention removes an event, the store writes the retained suffix
+to a temporary file, syncs it, atomically renames it over the active log, and
+syncs the audit directory. Only then is compaction committed. Failure before
+rename leaves the previous valid log; failure after rename but before directory
+sync is reported as unavailable.
+
+The physical file is therefore not permanently append-only. Bounded retention
+may atomically replace it. The honest guarantee is a bounded append-oriented
+authoritative event list whose retained events are immutable; intentionally
+expired events are outside the retention guarantee.
+
+The supported scope is one service process, one writer, and an honest local
+filesystem implementing the tested Rust file and directory synchronization
+operations. A process-local ownership guard rejects a second store instance for
+the same canonical audit directory. There is still no cross-process file lock
+or fencing: operators must ensure only one process opens a store. Two processes
+can otherwise race on metadata and compaction temporary paths. There is no recovery claim for arbitrary
+corruption, disk loss, hostile replacement, lying controllers, or operator
+deletion.
 
 ## Non-Goals
 
@@ -195,6 +274,7 @@ workspace state and service-owned metadata should be explicit and recoverable,
 while keeping audit separate from user graph data and workspace mutation
 replay.
 
-It does not change the current implemented truth: the present audit sink is
-still process-local memory until this durable audit log store is implemented
-and tested.
+The local service binary initializes this store under its configured service
+root. Explicit injected sinks remain available for bounded tests and alternate
+deployment wiring; anonymous-local remains best-effort even when its local sink
+happens to be durable.
