@@ -1,4 +1,4 @@
-# Agent Memory Demo
+# Short Agent Memory Demo
 
 This demo shows the smallest useful GRM operational-memory story:
 

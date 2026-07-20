@@ -312,7 +312,7 @@ MCP, and future Rust/Neo4j paths. Start with the
 
 Available tutorials include:
 
-- [30-second agent memory demo](docs/tutorials/agent-memory-demo.md)
+- [Short Agent Memory Demo](docs/tutorials/agent-memory-demo.md)
 - [CLI sessions](docs/tutorials/cli-session.md)
 - [Python sessions](docs/tutorials/python-session.md)
 - [MCP workflows](docs/tutorials/mcp-workflow.md)
