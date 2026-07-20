@@ -8,6 +8,9 @@ live here as the tutorial set grows.
 
 Available tutorials:
 
+- [Short Agent Memory Demo](agent-memory-demo.md): store typed project
+  memory through MCP, restart the service, reconnect, traverse, and explain the
+  recalled result
 - [CLI sessions](cli-session.md): define schema, create data, traverse,
   explain/profile, save, and export
 - [Python sessions](python-session.md): the same runtime schema and graph
