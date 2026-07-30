@@ -12,8 +12,8 @@ tamper-evident storage, arbitrary-failure recovery, hosted or public MCP identit
 signed receipts, state commitments, attestation, or high-assurance compliance
 claims.
 
-Future cockpit work should make this audit stream inspectable alongside the
-query cockpit, operational log, backend status, and security context. Until
+Future flight-deck work should make this audit stream inspectable alongside the
+query flight-deck, operational log, backend status, and security context. Until
 that UI exists, the audit model should be understood through the event fields,
 modes, and failure behavior described here.
 
@@ -154,7 +154,7 @@ The local service binary uses a service-owned store under
 workspace append logs, user graph data, schema memory, and Neo4j project
 memory. Its authoritative representation is an ordered list of typed immutable
 `SecurityAuditEvent` records. Stable identifiers and service sequence carry
-correlation; graph relationships are optional rebuildable cockpit projections.
+correlation; graph relationships are optional rebuildable flight-deck projections.
 
 Acceptance writes one complete versioned record and newline, synchronizes the
 file, and synchronizes the audit directory when the log is first created.
@@ -197,7 +197,7 @@ until the authoritative sink reports healthy again.
 Product-wise, degraded mandatory audit should be treated as a secured-service
 health problem. The current slice blocks later secured effects. Future
 operability work should expose this state through health/readiness reporting,
-operator-visible cockpit state, and any configured process-stop or failover
+operator-visible flight-deck state, and any configured process-stop or failover
 policy.
 
 The next secured request may perform a bounded synchronous recovery probe before
@@ -221,9 +221,9 @@ making the store unavailable. Future-dated events remain subject to count and
 byte retention and are not expired by age until wall time passes their timestamp
 plus the configured maximum age.
 
-## Cockpit Direction
+## Flight-Deck Direction
 
-The future cockpit should make audit understandable without turning it into a
+The future flight-deck should make audit understandable without turning it into a
 general SIEM or hosted control plane.
 
 Useful audit views include:
@@ -237,10 +237,10 @@ Useful audit views include:
 - redaction and overflow indicators;
 - filters for denied, unavailable, runtime-failed, committed, and degraded
   events; and
-- cross-links to the operational log and query/explain cockpit for the same
+- cross-links to the operational log and query/explain flight-deck for the same
   workspace or request.
 
-The cockpit should not expose raw credentials, raw certificates, graph property
+The flight-deck should not expose raw credentials, raw certificates, graph property
 values, private paths, policy table contents, or unbounded request and response
 bodies.
 
