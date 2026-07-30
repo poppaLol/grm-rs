@@ -11,7 +11,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace]
-members = ["grm-rs-macros", "grm-python", "grm-mcp", "grm-service-api", "grm-cli"]
+members = ["grm-rs-macros", "grm-python", "grm-mcp", "grm-service-api", "grm-cli", "grm-flight-deck-gateway"]
 default-members = [".", "grm-rs-macros", "grm-python", "grm-mcp", "grm-service-api", "grm-cli"]
 
 [features]
