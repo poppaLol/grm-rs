@@ -11,7 +11,7 @@ versioned, principal-centric audit event and bounded authoritative sink
 contract. The first implemented slice proves the event model and mandatory
 secured-profile behavior with a bounded process-local sink. That is enough to
 validate service-authored audit semantics, but it is not enough for operator
-inspection, restart-surviving evidence, or a future cockpit audit-log tab.
+inspection, restart-surviving evidence, or a future flight-deck audit-log tab.
 
 GRM already has local append-log mechanics for workspace durability: append
 newline-delimited JSON records, flush and sync each record, recover complete
@@ -29,7 +29,7 @@ The audit persistence decision must preserve security boundaries:
 - audit must not depend on the workspace mutation log it is auditing;
 - audit events must stay bounded, redacted, service-authored, and
   deployment-scoped; and
-- future cockpit inspection should read audit evidence without turning the
+- future flight-deck inspection should read audit evidence without turning the
   source of truth into a general SQL event store.
 
 Off-the-shelf storage options such as SQLite would make query and UI work
@@ -51,7 +51,7 @@ retention semantics designed for local secured-service audit evidence.
 
 The authoritative representation is a list of typed immutable events, not an
 ordinary GRM user graph. Stable typed identifiers and service ordering carry
-correlation. Graph-like relationships may be derived later for cockpit use,
+correlation. Graph-like relationships may be derived later for flight-deck use,
 but are rebuildable views and never participate in append acceptance.
 
 The first durable implementation should extract or reuse a small generic
@@ -91,7 +91,7 @@ implementation details, but they must preserve these boundaries:
 - audit files are service-owned, not workspace-owned;
 - audit files are not mixed into workspace checkpoint or append-log files;
 - inaccessible or unauthenticated requests can still be recorded;
-- cockpit or administrative readers must be explicitly authorized later; and
+- flight-deck or administrative readers must be explicitly authorized later; and
 - audit storage is included in future encryption-at-rest and backup decisions
   when it contains protected metadata.
 
@@ -166,10 +166,10 @@ the future. Such records retain their original timestamp, are reported through
 a bounded future-record count, and do not expire by age until wall time catches
 up. Count and retained-byte limits still apply normally.
 
-## Cockpit And Query Direction
+## Flight-Deck And Query Direction
 
 The audit log store is the source-of-truth event list for the local service.
-The cockpit can initially read, page, group, and filter this list by event
+The flight-deck can initially read, page, group, and filter this list by event
 fields:
 
 - request ID;
@@ -184,7 +184,7 @@ fields:
 - durability outcome; and
 - delivery outcome.
 
-If later cockpit or hosted requirements need secondary indexes, richer
+If later flight-deck or hosted requirements need secondary indexes, richer
 queries, or large-volume retention, GRM may add a projection over the audit log.
 That projection may be table-like, graph-like, or external, but it must not
 replace the authoritative audit log without a separate decision.
@@ -222,7 +222,7 @@ deletion.
 - No tamper-evident log, signed receipt, state commitment, non-repudiation, or
   attestation.
 - No external authoritative sink or forwarding protocol.
-- No broad cockpit/admin API design in the storage slice.
+- No broad flight-deck/admin API design in the storage slice.
 - No cross-process writer coordination, leases, replication, or failover.
 - No claim of recovery from arbitrary corruption, disk loss, or operator
   deletion.
@@ -235,7 +235,7 @@ Positive consequences:
   durability primitives.
 - Audit remains service-owned and independent from workspace mutation replay.
 - The first durable audit store can be small, reviewable, and testable.
-- A future cockpit can inspect a concrete event list without waiting for a
+- A future flight-deck can inspect a concrete event list without waiting for a
   hosted audit system.
 - SQLite or external systems can remain later projections or forwarding
   targets rather than the first source of truth.
