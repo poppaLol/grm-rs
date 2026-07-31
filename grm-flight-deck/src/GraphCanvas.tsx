@@ -197,7 +197,7 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView) {
   return [
     ...snapshot.nodes.map((node) => ({
       data: {
-        id: String(node.id),
+        id: node.id,
         label: node.label,
         model: node.model,
         color: colorForModel(node.model),
@@ -207,8 +207,8 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView) {
     ...snapshot.edges.map((edge) => ({
       data: {
         id: `e${edge.id}`,
-        source: String(edge.from),
-        target: String(edge.to),
+        source: edge.from,
+        target: edge.to,
         label: edge.model,
         model: edge.model,
         props: edge.props

@@ -1,5 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
+    future::Future,
     net::SocketAddr,
     sync::Arc,
 };
@@ -10,7 +12,7 @@ use axum::{
     http::{Method, StatusCode},
     routing::get,
 };
-use grm_rs::{EdgeFindRequest, NodeFindRequest, StoredNode};
+use grm_rs::{EdgeFindRequest, NodeFindRequest, StoredNode, StoredRel};
 use grm_service_api::{GrpcWorkspaceClient, GrpcWorkspaceClientError, GrpcWorkspaceMode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,7 +45,7 @@ struct FlightDeckSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 struct FlightDeckNode {
-    id: i64,
+    id: String,
     model: String,
     label: String,
     props: BTreeMap<String, Value>,
@@ -51,10 +53,10 @@ struct FlightDeckNode {
 
 #[derive(Debug, Clone, Serialize)]
 struct FlightDeckEdge {
-    id: i64,
+    id: String,
     model: String,
-    from: i64,
-    to: i64,
+    from: String,
+    to: String,
     props: BTreeMap<String, Value>,
 }
 
@@ -82,12 +84,21 @@ async fn load_snapshot(
     endpoint: impl Into<String>,
     workspace: impl Into<String>,
     model_limit: usize,
-) -> Result<FlightDeckSnapshot, GrpcWorkspaceClientError> {
+) -> Result<FlightDeckSnapshot, SnapshotLoadError> {
     let endpoint = endpoint.into();
     let workspace = workspace.into();
     let mut client =
         GrpcWorkspaceClient::connect(endpoint, workspace.clone(), GrpcWorkspaceMode::Open).await?;
 
+    let snapshot_result = collect_snapshot(&mut client, workspace, model_limit).await;
+    close_after_snapshot(snapshot_result, async { client.close().await.map(|_| ()) }).await
+}
+
+async fn collect_snapshot(
+    client: &mut GrpcWorkspaceClient,
+    workspace: String,
+    model_limit: usize,
+) -> Result<FlightDeckSnapshot, GrpcWorkspaceClientError> {
     let schema = client.schema_list().await?;
     let node_models = schema
         .node_models
@@ -123,7 +134,6 @@ async fn load_snapshot(
         }
     }
 
-    let included_node_ids = nodes.keys().copied().collect::<BTreeSet<_>>();
     let mut edges = BTreeMap::new();
     let mut omitted_edges = 0;
     for model in &edge_models {
@@ -134,48 +144,121 @@ async fn load_snapshot(
                 ..Default::default()
             })
             .await?;
-        for edge in found.edges {
-            if included_node_ids.contains(&edge.from) && included_node_ids.contains(&edge.to) {
-                edges.insert(edge.id, edge);
-            } else {
-                omitted_edges += 1;
-            }
-        }
+        let (included, omitted) = include_edges_with_known_endpoints(&nodes, found.edges);
+        edges.extend(included);
+        omitted_edges += omitted;
     }
-
-    client.close().await?;
 
     Ok(FlightDeckSnapshot {
         workspace,
         node_models,
         edge_models,
         schema_edges,
-        nodes: nodes
-            .into_values()
-            .map(|node| FlightDeckNode {
-                id: node.id,
-                model: node
-                    .labels
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "Node".into()),
-                label: node_label(&node),
-                props: node.props,
-            })
-            .collect(),
-        edges: edges
-            .into_values()
-            .map(|edge| FlightDeckEdge {
-                id: edge.id,
-                model: edge.rel_type,
-                from: edge.from,
-                to: edge.to,
-                props: edge.props,
-            })
-            .collect(),
+        nodes: nodes.into_values().map(flight_deck_node).collect(),
+        edges: edges.into_values().map(flight_deck_edge).collect(),
         model_limit,
         omitted_edges,
     })
+}
+
+async fn close_after_snapshot(
+    snapshot_result: Result<FlightDeckSnapshot, GrpcWorkspaceClientError>,
+    close: impl Future<Output = Result<(), GrpcWorkspaceClientError>>,
+) -> Result<FlightDeckSnapshot, SnapshotLoadError> {
+    match snapshot_result {
+        Ok(snapshot) => {
+            close.await.map_err(SnapshotLoadError::Close)?;
+            Ok(snapshot)
+        }
+        Err(primary) => {
+            let close_error = close.await.err().map(|error| error.to_string());
+            Err(SnapshotLoadError::Snapshot {
+                primary,
+                close_error,
+            })
+        }
+    }
+}
+
+fn include_edges_with_known_endpoints(
+    nodes: &BTreeMap<i64, StoredNode>,
+    edges: Vec<StoredRel>,
+) -> (BTreeMap<i64, StoredRel>, usize) {
+    let included_node_ids = nodes.keys().copied().collect::<BTreeSet<_>>();
+    let mut included = BTreeMap::new();
+    let mut omitted = 0;
+    for edge in edges {
+        if included_node_ids.contains(&edge.from) && included_node_ids.contains(&edge.to) {
+            included.insert(edge.id, edge);
+        } else {
+            omitted += 1;
+        }
+    }
+    (included, omitted)
+}
+
+fn flight_deck_node(node: StoredNode) -> FlightDeckNode {
+    FlightDeckNode {
+        id: node.id.to_string(),
+        model: node
+            .labels
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Node".into()),
+        label: node_label(&node),
+        props: node.props,
+    }
+}
+
+fn flight_deck_edge(edge: StoredRel) -> FlightDeckEdge {
+    FlightDeckEdge {
+        id: edge.id.to_string(),
+        model: edge.rel_type,
+        from: edge.from.to_string(),
+        to: edge.to.to_string(),
+        props: edge.props,
+    }
+}
+
+#[derive(Debug)]
+enum SnapshotLoadError {
+    Snapshot {
+        primary: GrpcWorkspaceClientError,
+        close_error: Option<String>,
+    },
+    Close(GrpcWorkspaceClientError),
+}
+
+impl fmt::Display for SnapshotLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Snapshot {
+                primary,
+                close_error,
+            } => {
+                write!(f, "{primary}")?;
+                if let Some(close_error) = close_error {
+                    write!(
+                        f,
+                        "; additionally failed to close workspace handle after snapshot error: {close_error}"
+                    )?;
+                }
+                Ok(())
+            }
+            Self::Close(error) => write!(f, "failed to close workspace handle: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotLoadError {}
+
+impl From<GrpcWorkspaceClientError> for SnapshotLoadError {
+    fn from(error: GrpcWorkspaceClientError) -> Self {
+        Self::Snapshot {
+            primary: error,
+            close_error: None,
+        }
+    }
 }
 
 fn node_label(node: &StoredNode) -> String {
@@ -218,10 +301,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use grm_rs::StoredNode;
+    use grm_rs::{StoredNode, StoredRel};
+    use grm_service_api::GrpcWorkspaceClientError;
     use serde_json::json;
 
-    use super::node_label;
+    use super::{
+        close_after_snapshot, flight_deck_edge, flight_deck_node,
+        include_edges_with_known_endpoints, node_label,
+    };
 
     #[test]
     fn node_label_prefers_a_semantic_lookup_field() {
@@ -243,5 +330,109 @@ mod tests {
         };
 
         assert_eq!(node_label(&node), "Decision #9");
+    }
+
+    #[test]
+    fn flight_deck_ids_are_serialized_as_strings() {
+        let node = flight_deck_node(StoredNode {
+            id: i64::MAX,
+            labels: vec!["LargeId".into()],
+            props: BTreeMap::new(),
+        });
+        let edge = flight_deck_edge(StoredRel {
+            id: i64::MAX - 1,
+            rel_type: "LINKS".into(),
+            from: i64::MAX - 2,
+            to: i64::MAX - 3,
+            props: BTreeMap::new(),
+        });
+
+        assert_eq!(node.id, i64::MAX.to_string());
+        assert_eq!(edge.id, (i64::MAX - 1).to_string());
+        assert_eq!(edge.from, (i64::MAX - 2).to_string());
+        assert_eq!(edge.to, (i64::MAX - 3).to_string());
+    }
+
+    #[test]
+    fn omitted_edges_count_edges_outside_the_bounded_node_set() {
+        let nodes = BTreeMap::from([
+            (
+                1,
+                StoredNode {
+                    id: 1,
+                    labels: vec!["User".into()],
+                    props: BTreeMap::new(),
+                },
+            ),
+            (
+                2,
+                StoredNode {
+                    id: 2,
+                    labels: vec!["Post".into()],
+                    props: BTreeMap::new(),
+                },
+            ),
+        ]);
+        let edges = vec![
+            StoredRel {
+                id: 10,
+                rel_type: "Authored".into(),
+                from: 1,
+                to: 2,
+                props: BTreeMap::new(),
+            },
+            StoredRel {
+                id: 11,
+                rel_type: "Authored".into(),
+                from: 1,
+                to: 99,
+                props: BTreeMap::new(),
+            },
+        ];
+
+        let (included, omitted) = include_edges_with_known_endpoints(&nodes, edges);
+
+        assert_eq!(included.keys().copied().collect::<Vec<_>>(), vec![10]);
+        assert_eq!(omitted, 1);
+    }
+
+    #[tokio::test]
+    async fn close_is_attempted_after_snapshot_error_without_hiding_primary_error() {
+        let primary = GrpcWorkspaceClientError::MissingField("schema");
+        let close = async { Err(GrpcWorkspaceClientError::UnexpectedResponse("close")) };
+
+        let error = close_after_snapshot(Err(primary), close)
+            .await
+            .expect_err("snapshot error should be returned");
+        let message = error.to_string();
+
+        assert!(message.contains("schema"));
+        assert!(message.contains("additionally failed to close workspace handle"));
+        assert!(message.contains("close"));
+    }
+
+    #[tokio::test]
+    async fn close_error_after_success_is_reported() {
+        let snapshot = super::FlightDeckSnapshot {
+            workspace: "demo".into(),
+            node_models: Vec::new(),
+            edge_models: Vec::new(),
+            schema_edges: Vec::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            model_limit: 1,
+            omitted_edges: 0,
+        };
+        let close = async { Err(GrpcWorkspaceClientError::UnexpectedResponse("close")) };
+
+        let error = close_after_snapshot(Ok(snapshot), close)
+            .await
+            .expect_err("close error should be returned");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to close workspace handle")
+        );
     }
 }
