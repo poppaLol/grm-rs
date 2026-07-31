@@ -17,17 +17,17 @@ export interface ConnectionSettings {
 }
 
 export interface FlightDeckNode {
-  id: number;
+  id: string;
   model: string;
   label: string;
   props: Record<string, JsonValue>;
 }
 
 export interface FlightDeckEdge {
-  id: number;
+  id: string;
   model: string;
-  from: number;
-  to: number;
+  from: string;
+  to: string;
   props: Record<string, JsonValue>;
 }
 

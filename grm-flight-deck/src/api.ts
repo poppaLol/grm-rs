@@ -58,7 +58,7 @@ export function filterSnapshot(
     return endpointsMatch || edgeMatchesFilter;
   });
 
-  const edgeEndpointIds = new Set<number>();
+  const edgeEndpointIds = new Set<string>();
   for (const edge of edgeMatches) {
     edgeEndpointIds.add(edge.from);
     edgeEndpointIds.add(edge.to);
@@ -77,7 +77,7 @@ export function filterSnapshot(
 }
 
 function matchesGraphItem(
-  id: number,
+  id: string,
   model: string,
   label: string,
   props: Record<string, JsonValue>,
