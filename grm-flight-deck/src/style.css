@@ -315,6 +315,38 @@ button:disabled {
   pointer-events: none;
 }
 
+.rendering-overlay {
+  position: absolute;
+  z-index: 3;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  border: 1px solid #263139;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  background: rgb(10 13 14 / 0.86);
+  color: #c3d0d0;
+  font-size: 0.78rem;
+  pointer-events: none;
+}
+
+.spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid rgb(98 198 242 / 0.22);
+  border-top-color: #62c6f2;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .event-band {
   display: flex;
   gap: 0.5rem;

@@ -12,106 +12,137 @@ interface GraphCanvasProps {
 
 type LayoutMode = "force" | "groups" | "hierarchy" | "circle" | "grid";
 type GraphView = "data" | "schema";
+const MIN_RENDERING_MS = 380;
+const RENDER_START_DELAY_MS = 35;
 
 export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<Core | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
   const [graphView, setGraphView] = useState<GraphView>("data");
+  const [rendering, setRendering] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current || !snapshot) {
       return;
     }
 
-    graphRef.current?.destroy();
-    graphRef.current = cytoscape({
-      container: containerRef.current,
-      elements: graphElements(snapshot, graphView),
-      layout: layoutOptions(layoutMode, snapshot),
-      style: [
-        {
-          selector: "node",
-          style: {
-            label: "",
-            shape: "ellipse",
-            "background-color": "data(color)",
-            "border-color": "#d5f8ff",
-            "border-opacity": 0.32,
-            "border-width": 1,
-            "overlay-color": "#62c6f2",
-            "overlay-opacity": 0,
-            "overlay-padding": 4,
-            "active-bg-color": "#62c6f2",
-            "active-bg-opacity": 0.14,
-            "active-bg-size": 24,
-            width: 17,
-            height: 17
-          }
-        },
-        {
-          selector: "edge",
-          style: {
-            width: 1,
-            "line-color": "#536675",
-            "target-arrow-color": "#536675",
-            "target-arrow-shape": "triangle",
-            "arrow-scale": 0.62,
-            "curve-style": "bezier",
-            opacity: 0.56,
-            "overlay-opacity": 0,
-            "active-bg-opacity": 0
-          }
-        },
-        {
-          selector: ":selected",
-          style: {
-            "background-color": "#62c6f2",
-            "line-color": "#62c6f2",
-            "target-arrow-color": "#62c6f2",
-            "border-color": "#fff2c8",
-            "border-width": 2
-          }
-        }
-      ]
-    });
+    let cancelled = false;
+    let startTimer = 0;
+    let clearTimer = 0;
+    setRendering(true);
+    const renderStartedAt = window.performance.now();
 
-    graphRef.current.on("tap", "node", (event) => {
-      const data = event.target.data();
-      onSelect({
-        kind: "node",
-        label: data.label,
-        model: data.model,
-        props: data.props ?? {}
-      });
-    });
-
-    graphRef.current.on("tap", "edge", (event) => {
-      const data = event.target.data();
-      onSelect({
-        kind: "edge",
-        label: data.label,
-        model: data.model,
-        props: data.props ?? {}
-      });
-    });
-
-    graphRef.current.on("tap", (event) => {
-      if (event.target === graphRef.current) {
-        onSelect(null);
+    startTimer = window.setTimeout(() => {
+      if (cancelled || !containerRef.current) {
+        return;
       }
-    });
 
-    graphRef.current.on("mouseover", "node, edge", (event) => {
-      const data = event.target.data();
-      onHover(`${data.model}: ${data.label}`);
-    });
+      graphRef.current?.destroy();
+      const graph = cytoscape({
+        container: containerRef.current,
+        elements: graphElements(snapshot, graphView),
+        layout: { name: "preset" },
+        style: [
+          {
+            selector: "node",
+            style: {
+              label: "",
+              shape: "ellipse",
+              "background-color": "data(color)",
+              "border-color": "#d5f8ff",
+              "border-opacity": 0.32,
+              "border-width": 1,
+              "overlay-color": "#62c6f2",
+              "overlay-opacity": 0,
+              "overlay-padding": 4,
+              "active-bg-color": "#62c6f2",
+              "active-bg-opacity": 0.14,
+              "active-bg-size": 24,
+              width: 17,
+              height: 17
+            }
+          },
+          {
+            selector: "edge",
+            style: {
+              width: 1,
+              "line-color": "#536675",
+              "target-arrow-color": "#536675",
+              "target-arrow-shape": "triangle",
+              "arrow-scale": 0.62,
+              "curve-style": "bezier",
+              opacity: 0.56,
+              "overlay-opacity": 0,
+              "active-bg-opacity": 0
+            }
+          },
+          {
+            selector: ":selected",
+            style: {
+              "background-color": "#62c6f2",
+              "line-color": "#62c6f2",
+              "target-arrow-color": "#62c6f2",
+              "border-color": "#fff2c8",
+              "border-width": 2
+            }
+          }
+        ]
+      });
 
-    graphRef.current.on("mouseout", "node, edge", () => {
-      onHover(null);
-    });
+      graphRef.current = graph;
+
+      graph.on("tap", "node", (event) => {
+        const data = event.target.data();
+        onSelect({
+          kind: "node",
+          label: data.label,
+          model: data.model,
+          props: data.props ?? {}
+        });
+      });
+
+      graph.on("tap", "edge", (event) => {
+        const data = event.target.data();
+        onSelect({
+          kind: "edge",
+          label: data.label,
+          model: data.model,
+          props: data.props ?? {}
+        });
+      });
+
+      graph.on("tap", (event) => {
+        if (event.target === graphRef.current) {
+          onSelect(null);
+        }
+      });
+
+      graph.on("mouseover", "node, edge", (event) => {
+        const data = event.target.data();
+        onHover(`${data.model}: ${data.label}`);
+      });
+
+      graph.on("mouseout", "node, edge", () => {
+        onHover(null);
+      });
+
+      graph.one("layoutstop", () => {
+        const elapsed = window.performance.now() - renderStartedAt;
+        const remaining = Math.max(0, MIN_RENDERING_MS - elapsed);
+        clearTimer = window.setTimeout(() => {
+          if (!cancelled) {
+            setRendering(false);
+          }
+        }, remaining);
+      });
+      graph.layout(layoutOptions(layoutMode, snapshot)).run();
+    }, RENDER_START_DELAY_MS);
 
     return () => {
+      cancelled = true;
+      window.clearTimeout(startTimer);
+      window.clearTimeout(clearTimer);
       graphRef.current?.destroy();
       graphRef.current = null;
     };
@@ -128,7 +159,10 @@ export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
           View
           <select
             value={graphView}
-            onChange={(event) => setGraphView(event.target.value as GraphView)}
+            onChange={(event) => {
+              setRendering(true);
+              setGraphView(event.target.value as GraphView);
+            }}
             disabled={!snapshot}
           >
             <option value="data">Data</option>
@@ -139,7 +173,10 @@ export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
           Layout
           <select
             value={layoutMode}
-            onChange={(event) => setLayoutMode(event.target.value as LayoutMode)}
+            onChange={(event) => {
+              setRendering(true);
+              setLayoutMode(event.target.value as LayoutMode);
+            }}
             disabled={!snapshot}
           >
             <option value="force">Force</option>
@@ -160,6 +197,12 @@ export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
       )}
       {snapshot && graphView === "schema" && snapshot.nodeModels.length === 0 && (
         <div className="empty-state">No schema models are available.</div>
+      )}
+      {rendering && (
+        <div className="rendering-overlay" role="status" aria-live="polite">
+          <span className="spinner" />
+          <span>Rendering graph</span>
+        </div>
       )}
     </section>
   );
