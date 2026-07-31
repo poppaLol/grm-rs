@@ -311,10 +311,19 @@ function layoutOptions(layoutMode: LayoutMode, snapshot: FlightDeckSnapshot): cy
     case "hierarchy":
       return {
         ...base,
+        padding: 96,
         name: "breadthfirst",
         directed: true,
-        spacingFactor: 1.35,
-        circle: false
+        circle: false,
+        avoidOverlap: true,
+        nodeDimensionsIncludeLabels: false,
+        spacingFactor: 2.15,
+        grid: false,
+        maximal: false,
+        transform: (_node, position) => ({
+          x: position.x * 0.48,
+          y: position.y * 3.4
+        })
       };
     case "circle":
       return {
