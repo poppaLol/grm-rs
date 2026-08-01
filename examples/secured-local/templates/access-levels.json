@@ -1,0 +1,147 @@
+{
+  "version": "secured-local-access-templates-v1",
+  "templates": [
+    {
+      "id": "owner-bootstrap-admin",
+      "name": "Owner / Bootstrap Admin",
+      "bootstrap_capable": true,
+      "description": "Initial local owner template for Admin no.1. This expands to explicit current service permissions; the service does not interpret this name as authority.",
+      "assignments": [
+        {
+          "scope": { "kind": "service" },
+          "permissions": [
+            { "action": "workspace.create", "resource": { "kind": "service" } }
+          ]
+        },
+        {
+          "scope": { "kind": "deployment_local_all_workspaces" },
+          "permissions": [
+            { "action": "workspace.open", "resource": { "kind": "workspace" } },
+            { "action": "workspace.close", "resource": { "kind": "workspace" } },
+            { "action": "workspace.inspect", "resource": { "kind": "workspace" } },
+            { "action": "workspace.save", "resource": { "kind": "workspace_artifact" } },
+            { "action": "workspace.load", "resource": { "kind": "workspace_artifact" } },
+            { "action": "workspace.export", "resource": { "kind": "workspace_artifact" } },
+            { "action": "workspace.import", "resource": { "kind": "workspace_artifact" } },
+            { "action": "schema.define", "resource": { "kind": "any_node_model" } },
+            { "action": "schema.define", "resource": { "kind": "any_edge_model" } },
+            { "action": "schema.inspect", "resource": { "kind": "workspace" } },
+            { "action": "node.create", "resource": { "kind": "any_node_model" } },
+            { "action": "node.read", "resource": { "kind": "any_node_model" } },
+            { "action": "node.update", "resource": { "kind": "any_node_model" } },
+            { "action": "node.delete", "resource": { "kind": "any_node_model" } },
+            { "action": "edge.create", "resource": { "kind": "any_edge_model" } },
+            { "action": "edge.read", "resource": { "kind": "any_edge_model" } },
+            { "action": "edge.update", "resource": { "kind": "any_edge_model" } },
+            { "action": "edge.delete", "resource": { "kind": "any_edge_model" } },
+            { "action": "query", "resource": { "kind": "operation_family" } },
+            { "action": "traverse", "resource": { "kind": "operation_family" } },
+            { "action": "explain", "resource": { "kind": "operation_family" } },
+            { "action": "profile", "resource": { "kind": "operation_family" } },
+            { "action": "batch.apply", "resource": { "kind": "operation_family" } },
+            { "action": "index.inspect", "resource": { "kind": "index_catalog" } }
+          ]
+        }
+      ],
+      "reserved_admin_permissions": [
+        {
+          "action": "workspace.inspect",
+          "resource": { "kind": "reserved_admin" },
+          "note": "Reserved for future explicit admin surfaces. Not selected by this bootstrap helper."
+        }
+      ]
+    },
+    {
+      "id": "workspace-admin",
+      "name": "Workspace Admin",
+      "bootstrap_capable": false,
+      "description": "Deployment-local workspace maintenance template without reserved service-admin semantics.",
+      "assignments": [
+        {
+          "scope": { "kind": "service" },
+          "permissions": [
+            { "action": "workspace.create", "resource": { "kind": "service" } }
+          ]
+        },
+        {
+          "scope": { "kind": "deployment_local_all_workspaces" },
+          "permissions": [
+            { "action": "workspace.open", "resource": { "kind": "workspace" } },
+            { "action": "workspace.close", "resource": { "kind": "workspace" } },
+            { "action": "workspace.inspect", "resource": { "kind": "workspace" } },
+            { "action": "schema.inspect", "resource": { "kind": "workspace" } },
+            { "action": "node.read", "resource": { "kind": "any_node_model" } },
+            { "action": "edge.read", "resource": { "kind": "any_edge_model" } },
+            { "action": "explain", "resource": { "kind": "operation_family" } },
+            { "action": "profile", "resource": { "kind": "operation_family" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema-maintainer",
+      "name": "Schema Maintainer",
+      "bootstrap_capable": false,
+      "description": "Deployment-local schema maintenance and inspection template.",
+      "assignments": [
+        {
+          "scope": { "kind": "deployment_local_all_workspaces" },
+          "permissions": [
+            { "action": "workspace.open", "resource": { "kind": "workspace" } },
+            { "action": "workspace.close", "resource": { "kind": "workspace" } },
+            { "action": "schema.define", "resource": { "kind": "any_node_model" } },
+            { "action": "schema.define", "resource": { "kind": "any_edge_model" } },
+            { "action": "schema.inspect", "resource": { "kind": "workspace" } },
+            { "action": "node.read", "resource": { "kind": "any_node_model" } },
+            { "action": "edge.read", "resource": { "kind": "any_edge_model" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graph-reader",
+      "name": "Graph Reader",
+      "bootstrap_capable": false,
+      "description": "Deployment-local graph read and schema inspection template.",
+      "assignments": [
+        {
+          "scope": { "kind": "deployment_local_all_workspaces" },
+          "permissions": [
+            { "action": "workspace.open", "resource": { "kind": "workspace" } },
+            { "action": "workspace.close", "resource": { "kind": "workspace" } },
+            { "action": "schema.inspect", "resource": { "kind": "workspace" } },
+            { "action": "node.read", "resource": { "kind": "any_node_model" } },
+            { "action": "edge.read", "resource": { "kind": "any_edge_model" } },
+            { "action": "traverse", "resource": { "kind": "operation_family" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "audit-reader",
+      "name": "Audit Reader",
+      "bootstrap_capable": false,
+      "description": "Placeholder deployment-local template for future audit inspection UI. It intentionally grants no unsupported audit API permission in this slice.",
+      "assignments": []
+    },
+    {
+      "id": "read-only-explorer",
+      "name": "Read Only Explorer",
+      "bootstrap_capable": false,
+      "description": "Deployment-local read-only explorer template for current public workspace operations.",
+      "assignments": [
+        {
+          "scope": { "kind": "deployment_local_all_workspaces" },
+          "permissions": [
+            { "action": "workspace.open", "resource": { "kind": "workspace" } },
+            { "action": "workspace.close", "resource": { "kind": "workspace" } },
+            { "action": "schema.inspect", "resource": { "kind": "workspace" } },
+            { "action": "node.read", "resource": { "kind": "any_node_model" } },
+            { "action": "edge.read", "resource": { "kind": "any_edge_model" } },
+            { "action": "explain", "resource": { "kind": "operation_family" } }
+          ]
+        }
+      ]
+    }
+  ]
+}
