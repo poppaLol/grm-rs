@@ -1,0 +1,15 @@
+{
+  "certificate_mappings": [
+    {
+      "fingerprint_sha256": "{{ADMIN_CERT_FINGERPRINT_SHA256}}",
+      "principal": {
+        "issuer": "{{PRINCIPAL_ISSUER}}",
+        "subject": "{{PRINCIPAL_SUBJECT}}"
+      }
+    }
+  ],
+  "permission_table": {
+    "version": "{{POLICY_VERSION}}",
+    "assignments": {{PERMISSION_ASSIGNMENTS_JSON}}
+  }
+}
