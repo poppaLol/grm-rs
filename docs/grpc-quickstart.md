@@ -7,6 +7,17 @@ TLS-capable benchmark line.
 The Docker image uses the explicit `docker_local_insecure` profile and should
 publish the host port on loopback only.
 
+For local security posture, keep the profiles distinct:
+
+- `anonymous_local` is a loopback-only developer/test profile with anonymous
+  local access.
+- `docker_local_insecure` is the Docker-hostable local demo profile with no TLS,
+  authentication, or authorization.
+- secured local mTLS uses `GRM_SERVICE_SECURITY_PROFILE=secured`, local
+  certificate material, explicit certificate fingerprint mappings, and a
+  permission table. The passwordless Admin no.1 helper lives in
+  [`examples/secured-local`](../examples/secured-local/README.md).
+
 ## Start The Service
 
 Pull and run the published image:
