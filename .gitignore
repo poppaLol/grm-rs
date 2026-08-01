@@ -32,6 +32,7 @@ target
 
 # local environment files may contain service credentials and key paths
 .env
+.grm/
 
 # Python virtual environments
 .venv/
