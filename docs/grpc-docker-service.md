@@ -49,6 +49,9 @@ A separate local controlled secured demo lives in
 and `docker-compose.cfssl-mtls.yml`. It uses CFSSL-generated local demo
 certificates, explicit certificate fingerprint mapping, and the versioned
 permission table. It does not turn this insecure profile into a secured one.
+For a host-oriented passwordless Admin no.1 setup that writes reusable local
+material under `.grm/secured-local/`, use
+[`examples/secured-local`](../examples/secured-local/README.md).
 
 ## Run The Published Image
 
