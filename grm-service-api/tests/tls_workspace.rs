@@ -50,6 +50,32 @@ impl AuthorizationPolicy for AllowExpectedPrincipalPolicy {
     }
 }
 
+struct VersionedAllowExpectedPrincipalPolicy {
+    expected: Principal,
+    version: &'static str,
+}
+
+impl AuthorizationPolicy for VersionedAllowExpectedPrincipalPolicy {
+    fn policy_version(&self) -> Option<&str> {
+        Some(self.version)
+    }
+
+    fn evaluate(
+        &self,
+        context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError> {
+        if context.authenticated_principal.as_ref() == Some(&self.expected) {
+            Ok(AuthorizationDecision::Allow {
+                reason: AuthorizationReason::ExplicitPolicyAllow,
+            })
+        } else {
+            Ok(AuthorizationDecision::Deny {
+                reason: AuthorizationReason::NoMatchingPermission,
+            })
+        }
+    }
+}
+
 #[tokio::test]
 async fn tls_workspace_service_create_open_execute_roundtrip() {
     let temp = tempfile::tempdir().unwrap();
@@ -307,6 +333,79 @@ async fn mapped_mtls_certificate_can_be_authorized_without_actor_metadata_impers
         })
         .await
         .unwrap();
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn mapped_mtls_certificate_security_status_reports_safe_principal() {
+    let fixture = MtlsFixture::new();
+    let principal = test_principal();
+    let authenticator = mapped_authenticator(vec![mapping(
+        fixture.client.fingerprint.clone(),
+        principal.clone(),
+    )]);
+    let security = ServiceSecurityConfig::secured()
+        .with_authenticator(Arc::new(authenticator))
+        .with_policy(Arc::new(VersionedAllowExpectedPrincipalPolicy {
+            expected: principal.clone(),
+            version: "mtls-status-policy-v1",
+        }));
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+
+    let status = mtls_client(&endpoint, &fixture, &fixture.client)
+        .await
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status.security_profile,
+        proto::SecurityProfile::Secured as i32
+    );
+    assert_eq!(
+        status.identity_status,
+        proto::SecurityIdentityStatus::AuthenticatedPrincipal as i32
+    );
+    assert_eq!(
+        status.authentication_method,
+        MTLS_CERTIFICATE_AUTHENTICATION_METHOD
+    );
+    assert_eq!(status.policy_version, "mtls-status-policy-v1");
+    let observed = status.principal.expect("principal should be present");
+    assert_eq!(observed.issuer, principal.issuer);
+    assert_eq!(observed.subject, principal.subject);
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn unmapped_mtls_certificate_security_status_fails_without_identity_leakage() {
+    let fixture = MtlsFixture::new();
+    let principal = test_principal();
+    let authenticator = mapped_authenticator(vec![mapping(
+        fixture.rotation.fingerprint.clone(),
+        principal.clone(),
+    )]);
+    let security = ServiceSecurityConfig::secured().with_authenticator(Arc::new(authenticator));
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+
+    let denied = mtls_client(&endpoint, &fixture, &fixture.client)
+        .await
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::Unauthenticated);
+    assert_public_error_is_redacted(
+        &denied,
+        &fixture.client.fingerprint,
+        &principal,
+        &fixture.client.cert,
+        &fixture.client.key,
+    );
 
     shutdown.send(()).unwrap();
     server.await.unwrap().unwrap();

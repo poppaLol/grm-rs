@@ -11,6 +11,8 @@ import "grm/service/v1/schema.proto";
 import "grm/service/v1/workspace.proto";
 
 service GrmService {
+  rpc SecurityStatus(SecurityStatusRequest) returns (SecurityStatusResponse);
+
   rpc CreateWorkspace(WorkspaceCreateRequest) returns (WorkspaceCreateResponse);
   rpc OpenWorkspace(WorkspaceOpenRequest) returns (WorkspaceOpenResponse);
   rpc ExecuteWorkspace(WorkspaceRuntimeRequest) returns (WorkspaceRuntimeResponse);
@@ -41,4 +43,33 @@ service GrmService {
   rpc Import(ImportRequest) returns (ImportResponse);
   rpc IndexList(IndexListRequest) returns (IndexListResponse);
   rpc Summary(SummaryRequest) returns (SummaryResponse);
+}
+
+message SecurityStatusRequest {}
+
+enum SecurityProfile {
+  SECURITY_PROFILE_UNSPECIFIED = 0;
+  SECURITY_PROFILE_ANONYMOUS_LOCAL = 1;
+  SECURITY_PROFILE_DOCKER_LOCAL_INSECURE = 2;
+  SECURITY_PROFILE_SECURED = 3;
+}
+
+enum SecurityIdentityStatus {
+  SECURITY_IDENTITY_STATUS_UNSPECIFIED = 0;
+  SECURITY_IDENTITY_STATUS_ANONYMOUS_LOCAL = 1;
+  SECURITY_IDENTITY_STATUS_DOCKER_LOCAL_INSECURE = 2;
+  SECURITY_IDENTITY_STATUS_AUTHENTICATED_PRINCIPAL = 3;
+}
+
+message SecurityPrincipal {
+  string issuer = 1;
+  string subject = 2;
+}
+
+message SecurityStatusResponse {
+  SecurityProfile security_profile = 1;
+  SecurityIdentityStatus identity_status = 2;
+  SecurityPrincipal principal = 3;
+  string authentication_method = 4;
+  string policy_version = 5;
 }
