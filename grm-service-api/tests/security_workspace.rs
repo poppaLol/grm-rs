@@ -154,6 +154,25 @@ impl AuthorizationPolicy for PolicyVersionAssertingPolicy {
     }
 }
 
+struct VersionedDenyPolicy {
+    version: &'static str,
+}
+
+impl AuthorizationPolicy for VersionedDenyPolicy {
+    fn policy_version(&self) -> Option<&str> {
+        Some(self.version)
+    }
+
+    fn evaluate(
+        &self,
+        _context: &SecurityRequestContext,
+    ) -> Result<AuthorizationDecision, PolicyEvaluationError> {
+        Ok(AuthorizationDecision::Deny {
+            reason: AuthorizationReason::NoMatchingPermission,
+        })
+    }
+}
+
 #[tokio::test]
 async fn explicit_anonymous_local_profile_executes_workspace_operations() {
     let (mut client, shutdown, server) =
@@ -167,6 +186,128 @@ async fn explicit_anonymous_local_profile_executes_workspace_operations() {
     )
     .await
     .unwrap();
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn anonymous_local_security_status_is_explicit() {
+    let (mut client, shutdown, server) =
+        start_service(ServiceSecurityConfig::anonymous_local()).await;
+
+    let status = client
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status.security_profile,
+        proto::SecurityProfile::AnonymousLocal as i32
+    );
+    assert_eq!(
+        status.identity_status,
+        proto::SecurityIdentityStatus::AnonymousLocal as i32
+    );
+    assert!(status.principal.is_none());
+    assert!(status.authentication_method.is_empty());
+    assert!(status.policy_version.is_empty());
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn docker_local_insecure_security_status_is_distinct_from_anonymous_local() {
+    let (mut client, shutdown, server) =
+        start_service(ServiceSecurityConfig::docker_local_insecure()).await;
+
+    let status = client
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status.security_profile,
+        proto::SecurityProfile::DockerLocalInsecure as i32
+    );
+    assert_eq!(
+        status.identity_status,
+        proto::SecurityIdentityStatus::DockerLocalInsecure as i32
+    );
+    assert!(status.principal.is_none());
+    assert!(status.authentication_method.is_empty());
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn secured_security_status_reports_authenticated_principal_without_authorizing_work() {
+    let security = ServiceSecurityConfig::secured()
+        .with_authenticator(Arc::new(FixedAuthenticator))
+        .with_policy(Arc::new(VersionedDenyPolicy {
+            version: "status-policy-v1",
+        }));
+    let (mut client, shutdown, server) = start_service(security).await;
+
+    let status = client
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status.security_profile,
+        proto::SecurityProfile::Secured as i32
+    );
+    assert_eq!(
+        status.identity_status,
+        proto::SecurityIdentityStatus::AuthenticatedPrincipal as i32
+    );
+    assert_eq!(status.authentication_method, "server-test-fixture");
+    assert_eq!(status.policy_version, "status-policy-v1");
+    let principal = status.principal.expect("principal should be present");
+    assert_eq!(principal.issuer, "test-service");
+    assert_eq!(principal.subject, "test-principal");
+
+    let denied = client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn secured_security_status_bounds_configured_identity_fields() {
+    let principal = Principal {
+        issuer: "issuer".repeat(80),
+        subject: "subject".repeat(80),
+        authentication_method: "method".repeat(80),
+    };
+    let security = ServiceSecurityConfig::secured()
+        .with_authenticator(Arc::new(PrincipalAuthenticator(principal)));
+    let (mut client, shutdown, server) = start_service(security).await;
+
+    let status = client
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status
+            .principal
+            .expect("principal should be present")
+            .issuer,
+        "<redacted:too-long>"
+    );
+    assert_eq!(status.authentication_method, "<redacted:too-long>");
 
     shutdown.send(()).unwrap();
     server.await.unwrap().unwrap();

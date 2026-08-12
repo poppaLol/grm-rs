@@ -287,6 +287,18 @@ pub async fn grpc_channel(
         .map_err(GrpcWorkspaceClientError::Transport)
 }
 
+pub async fn grpc_security_status(
+    endpoint: impl Into<String>,
+    tls: Option<GrpcClientTlsOptions>,
+) -> GrpcWorkspaceClientResult<proto::SecurityStatusResponse> {
+    let channel = grpc_channel(endpoint, tls.as_ref()).await?;
+    proto::grm_service_client::GrmServiceClient::new(channel)
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .map(|response| response.into_inner())
+        .map_err(GrpcWorkspaceClientError::from)
+}
+
 fn read_tls_file(path: &Path) -> Result<Vec<u8>, GrpcTlsConfigError> {
     fs::read(path).map_err(|source| GrpcTlsConfigError::ReadFile {
         path: path.to_path_buf(),
@@ -1325,6 +1337,7 @@ pub const SECURITY_AUDIT_SCHEMA_VERSION: u16 = 1;
 pub const DEFAULT_SECURITY_AUDIT_MAX_EVENTS: usize = 256;
 pub const DEFAULT_SECURITY_AUDIT_MAX_BYTES: usize = 256 * 1024;
 pub const DEFAULT_SECURITY_AUDIT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+const SECURITY_STATUS_MAX_FIELD_BYTES: usize = 256;
 const SECURITY_AUDIT_MAX_FIELD_BYTES: usize = 128;
 const SECURITY_AUDIT_MAX_OPERATIONS: usize = 64;
 const SECURITY_AUDIT_MAX_EVENT_BYTES: usize = 4096;
@@ -2535,6 +2548,14 @@ impl ServiceSecurityConfig {
         self
     }
 
+    pub fn profile(&self) -> ServiceSecurityProfile {
+        self.profile
+    }
+
+    pub fn policy_version(&self) -> Option<&str> {
+        self.policy.policy_version()
+    }
+
     /// Select the service-owned durable local audit store under `service_root/audit`.
     pub fn with_durable_audit_store(
         self,
@@ -2844,6 +2865,33 @@ impl GrpcWorkspaceService {
             return Ok(());
         }
         Err(SecurityEnforcementError::AuditSinkUnavailable)
+    }
+
+    fn security_status_response(
+        &self,
+        authenticated_principal: Option<Principal>,
+    ) -> proto::SecurityStatusResponse {
+        let principal = authenticated_principal
+            .as_ref()
+            .map(security_status_principal);
+        let authentication_method = authenticated_principal
+            .as_ref()
+            .map(|principal| bounded_security_status_field(&principal.authentication_method))
+            .unwrap_or_default();
+        proto::SecurityStatusResponse {
+            security_profile: security_profile_code(self.security.profile),
+            identity_status: security_identity_status_code(
+                self.security.profile,
+                authenticated_principal.as_ref(),
+            ),
+            principal,
+            authentication_method,
+            policy_version: self
+                .security
+                .policy_version()
+                .map(bounded_security_status_field)
+                .unwrap_or_default(),
+        }
     }
 
     fn start_audit_request(&self) -> Result<SecurityAuditRequest, SecurityEnforcementError> {
@@ -3274,6 +3322,20 @@ fn workspace_create_durability(request: &WorkspaceCreateRequest) -> SecurityAudi
 
 #[tonic::async_trait]
 impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
+    async fn security_status(
+        &self,
+        request: Request<proto::SecurityStatusRequest>,
+    ) -> Result<Response<proto::SecurityStatusResponse>, Status> {
+        self.ensure_mandatory_audit_available()
+            .map_err(security_status)?;
+        let (_transport_peer, authenticated_principal, _asserted_actor) = self
+            .request_security_inputs(&request)
+            .map_err(security_status)?;
+        Ok(Response::new(
+            self.security_status_response(authenticated_principal),
+        ))
+    }
+
     async fn create_workspace(
         &self,
         request: Request<proto::WorkspaceCreateRequest>,
@@ -3994,6 +4056,49 @@ fn log_workspace_lifecycle(workspace: &str, operation: &'static str) {
         }
         .render(workspace)
     );
+}
+
+fn security_profile_code(profile: ServiceSecurityProfile) -> i32 {
+    match profile {
+        ServiceSecurityProfile::AnonymousLocal => proto::SecurityProfile::AnonymousLocal as i32,
+        ServiceSecurityProfile::DockerLocalInsecure => {
+            proto::SecurityProfile::DockerLocalInsecure as i32
+        }
+        ServiceSecurityProfile::Secured => proto::SecurityProfile::Secured as i32,
+    }
+}
+
+fn security_identity_status_code(
+    profile: ServiceSecurityProfile,
+    principal: Option<&Principal>,
+) -> i32 {
+    match (profile, principal) {
+        (_, Some(_)) => proto::SecurityIdentityStatus::AuthenticatedPrincipal as i32,
+        (ServiceSecurityProfile::AnonymousLocal, None) => {
+            proto::SecurityIdentityStatus::AnonymousLocal as i32
+        }
+        (ServiceSecurityProfile::DockerLocalInsecure, None) => {
+            proto::SecurityIdentityStatus::DockerLocalInsecure as i32
+        }
+        (ServiceSecurityProfile::Secured, None) => {
+            proto::SecurityIdentityStatus::Unspecified as i32
+        }
+    }
+}
+
+fn security_status_principal(principal: &Principal) -> proto::SecurityPrincipal {
+    proto::SecurityPrincipal {
+        issuer: bounded_security_status_field(&principal.issuer),
+        subject: bounded_security_status_field(&principal.subject),
+    }
+}
+
+fn bounded_security_status_field(value: &str) -> String {
+    if value.len() <= SECURITY_STATUS_MAX_FIELD_BYTES {
+        value.to_owned()
+    } else {
+        "<redacted:too-long>".into()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
