@@ -1,11 +1,12 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-import { fetchSnapshot, filterSnapshot } from "./api";
+import { fetchSecurityStatus, fetchSnapshot, filterSnapshot } from "./api";
 import { GraphCanvas } from "./GraphCanvas";
 import { colorForModel } from "./modelColors";
 import type {
   ConnectionSettings,
   FlightDeckEvent,
+  FlightDeckSecurityStatus,
   FlightDeckSnapshot,
   GraphFilter,
   SelectedGraphItem
@@ -91,10 +92,57 @@ function EventStreamPanel({ events }: { events: FlightDeckEvent[] }) {
   );
 }
 
+function SecurityStatusPanel({ status }: { status: FlightDeckSecurityStatus | null }) {
+  if (!status) {
+    return null;
+  }
+
+  return (
+    <span className={`security-status ${status.securityProfile}`}>
+      <strong>{securityProfileLabel(status.securityProfile)}</strong>
+      <span>{identityLabel(status)}</span>
+      {status.policyVersion && <span>{status.policyVersion}</span>}
+    </span>
+  );
+}
+
+function securityProfileLabel(profile: FlightDeckSecurityStatus["securityProfile"]): string {
+  switch (profile) {
+    case "anonymous_local":
+      return "Anonymous local";
+    case "docker_local_insecure":
+      return "Docker local insecure";
+    case "secured":
+      return "Secured";
+    case "fixture":
+      return "Fixture";
+    default:
+      return "Unknown";
+  }
+}
+
+function identityLabel(status: FlightDeckSecurityStatus): string {
+  if (status.principal) {
+    const method = status.authenticationMethod ? ` via ${status.authenticationMethod}` : "";
+    return `${status.principal.issuer}/${status.principal.subject}${method}`;
+  }
+  switch (status.identityStatus) {
+    case "anonymous_local":
+      return "anonymous local";
+    case "docker_local_insecure":
+      return "no application principal";
+    case "fixture":
+      return "fixture data";
+    default:
+      return "no authenticated principal";
+  }
+}
+
 export function App() {
   const [settings, setSettings] = useState(readSettings);
   const [filter, setFilter] = useState(DEFAULT_FILTER);
   const [snapshot, setSnapshot] = useState<FlightDeckSnapshot | null>(null);
+  const [securityStatus, setSecurityStatus] = useState<FlightDeckSecurityStatus | null>(null);
   const [selected, setSelected] = useState<SelectedGraphItem | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready for a local service connection.");
@@ -150,6 +198,18 @@ export function App() {
 
     const controller = new AbortController();
     try {
+      try {
+        const loadedSecurityStatus = await fetchSecurityStatus(settings, controller.signal);
+        setSecurityStatus(loadedSecurityStatus);
+      } catch {
+        setSecurityStatus({
+          securityProfile: "unknown",
+          identityStatus: "unknown",
+          principal: null,
+          authenticationMethod: null,
+          policyVersion: null
+        });
+      }
       const loaded = await fetchSnapshot(settings, controller.signal);
       setSnapshot(loaded);
       setStatus(`${loaded.source} snapshot:`);
@@ -159,6 +219,7 @@ export function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSnapshot(null);
+      setSecurityStatus(null);
       setLastError(message);
       setStatus("Connection failed.");
       setStatusDetail("");
@@ -232,7 +293,7 @@ export function App() {
           <span>{status}</span>
           {statusDetail && <span>{statusDetail}</span>}
         </span>
-        <span className="status-item status-mode">Mode: {settings.mode}</span>
+        <SecurityStatusPanel status={securityStatus} />
         {hovered && <span className="hover-preview">{hovered}</span>}
         {lastError && <span className="error">{lastError}</span>}
       </section>
