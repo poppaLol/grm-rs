@@ -13,7 +13,10 @@ use axum::{
     routing::get,
 };
 use grm_rs::{EdgeFindRequest, NodeFindRequest, StoredNode, StoredRel};
-use grm_service_api::{GrpcWorkspaceClient, GrpcWorkspaceClientError, GrpcWorkspaceMode};
+use grm_service_api::{
+    DurabilityFormat, GrpcClientTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceClientError,
+    GrpcWorkspaceMode, grpc_security_status, proto,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
@@ -68,6 +71,23 @@ struct FlightDeckSchemaEdge {
     to_model: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckSecurityStatus {
+    security_profile: String,
+    identity_status: String,
+    principal: Option<FlightDeckPrincipal>,
+    authentication_method: Option<String>,
+    policy_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckPrincipal {
+    issuer: String,
+    subject: String,
+}
+
 async fn snapshot(
     State(state): State<AppState>,
     Path(workspace): Path<String>,
@@ -77,7 +97,31 @@ async fn snapshot(
     load_snapshot(state.grpc_endpoint.to_string(), workspace, limit)
         .await
         .map(Json)
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))
+        .map_err(|error| redacted_gateway_error("snapshot", &error))
+}
+
+async fn security_status(
+    State(state): State<AppState>,
+) -> Result<Json<FlightDeckSecurityStatus>, (StatusCode, String)> {
+    load_security_status(state.grpc_endpoint.to_string())
+        .await
+        .map(Json)
+        .map_err(|error| redacted_gateway_error("security status", &error))
+}
+
+fn redacted_gateway_error(
+    operation: &'static str,
+    _error: &dyn std::error::Error,
+) -> (StatusCode, String) {
+    eprintln!("{}", redacted_gateway_log_message(operation));
+    (
+        StatusCode::BAD_GATEWAY,
+        format!("failed to load {operation} from GRM service"),
+    )
+}
+
+fn redacted_gateway_log_message(operation: &'static str) -> String {
+    format!("flight-deck gateway {operation} error: upstream request failed")
 }
 
 async fn load_snapshot(
@@ -87,11 +131,64 @@ async fn load_snapshot(
 ) -> Result<FlightDeckSnapshot, SnapshotLoadError> {
     let endpoint = endpoint.into();
     let workspace = workspace.into();
-    let mut client =
-        GrpcWorkspaceClient::connect(endpoint, workspace.clone(), GrpcWorkspaceMode::Open).await?;
+    let tls = GrpcClientTlsOptions::from_env().map_err(GrpcWorkspaceClientError::TlsConfig)?;
+    let mut client = GrpcWorkspaceClient::connect_with_format_and_tls(
+        endpoint,
+        workspace.clone(),
+        GrpcWorkspaceMode::Open,
+        DurabilityFormat::Binary,
+        tls,
+    )
+    .await?;
 
     let snapshot_result = collect_snapshot(&mut client, workspace, model_limit).await;
     close_after_snapshot(snapshot_result, async { client.close().await.map(|_| ()) }).await
+}
+
+async fn load_security_status(
+    endpoint: impl Into<String>,
+) -> Result<FlightDeckSecurityStatus, GrpcWorkspaceClientError> {
+    let tls = GrpcClientTlsOptions::from_env().map_err(GrpcWorkspaceClientError::TlsConfig)?;
+    let status = grpc_security_status(endpoint, tls).await?;
+    Ok(flight_deck_security_status(status))
+}
+
+fn flight_deck_security_status(status: proto::SecurityStatusResponse) -> FlightDeckSecurityStatus {
+    let authentication_method = non_empty(status.authentication_method);
+    FlightDeckSecurityStatus {
+        security_profile: security_profile_label(status.security_profile),
+        identity_status: security_identity_status_label(status.identity_status),
+        principal: status.principal.map(|principal| FlightDeckPrincipal {
+            issuer: principal.issuer,
+            subject: principal.subject,
+        }),
+        authentication_method,
+        policy_version: non_empty(status.policy_version),
+    }
+}
+
+fn security_profile_label(value: i32) -> String {
+    match proto::SecurityProfile::try_from(value).ok() {
+        Some(proto::SecurityProfile::AnonymousLocal) => "anonymous_local",
+        Some(proto::SecurityProfile::DockerLocalInsecure) => "docker_local_insecure",
+        Some(proto::SecurityProfile::Secured) => "secured",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_identity_status_label(value: i32) -> String {
+    match proto::SecurityIdentityStatus::try_from(value).ok() {
+        Some(proto::SecurityIdentityStatus::AnonymousLocal) => "anonymous_local",
+        Some(proto::SecurityIdentityStatus::DockerLocalInsecure) => "docker_local_insecure",
+        Some(proto::SecurityIdentityStatus::AuthenticatedPrincipal) => "authenticated_principal",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn non_empty(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 async fn collect_snapshot(
@@ -285,6 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_origin(Any)
         .allow_methods([Method::GET]);
     let app = Router::new()
+        .route("/api/security/status", get(security_status))
         .route("/api/workspaces/:workspace/snapshot", get(snapshot))
         .with_state(AppState {
             grpc_endpoint: grpc_endpoint.into(),
@@ -300,14 +398,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     use grm_rs::{StoredNode, StoredRel};
-    use grm_service_api::GrpcWorkspaceClientError;
+    use grm_service_api::{GrpcTlsConfigError, GrpcWorkspaceClientError};
     use serde_json::json;
 
     use super::{
-        close_after_snapshot, flight_deck_edge, flight_deck_node,
-        include_edges_with_known_endpoints, node_label,
+        close_after_snapshot, flight_deck_edge, flight_deck_node, flight_deck_security_status,
+        include_edges_with_known_endpoints, node_label, redacted_gateway_error,
+        redacted_gateway_log_message,
     };
 
     #[test]
@@ -434,5 +534,58 @@ mod tests {
                 .to_string()
                 .contains("failed to close workspace handle")
         );
+    }
+
+    #[test]
+    fn security_status_serializes_safe_profile_metadata() {
+        let status = flight_deck_security_status(super::proto::SecurityStatusResponse {
+            security_profile: super::proto::SecurityProfile::Secured as i32,
+            identity_status: super::proto::SecurityIdentityStatus::AuthenticatedPrincipal as i32,
+            principal: Some(super::proto::SecurityPrincipal {
+                issuer: "local-admin".into(),
+                subject: "admin-1".into(),
+            }),
+            authentication_method: "mtls-certificate".into(),
+            policy_version: "secured-local-policy-v1".into(),
+        });
+
+        assert_eq!(status.security_profile, "secured");
+        assert_eq!(status.identity_status, "authenticated_principal");
+        assert_eq!(
+            status.principal,
+            Some(super::FlightDeckPrincipal {
+                issuer: "local-admin".into(),
+                subject: "admin-1".into(),
+            })
+        );
+        assert_eq!(
+            status.authentication_method.as_deref(),
+            Some("mtls-certificate")
+        );
+        assert_eq!(
+            status.policy_version.as_deref(),
+            Some("secured-local-policy-v1")
+        );
+    }
+
+    #[test]
+    fn public_gateway_errors_do_not_include_local_tls_paths() {
+        let path = PathBuf::from("/home/laurie/.grm/secured-local/admin-1.key");
+        let error = GrpcWorkspaceClientError::TlsConfig(GrpcTlsConfigError::ReadFile {
+            path: path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing test file"),
+        });
+
+        let (status, body) = redacted_gateway_error("security status", &error);
+        let log = redacted_gateway_log_message("security status");
+
+        assert_eq!(status, super::StatusCode::BAD_GATEWAY);
+        assert_eq!(body, "failed to load security status from GRM service");
+        assert!(!body.contains(path.to_string_lossy().as_ref()));
+        assert!(!body.contains("admin-1.key"));
+        assert!(!body.contains("GRM_SERVICE_TLS_CLIENT_KEY"));
+        assert!(!log.contains(path.to_string_lossy().as_ref()));
+        assert!(!log.contains("admin-1.key"));
+        assert!(!log.contains("GRM_SERVICE_TLS_CLIENT_KEY"));
     }
 }

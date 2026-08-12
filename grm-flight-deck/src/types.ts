@@ -6,7 +6,12 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-export type ConnectionMode = "local-anonymous-dev";
+export type ConnectionMode =
+  | "fixture"
+  | "anonymous_local"
+  | "docker_local_insecure"
+  | "secured"
+  | "local-anonymous-dev";
 
 export interface ConnectionSettings {
   serviceBaseUrl: string;
@@ -42,6 +47,24 @@ export interface FlightDeckSnapshot {
   omittedEdges: number;
   source: "service" | "fixture";
   partialReason?: string;
+}
+
+export interface FlightDeckSecurityStatus {
+  securityProfile: "anonymous_local" | "docker_local_insecure" | "secured" | "fixture" | "unknown";
+  identityStatus:
+    | "anonymous_local"
+    | "docker_local_insecure"
+    | "authenticated_principal"
+    | "fixture"
+    | "unknown";
+  principal?: FlightDeckPrincipal | null;
+  authenticationMethod?: string | null;
+  policyVersion?: string | null;
+}
+
+export interface FlightDeckPrincipal {
+  issuer: string;
+  subject: string;
 }
 
 export interface FlightDeckSchemaEdge {

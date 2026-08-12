@@ -1,5 +1,11 @@
-import { fixtureSnapshot } from "./fixtures";
-import type { ConnectionSettings, FlightDeckSnapshot, GraphFilter, JsonValue } from "./types";
+import { fixtureSecurityStatus, fixtureSnapshot } from "./fixtures";
+import type {
+  ConnectionSettings,
+  FlightDeckSecurityStatus,
+  FlightDeckSnapshot,
+  GraphFilter,
+  JsonValue
+} from "./types";
 
 export async function fetchSnapshot(
   settings: ConnectionSettings,
@@ -26,6 +32,24 @@ export async function fetchSnapshot(
 
   const snapshot = await response.json() as FlightDeckSnapshot;
   return { ...snapshot, source: "service" };
+}
+
+export async function fetchSecurityStatus(
+  settings: ConnectionSettings,
+  signal?: AbortSignal
+): Promise<FlightDeckSecurityStatus> {
+  if (settings.useFixtureData) {
+    return fixtureSecurityStatus;
+  }
+
+  const baseUrl = settings.serviceBaseUrl.trim().replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/api/security/status`, { signal });
+
+  if (!response.ok) {
+    throw new Error(`security status request failed: HTTP ${response.status}`);
+  }
+
+  return await response.json() as FlightDeckSecurityStatus;
 }
 
 export function filterSnapshot(

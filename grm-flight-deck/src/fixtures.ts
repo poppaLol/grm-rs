@@ -1,4 +1,4 @@
-import type { FlightDeckSnapshot } from "./types";
+import type { FlightDeckSecurityStatus, FlightDeckSnapshot } from "./types";
 
 export const fixtureSnapshot: FlightDeckSnapshot = {
   workspace: "flight-deck-demo",
@@ -103,4 +103,12 @@ export const fixtureSnapshot: FlightDeckSnapshot = {
   omittedEdges: 0,
   source: "fixture",
   partialReason: "Fixture data is bundled for local UI development before a service adapter is running."
+};
+
+export const fixtureSecurityStatus: FlightDeckSecurityStatus = {
+  securityProfile: "fixture",
+  identityStatus: "fixture",
+  principal: null,
+  authenticationMethod: null,
+  policyVersion: null
 };

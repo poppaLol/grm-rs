@@ -81,12 +81,25 @@ h3 {
   background: #10171a;
 }
 
+.topbar > div {
+  flex: 0 0 auto;
+}
+
 .connection-form,
 .query-bar {
   display: flex;
   gap: 0.65rem;
   align-items: end;
   flex-wrap: wrap;
+}
+
+.connection-form {
+  min-width: min(100%, 34rem);
+  justify-content: flex-end;
+}
+
+.connection-form label:first-child {
+  flex: 1 1 18rem;
 }
 
 .query-bar {
@@ -144,12 +157,11 @@ button:disabled {
 
 .status-line {
   display: flex;
-  gap: 1rem;
-  align-items: flex-start;
-  height: 3.6rem;
-  min-height: 3.6rem;
+  gap: 0.75rem;
+  align-items: center;
+  min-height: 3rem;
   overflow: hidden;
-  padding: 0.52rem 1.15rem;
+  padding: 0.45rem 1.15rem;
   border-bottom: 1px solid #263139;
   color: #a9b8b7;
   font-size: 0.8rem;
@@ -170,7 +182,7 @@ button:disabled {
 }
 
 .status-item,
-.status-mode {
+.security-status {
   flex: 0 0 auto;
   white-space: nowrap;
 }
@@ -183,6 +195,40 @@ button:disabled {
 .hover-preview {
   flex: 1 1 auto;
   color: #7fbfd9;
+}
+
+.security-status {
+  display: inline-flex;
+  gap: 0.42rem;
+  align-items: center;
+  max-width: min(42vw, 38rem);
+  min-height: 1.8rem;
+  overflow: hidden;
+  border: 1px solid #34444b;
+  border-radius: 5px;
+  padding: 0.18rem 0.45rem;
+  background: #0d1416;
+  font-size: 0.74rem;
+}
+
+.security-status strong {
+  color: #62c6f2;
+  font-size: 0.7rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.security-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.security-status.secured strong {
+  color: #89d59b;
+}
+
+.security-status.docker_local_insecure strong {
+  color: #f0c46f;
 }
 
 .error {
