@@ -22,4 +22,5 @@ Current records:
 - [ADR 0007: Authorize Exact Server-Derived Workspace Permissions](0007-server-derived-workspace-permissions.md)
 - [ADR 0008: Require Bounded Redacted Audit At Security And Effect Boundaries](0008-bounded-authoritative-security-audit.md)
 - [ADR 0009: Use A GRM-Native Service-Owned Audit Log Store](0009-grm-native-audit-log-store.md)
+- [ADR 0010: Use A GRM-Shaped Local Graph Store For The Flight-Deck](0010-flight-deck-local-graph-store.md)
 - [ADR 0011: Use Passwordless Secured-Local Bootstrap With Editable Access Templates](0011-passwordless-secured-local-bootstrap.md)
