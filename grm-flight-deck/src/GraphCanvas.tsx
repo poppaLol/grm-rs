@@ -96,6 +96,7 @@ export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
         const data = event.target.data();
         onSelect({
           kind: "node",
+          id: data.id,
           label: data.label,
           model: data.model,
           props: data.props ?? {}
@@ -106,6 +107,7 @@ export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
         const data = event.target.data();
         onSelect({
           kind: "edge",
+          id: String(data.sourceId ?? data.id),
           label: data.label,
           model: data.model,
           props: data.props ?? {}
@@ -250,6 +252,7 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView) {
     ...snapshot.edges.map((edge) => ({
       data: {
         id: `e${edge.id}`,
+        sourceId: edge.id,
         source: edge.from,
         target: edge.to,
         label: edge.model,

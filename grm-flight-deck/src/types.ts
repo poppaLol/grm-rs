@@ -21,6 +21,12 @@ export interface ConnectionSettings {
   useFixtureData: boolean;
 }
 
+export interface ConnectionProfile {
+  id: string;
+  name: string;
+  settings: ConnectionSettings;
+}
+
 export interface FlightDeckNode {
   id: string;
   model: string;
@@ -88,5 +94,24 @@ export interface FlightDeckEvent {
 }
 
 export type SelectedGraphItem =
-  | { kind: "node"; label: string; model: string; props: Record<string, JsonValue> }
-  | { kind: "edge"; label: string; model: string; props: Record<string, JsonValue> };
+  | { kind: "node"; id: string; label: string; model: string; props: Record<string, JsonValue> }
+  | { kind: "edge"; id: string; label: string; model: string; props: Record<string, JsonValue> };
+
+export type GraphSelection =
+  | { kind: "node"; id: string }
+  | { kind: "edge"; id: string };
+
+export interface NormalizedGraphSnapshot {
+  workspace: string;
+  nodeModels: string[];
+  edgeModels: string[];
+  schemaEdges?: FlightDeckSchemaEdge[];
+  nodesById: Record<string, FlightDeckNode>;
+  edgesById: Record<string, FlightDeckEdge>;
+  nodeIds: string[];
+  edgeIds: string[];
+  modelLimit: number;
+  omittedEdges: number;
+  source: "service" | "fixture";
+  partialReason?: string;
+}
