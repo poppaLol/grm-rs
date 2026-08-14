@@ -1,45 +1,19 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useMemo, useState } from "react";
 
-import { fetchSecurityStatus, fetchSnapshot, filterSnapshot } from "./api";
+import { fetchSecurityStatus, fetchSnapshot } from "./api";
+import {
+  createFlightDeckGraphStore,
+  DEFAULT_GRAPH_FILTER,
+  useFlightDeckGraphStore
+} from "./graphStore";
 import { GraphCanvas } from "./GraphCanvas";
 import { colorForModel } from "./modelColors";
 import type {
-  ConnectionSettings,
-  FlightDeckEvent,
   FlightDeckSecurityStatus,
-  FlightDeckSnapshot,
-  GraphFilter,
   SelectedGraphItem
 } from "./types";
 
-const STORAGE_KEY = "grm-flight-deck.connection.v2";
-const DEFAULT_SETTINGS: ConnectionSettings = {
-  serviceBaseUrl: "",
-  mode: "local-anonymous-dev",
-  workspace: "flight-deck-demo",
-  limit: 50,
-  useFixtureData: true
-};
-
-const DEFAULT_FILTER: GraphFilter = {
-  text: "",
-  model: "",
-  propertyKey: "",
-  propertyValue: ""
-};
-
-function readSettings(): ConnectionSettings {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
-  if (!raw) {
-    return DEFAULT_SETTINGS;
-  }
-
-  try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
-}
+const graphStore = createFlightDeckGraphStore(window.localStorage);
 
 function SchemaList({ title, models }: { title: string; models: string[] }) {
   return (
@@ -79,7 +53,7 @@ function SelectionPanel({ selected }: { selected: SelectedGraphItem | null }) {
   );
 }
 
-function EventStreamPanel({ events }: { events: FlightDeckEvent[] }) {
+function EventStreamPanel({ events }: { events: ReturnType<typeof graphStore.getState>["events"] }) {
   return (
     <section className="event-band" aria-label="Execution events">
       {events.map((event) => (
@@ -139,24 +113,25 @@ function identityLabel(status: FlightDeckSecurityStatus): string {
 }
 
 export function App() {
-  const [settings, setSettings] = useState(readSettings);
-  const [filter, setFilter] = useState(DEFAULT_FILTER);
-  const [snapshot, setSnapshot] = useState<FlightDeckSnapshot | null>(null);
+  const storeState = useFlightDeckGraphStore(graphStore);
   const [securityStatus, setSecurityStatus] = useState<FlightDeckSecurityStatus | null>(null);
-  const [selected, setSelected] = useState<SelectedGraphItem | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
-  const [status, setStatus] = useState("Ready for a local service connection.");
-  const [statusDetail, setStatusDetail] = useState("");
-  const [lastError, setLastError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-  }, [settings]);
-
-  const visibleSnapshot = useMemo(() => {
-    return snapshot ? filterSnapshot(snapshot, filter) : null;
-  }, [filter, snapshot]);
+  const {
+    profiles,
+    selectedProfileId,
+    draftProfileName,
+    settings,
+    filter,
+    snapshot,
+    visibleSnapshot,
+    selectedItem,
+    status,
+    statusDetail,
+    lastError,
+    events
+  } = storeState;
 
   const modelOptions = useMemo(() => {
     if (!snapshot) {
@@ -165,36 +140,10 @@ export function App() {
     return [...snapshot.nodeModels, ...snapshot.edgeModels].sort();
   }, [snapshot]);
 
-  const events = useMemo<FlightDeckEvent[]>(() => {
-    if (!snapshot) {
-      return [
-        { id: "idle", kind: "read", label: "event hook idle", status: "fixture" }
-      ];
-    }
-
-    return [
-      {
-        id: "snapshot-read",
-        kind: "read",
-        label: `${snapshot.nodes.length} nodes observed`,
-        status: snapshot.source === "fixture" ? "fixture" : "observed"
-      },
-      {
-        id: "filter-boundary",
-        kind: "edge-traversed",
-        label: `${visibleSnapshot?.edges.length ?? 0} edges visible`,
-        status: snapshot.source === "fixture" ? "fixture" : "observed"
-      }
-    ];
-  }, [snapshot, visibleSnapshot]);
-
   const load = async (event?: FormEvent) => {
     event?.preventDefault();
     setLoading(true);
-    setSelected(null);
-    setLastError("");
-    setStatus(settings.useFixtureData ? "Loading fixture snapshot..." : "Connecting to service...");
-    setStatusDetail("");
+    graphStore.beginSnapshotLoad(settings.useFixtureData);
 
     const controller = new AbortController();
     try {
@@ -211,25 +160,18 @@ export function App() {
         });
       }
       const loaded = await fetchSnapshot(settings, controller.signal);
-      setSnapshot(loaded);
-      setStatus(`${loaded.source} snapshot:`);
-      setStatusDetail(
-        `${loaded.nodes.length} nodes / ${loaded.edges.length} edges / limit ${loaded.modelLimit}`
-      );
+      graphStore.loadSnapshot(loaded);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setSnapshot(null);
       setSecurityStatus(null);
-      setLastError(message);
-      setStatus("Connection failed.");
-      setStatusDetail("");
+      graphStore.markConnectionFailed(message);
     } finally {
       setLoading(false);
     }
   };
 
   const handleSelect = useCallback((item: SelectedGraphItem | null) => {
-    setSelected(item);
+    graphStore.selectGraphItem(item ? { kind: item.kind, id: item.id } : null);
   }, []);
 
   return (
@@ -241,12 +183,30 @@ export function App() {
         </div>
         <form className="connection-form" onSubmit={load}>
           <label>
+            Profile
+            <select
+              value={selectedProfileId}
+              onChange={(event) => graphStore.selectProfile(event.target.value)}
+            >
+              {profiles.map((profile) => (
+                <option value={profile.id} key={profile.id}>{profile.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Profile name
+            <input
+              value={draftProfileName}
+              onChange={(event) => graphStore.updateDraftProfileName(event.target.value)}
+            />
+          </label>
+          <label>
             Service base URL
             <input
               placeholder="blank uses /api proxy, or http://127.0.0.1:3001"
               value={settings.serviceBaseUrl}
               onChange={(event) =>
-                setSettings({ ...settings, serviceBaseUrl: event.target.value })
+                graphStore.updateSettings({ serviceBaseUrl: event.target.value })
               }
               disabled={settings.useFixtureData}
             />
@@ -256,7 +216,7 @@ export function App() {
             <input
               value={settings.workspace}
               onChange={(event) =>
-                setSettings({ ...settings, workspace: event.target.value })
+                graphStore.updateSettings({ workspace: event.target.value })
               }
             />
           </label>
@@ -268,7 +228,7 @@ export function App() {
               max="1000"
               value={settings.limit}
               onChange={(event) =>
-                setSettings({ ...settings, limit: Number(event.target.value) })
+                graphStore.updateSettings({ limit: Number(event.target.value) })
               }
             />
           </label>
@@ -277,11 +237,17 @@ export function App() {
               type="checkbox"
               checked={settings.useFixtureData}
               onChange={(event) =>
-                setSettings({ ...settings, useFixtureData: event.target.checked })
+                graphStore.updateSettings({ useFixtureData: event.target.checked })
               }
             />
             Fixture
           </label>
+          <button type="button" onClick={graphStore.saveCurrentProfile}>
+            Save profile
+          </button>
+          <button type="button" onClick={graphStore.createProfile}>
+            New profile
+          </button>
           <button type="submit" disabled={loading || settings.workspace.trim() === ""}>
             {loading ? "Loading" : "Connect"}
           </button>
@@ -303,7 +269,7 @@ export function App() {
           Search
           <input
             value={filter.text}
-            onChange={(event) => setFilter({ ...filter, text: event.target.value })}
+            onChange={(event) => graphStore.applyGraphFilter({ ...filter, text: event.target.value })}
             placeholder="id, label, model, property"
           />
         </label>
@@ -311,7 +277,7 @@ export function App() {
           Model
           <select
             value={filter.model}
-            onChange={(event) => setFilter({ ...filter, model: event.target.value })}
+            onChange={(event) => graphStore.applyGraphFilter({ ...filter, model: event.target.value })}
           >
             <option value="">Any</option>
             {modelOptions.map((model) => (
@@ -324,7 +290,7 @@ export function App() {
           <input
             value={filter.propertyKey}
             onChange={(event) =>
-              setFilter({ ...filter, propertyKey: event.target.value })
+              graphStore.applyGraphFilter({ ...filter, propertyKey: event.target.value })
             }
             placeholder="status"
           />
@@ -334,12 +300,12 @@ export function App() {
           <input
             value={filter.propertyValue}
             onChange={(event) =>
-              setFilter({ ...filter, propertyValue: event.target.value })
+              graphStore.applyGraphFilter({ ...filter, propertyValue: event.target.value })
             }
             placeholder="planned"
           />
         </label>
-        <button type="button" onClick={() => setFilter(DEFAULT_FILTER)}>
+        <button type="button" onClick={() => graphStore.applyGraphFilter(DEFAULT_GRAPH_FILTER)}>
           Clear
         </button>
       </section>
@@ -367,7 +333,7 @@ export function App() {
           />
           <EventStreamPanel events={events} />
         </div>
-        <SelectionPanel selected={selected} />
+        <SelectionPanel selected={selectedItem} />
       </div>
     </main>
   );
