@@ -13,6 +13,10 @@ There is no default admin password, no password reset, no bearer-token
 bootstrap, no browser private-key handling, and no live service-side policy
 mutation API in this slice.
 
+For an end-to-end first-time Admin no.1 walkthrough through the local gateway
+and flight-deck, including a non-conflicting `50052` secured-service port, see
+[First-Time Admin-1 Secured-Local Flight-Deck Onboarding](../../docs/secured-local-admin-1-flight-deck-onboarding.md).
+
 ## Profiles
 
 GRM now has three separate local profiles:

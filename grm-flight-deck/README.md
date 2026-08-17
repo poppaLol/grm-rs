@@ -38,6 +38,10 @@ Then disable `Fixture` in the UI and use workspace `flight-deck-demo`. Leaving
 `http://127.0.0.1:3001`; setting it to `http://127.0.0.1:3001` also works for
 local development.
 
+For the passwordless secured-local Admin no.1 path, including mTLS bootstrap,
+local gateway credentials, and profile switching in the UI, see
+[`docs/secured-local-admin-1-flight-deck-onboarding.md`](../docs/secured-local-admin-1-flight-deck-onboarding.md).
+
 The gateway also exposes:
 
 ```bash
