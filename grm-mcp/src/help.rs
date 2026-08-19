@@ -8,7 +8,7 @@ Recommended agent workflow:
 3. If Neo4j mode is active, read grm://backend/status and grm://graph/summary; if schema_template_loaded is true, call grm_schema_list and use the recovered models. If runtime schema is empty, define or reconstruct schema before typed reads or writes.
 4. Before defining schema, decide the graph's richness vs sparseness.
 5. Prefer structured tools for schema, node, edge, introspection, import, export, and persistence operations.
-6. For more than 3 creates or updates, prefer grm_batch with ops as structured operation objects, not CLI strings or JSON-encoded strings.
+6. For more than 3 creates or updates, prefer grm_batch_write with ops as structured operation objects, not CLI strings or JSON-encoded strings. Use grm_batch_destructive only when the intended batch includes node_delete or edge_delete. grm_batch remains available as the compatibility/general batch surface.
 7. Use grm_explain or grm_profile to inspect node.find and edge.find plans when supported by the active backend.
 8. Prefer grm_node_find for structured traversal-capable node.find requests; use grm_query for exact CLI parity when supported by the active backend.
 9. After any tool error you cannot immediately fix, call grm_tool_help for that tool.
@@ -19,7 +19,7 @@ Neo4j mode note:
 - GRM_SCHEMA_TEMPLATE is an optional server startup environment variable, not a tool call. When set by the operator, it points at a local GRM JSON session file used as durable schema memory while Neo4j stores graph data.
 - If the file is missing, startup creates a fresh schema memory file. If it exists, startup recovers runtime schema from it. Invalid files fail startup loudly.
 - On startup, call grm_schema_list and inspect grm://backend/status and grm://graph/summary. If schema_template_loaded is true, verify the recovered models before writing. If schema is empty, ask whether to define a fresh schema or reconstruct one from project docs.
-- Neo4j mode supports grm_schema_checkpoint as an explicit maintenance operation to fold schema-memory append-log records into the configured GRM_SCHEMA_TEMPLATE base file. Do not call it during startup or read-only orientation unless the operator requests compaction or the append log is too large. Neo4j mode also supports grm_batch for schema_define_node, schema_define_edge, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and graph summary counts for the current session-local runtime schema. General snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
+- Neo4j mode supports grm_schema_checkpoint as an explicit maintenance operation to fold schema-memory append-log records into the configured GRM_SCHEMA_TEMPLATE base file. Do not call it during startup or read-only orientation unless the operator requests compaction or the append log is too large. Neo4j mode also supports grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema_define_node, schema_define_edge, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, and graph summary counts for the current session-local runtime schema. General snapshots, import/export, autocommit, explain/profile, and traversal/query parity are not supported yet.
 
 Schema richness vs sparseness:
 - Rich schemas use more specific node and edge models when concepts have distinct fields, constraints, relationships, or query meaning.
@@ -41,7 +41,9 @@ pub fn help_index() -> Value {
             "Before defining schema, decide the graph's richness vs sparseness.",
             "Prefer structured tools over grm_query except when exact CLI-compatible command text is required.",
             "Use grm_explain or grm_profile to inspect node.find and edge.find plans.",
-            "For more than 3 creates or updates, prefer grm_batch with ops as structured operation objects, not CLI strings or JSON-encoded strings.",
+            "For more than 3 creates or updates, prefer grm_batch_write with ops as structured operation objects, not CLI strings or JSON-encoded strings.",
+            "Use grm_batch_destructive only when the intended batch includes node_delete or edge_delete; it still requires allow_deletes=true.",
+            "grm_batch remains available for compatibility/general batch behavior.",
             "After recoverable errors, call grm_tool_help with the tool name before retrying.",
             "Verify writes with grm://graph/summary, grm://graph/export, or grm_export."
         ],
@@ -54,7 +56,7 @@ pub fn help_index() -> Value {
                 "Prefer rich edge models when relationships mean different things or drive different traversals, for example AUTHORED, PURCHASED, LOCATEDIN, and DEPENDSON.",
                 "Prefer sparse edge models when relationships share meaning and differ mainly by properties, for example RELATEDTO with kind, confidence, and source."
             ],
-            "batching": "After choosing schema granularity, batch related schema and data mutations. For more than 3 related creates or updates, prefer grm_batch so refs, validation, and rollback happen together. In grm_batch, ops must be an array of operation objects, not CLI strings or JSON-encoded strings."
+            "batching": "After choosing schema granularity, batch related schema and data mutations. For more than 3 related creates or updates, prefer grm_batch_write so refs, validation, and rollback happen together. Use grm_batch_destructive only for delete-bearing batches with allow_deletes=true. grm_batch remains the compatibility/general batch surface. Batch ops must be an array of operation objects, not CLI strings or JSON-encoded strings."
         },
         "neo4j_schema_memory": {
             "configuration": "GRM_SCHEMA_TEMPLATE=<path> is set before starting grm-mcp; it is not passed to a GRM tool.",
@@ -74,7 +76,7 @@ pub fn help_index() -> Value {
                 "Read grm://backend/status.",
                 "If schema_template_loaded is true, compare the recovered node and edge models with the intended write.",
                 "If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory.",
-                "If runtime_schema_empty is true, ask whether to define schema with grm_schema_define_node/grm_schema_define_edge or grm_batch.",
+                "If runtime_schema_empty is true, ask whether to define schema with grm_schema_define_node/grm_schema_define_edge or grm_batch_write.",
                 "Only write after the runtime schema contains the target models and fields."
             ]
         },
@@ -90,7 +92,7 @@ pub fn help_index() -> Value {
         "tool_categories": {
             "help": ["grm_help", "grm_tool_help"],
             "schema": ["grm_schema_list", "grm_schema_checkpoint", "grm_schema_define_node", "grm_schema_define_edge", "grm_index_list"],
-            "batch": ["grm_batch"],
+            "batch": ["grm_batch_write", "grm_batch_destructive", "grm_batch"],
             "nodes": ["grm_node_create", "grm_node_update", "grm_node_delete", "grm_node_find"],
             "edges": ["grm_edge_create", "grm_edge_update", "grm_edge_delete", "grm_edge_find"],
             "query": ["grm_explain", "grm_profile", "grm_query"],
@@ -200,7 +202,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         }),
         "grm_batch" => json!({
             "tool": "grm_batch",
-            "purpose": "Apply an ordered list of structured schema, node, and edge mutations in one MCP call.",
+            "purpose": "Compatibility/general batch surface for an ordered list of structured schema, node, and edge mutations in one MCP call. New ordinary create/update batches should prefer grm_batch_write; delete-bearing batches should prefer grm_batch_destructive.",
             "input_shape": [
                 "ops is an array of operation objects, not CLI command strings and not serialized JSON strings.",
                 "Correct item shape: { \"op\": \"node_create\", \"args\": { \"model\": \"File\", \"props\": { \"path\": \"src/lib.rs\" } } }.",
@@ -239,7 +241,9 @@ pub fn tool_help(name: &str) -> Option<Value> {
             ],
             "neo4j_note": "Neo4j mode currently requires atomic=true. It applies supported batch operations in order, writes graph mutations in one Neo4j transaction, and stages session-local schema until commit. It does not auto-create schema from data writes. If GRM_SCHEMA_TEMPLATE recovered schema memory at startup, omit schema_define_* ops only when grm_schema_list already shows the needed models and fields. New schema definitions are persisted to the local schema memory file when configured.",
             "before_calling": [
-                "Use this for more than 3 creates or updates.",
+                "For more than 3 creates or updates, prefer grm_batch_write.",
+                "Use grm_batch_destructive only when the batch intentionally includes node_delete or edge_delete operations.",
+                "Use grm_batch when compatibility with the original general batch surface is required.",
                 "In Neo4j mode, read grm://backend/status and call grm_schema_list first; recovered schema memory may already contain the needed schema metadata.",
                 "Define referenced models before creating nodes or edges.",
                 "Use ref on node_create operations when later edge_create operations should refer to those new nodes.",
@@ -278,7 +282,75 @@ pub fn tool_help(name: &str) -> Option<Value> {
                 recovery("missing required field", "Provide all required fields from the schema."),
                 recovery("invalid type: string, expected adjacently tagged enum SessionBatchOp", "Pass each ops entry as a JSON object with op and args fields, not as a JSON-encoded string.")
             ],
-            "related": ["grm_schema_list", "grm_node_create", "grm_edge_create"]
+            "related": ["grm_batch_write", "grm_batch_destructive", "grm_schema_list", "grm_node_create", "grm_edge_create"]
+        }),
+        "grm_batch_write" => json!({
+            "tool": "grm_batch_write",
+            "purpose": "Apply an ordered list of non-destructive structured schema, node, and edge writes in one MCP call.",
+            "safety": [
+                "Allows schema_define_node, schema_define_edge, node_create, node_update, edge_create, and edge_update.",
+                "Rejects node_delete and edge_delete before execution or side effects, including when atomic=false.",
+                "Rejects allow_deletes=true so confused callers move to the explicit destructive surface."
+            ],
+            "defaults": {
+                "atomic": true,
+                "allow_deletes": false,
+                "response": "summary"
+            },
+            "before_calling": [
+                "Use this for more than 3 creates or updates.",
+                "Use grm_batch_destructive only when the intended batch includes node_delete or edge_delete.",
+                "Use operation objects, not CLI strings or JSON-encoded strings."
+            ],
+            "supported_ops": [
+                "schema_define_node",
+                "schema_define_edge",
+                "node_create",
+                "node_update",
+                "edge_create",
+                "edge_update"
+            ],
+            "common_errors": [
+                recovery("rejects allow_deletes=true", "Use grm_batch_destructive for delete-bearing batches, or omit allow_deletes for ordinary create/update batches."),
+                recovery("rejects node_delete", "Use grm_batch_destructive with allow_deletes=true when the delete is intentional."),
+                recovery("rejects edge_delete", "Use grm_batch_destructive with allow_deletes=true when the delete is intentional."),
+                recovery("invalid type: string, expected adjacently tagged enum SessionBatchOp", "Pass each ops entry as a JSON object with op and args fields, not as a JSON-encoded string.")
+            ],
+            "related": ["grm_batch_destructive", "grm_batch", "grm_schema_list"]
+        }),
+        "grm_batch_destructive" => json!({
+            "tool": "grm_batch_destructive",
+            "purpose": "Apply an ordered list of structured schema, node, and edge mutations that may include node_delete or edge_delete.",
+            "safety": [
+                "Exposed to MCP hosts with destructive_hint=true and open_world_hint=false.",
+                "Delete-bearing batches still require allow_deletes=true.",
+                "Classification is derived by the server from typed operation objects."
+            ],
+            "defaults": {
+                "atomic": true,
+                "allow_deletes": false,
+                "response": "summary"
+            },
+            "supported_ops": [
+                "schema_define_node",
+                "schema_define_edge",
+                "node_create",
+                "node_update",
+                "node_delete",
+                "edge_create",
+                "edge_update",
+                "edge_delete"
+            ],
+            "before_calling": [
+                "Use this only when the intended batch includes node_delete or edge_delete.",
+                "Set allow_deletes=true for delete-bearing batches.",
+                "Do not use this for broad cleanup, wildcard deletes, schema deletes, workspace deletes, imports, restores, or resets."
+            ],
+            "common_errors": [
+                recovery("requires allow_deletes=true", "Set allow_deletes=true only when the batch intentionally includes delete operations."),
+                recovery("was not found", "Find the target id before retrying; failed atomic destructive batches preserve the target entity.")
+            ],
+            "related": ["grm_batch_write", "grm_batch", "grm_node_find", "grm_edge_find"]
         }),
         "grm_schema_define_edge" => json!({
             "tool": "grm_schema_define_edge",
@@ -306,7 +378,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_node_create" => json!({
             "tool": "grm_node_create",
             "purpose": "Create a node for an existing runtime model.",
-            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch_write.",
             "before_calling": ["Call grm_schema_list if you do not know the model fields."],
             "example": {
                 "model": "File",
@@ -323,7 +395,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_node_update" => json!({
             "tool": "grm_node_update",
             "purpose": "Update properties on an existing node.",
-            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch_write.",
             "example": {
                 "model": "File",
                 "id": 1,
@@ -384,7 +456,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_edge_create" => json!({
             "tool": "grm_edge_create",
             "purpose": "Create an edge between two existing node ids.",
-            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch_write.",
             "before_calling": ["Call grm_schema_list to confirm from_model and to_model.", "Call grm_node_find if you do not know endpoint ids."],
             "example": {
                 "model": "CONTAINS",
@@ -403,7 +475,7 @@ pub fn tool_help(name: &str) -> Option<Value> {
         "grm_edge_update" => json!({
             "tool": "grm_edge_update",
             "purpose": "Update properties on an existing edge.",
-            "batching_note": "For more than 3 creates or updates, prefer grm_batch.",
+            "batching_note": "For more than 3 creates or updates, prefer grm_batch_write.",
             "example": { "model": "CONTAINS", "id": 1, "props": {} },
             "common_errors": [
                 recovery("edge was not found", "Call grm_edge_find to locate the current edge id."),
@@ -563,6 +635,8 @@ pub fn known_tools() -> Vec<&'static str> {
         "grm_schema_list",
         "grm_schema_checkpoint",
         "grm_index_list",
+        "grm_batch_write",
+        "grm_batch_destructive",
         "grm_batch",
         "grm_schema_define_node",
         "grm_schema_define_edge",

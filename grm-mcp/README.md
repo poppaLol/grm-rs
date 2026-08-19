@@ -137,16 +137,20 @@ local GRM JSON session file for Neo4j runtime schema memory. If the file exists,
 the server recovers the session-local runtime schema from it. If the file is
 missing, the server starts with an empty schema and creates a fresh local file.
 Schema definitions made through `grm_schema_define_node`,
-`grm_schema_define_edge`, or Neo4j-supported `grm_batch` schema ops are appended
-to that local file as they are built. This does not create Neo4j nodes or
+`grm_schema_define_edge`, or Neo4j-supported `grm_batch_write` schema ops are
+appended to that local file as they are built. This does not create Neo4j nodes or
 relationships, and it does not persist schema metadata into Neo4j.
 
 Neo4j mode is intentionally narrow. It supports:
 
 - `grm_schema_list`
 - `grm_schema_checkpoint`
-- `grm_batch` for `schema_define_node`, `schema_define_edge`, `node_create`,
-  `node_update`, `node_delete`, `edge_create`, `edge_update`, and `edge_delete`
+- `grm_batch_write` for `schema_define_node`, `schema_define_edge`,
+  `node_create`, `node_update`, `edge_create`, and `edge_update`
+- `grm_batch_destructive` for delete-bearing batches with `allow_deletes=true`
+- compatibility `grm_batch` for `schema_define_node`, `schema_define_edge`,
+  `node_create`, `node_update`, `node_delete`, `edge_create`, `edge_update`,
+  and `edge_delete`
 - `grm_schema_define_node`
 - `grm_schema_define_edge`
 - `grm_node_create`
@@ -182,11 +186,12 @@ Agent/tool flow after startup:
    current runtime schema and verify the intended write matches those fields and
    endpoints.
 5. If `runtime_schema_empty` is `true`, define schema with
-   `grm_schema_define_node`, `grm_schema_define_edge`, or a `grm_batch`
+   `grm_schema_define_node`, `grm_schema_define_edge`, or a `grm_batch_write`
    containing `schema_define_node`/`schema_define_edge` ops. If
    `schema_template_persistence_enabled` is `true`, those schema definitions are
    persisted to the configured local file.
-6. Only then write graph data with `grm_batch`, `grm_node_create`,
+6. Only then write graph data with `grm_batch_write`, `grm_batch_destructive`
+   for intentional deletes, compatibility `grm_batch`, `grm_node_create`,
    `grm_node_update`, `grm_node_delete`, `grm_edge_create`, `grm_edge_update`,
    or `grm_edge_delete`.
 `grm_schema_checkpoint` is not part of startup or read-only orientation. Use it
@@ -202,9 +207,10 @@ rather than relying on the conservative built-in help text. For example:
 You may design and define the GRM runtime schema for this Neo4j memory task.
 First call grm_schema_list and inspect grm://backend/status. If the runtime
 schema is empty or missing required models, choose a compact schema, define it
-with grm_batch schema_define_node/schema_define_edge operations, then create the
-requested graph data. Do not infer schema from Neo4j labels/properties, and do
-not write anything until the runtime schema contains the target models.
+with grm_batch_write schema_define_node/schema_define_edge operations, then
+create the requested graph data. Do not infer schema from Neo4j
+labels/properties, and do not write anything until the runtime schema contains
+the target models.
 ```
 
 Graph durability comes from Neo4j, not the GRM WAL/autocommit layer. Neo4j mode
@@ -299,8 +305,8 @@ grm://docs/query-language
 ## Bulk Writes
 
 Agents often create extracted graphs one entity at a time when only
-single-operation tools are visible. Use `grm_batch` when applying more than a
-few ordered schema, node, or edge mutations:
+single-operation tools are visible. Use `grm_batch_write` when applying more
+than a few ordered schema, node, or edge create/update mutations:
 
 ```json
 {
@@ -341,21 +347,22 @@ few ordered schema, node, or edge mutations:
 }
 ```
 
-`grm_batch` applies operations in order. By default, batches are atomic and
+`grm_batch_write` applies operations in order. By default, batches are atomic and
 return a compact summary grouped by operation and model. Use
 `"response": "detailed"` when you need created or updated ids back. Node create
 operations may provide a batch-local `ref`, and later edge create operations may
 use either numeric ids or those earlier refs as endpoints. Refs must be unique
-within a batch. Delete operations are rejected unless `allow_deletes` is set to
-`true`.
+within a batch. `grm_batch_write` rejects delete operations before execution.
+Use `grm_batch_destructive` with `allow_deletes=true` only when the intended
+batch includes `node_delete` or `edge_delete`. `grm_batch` remains available as
+the compatibility/general batch surface.
 
-In Neo4j mode, `grm_batch` currently requires `atomic=true` and supports
-schema definition plus single node/edge create, update, and delete operations.
-It stages session-local schema metadata and executes Neo4j graph mutations in one
-transaction, committing only after every supported operation succeeds. It does
-not auto-create schema from data writes; creating or finding a model that is not
-registered in the session-local runtime schema fails with guidance to define
-schema first.
+In Neo4j mode, `grm_batch_write`, `grm_batch_destructive`, and compatibility
+`grm_batch` currently require `atomic=true`. They stage session-local schema
+metadata and execute Neo4j graph mutations in one transaction, committing only
+after every supported operation succeeds. They do not auto-create schema from
+data writes; creating or finding a model that is not registered in the
+session-local runtime schema fails with guidance to define schema first.
 
 `grm_graph_patch` remains the planned declarative graph-shaped bulk write
 surface.

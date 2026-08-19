@@ -78,8 +78,11 @@ full live-database safety policy.
 - Inspect existing nodes and edges before creating replacements or duplicates.
 - Use only fields and relationship models declared by `grm_schema_list`.
 - Prefer individual structured tools for up to three narrow changes.
-- Prefer atomic `grm_batch` for more than three related creates or updates;
+- Prefer atomic `grm_batch_write` for more than three related creates or updates;
   pass operation objects directly and use batch-local refs for new endpoints.
+  Use `grm_batch_destructive` only when the intended batch includes
+  `node_delete` or `edge_delete`, and keep compatibility `grm_batch` for callers
+  that deliberately need the original general batch surface.
 - Do not enable deletes or perform broad cleanup without explicit user
   approval and a narrowly verified target.
 - Keep graph property values to supported scalar strings, numbers, or booleans.

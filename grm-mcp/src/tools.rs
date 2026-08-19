@@ -34,6 +34,13 @@ use crate::server::GrmMcpServer;
 
 const QUERY_LANGUAGE_DOC: &str = include_str!("../../docs/query-language-design.md");
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchSafetyMode {
+    Compatibility,
+    WriteOnly,
+    Destructive,
+}
+
 #[tool_router(vis = "pub(crate)")]
 impl GrmMcpServer {
     #[tool(
@@ -109,36 +116,37 @@ impl GrmMcpServer {
     }
 
     #[tool(
-        description = "Apply an ordered list of structured schema/node/edge operation objects. Do not JSON-encode operations as strings; each ops item must be an object like {\"op\":\"node_create\",\"args\":{...}}. Prefer this for more than 3 creates or updates."
+        description = "Compatibility/general batch surface for structured schema/node/edge operation objects. New create/update batches should prefer grm_batch_write; delete-bearing batches should prefer grm_batch_destructive.",
+        annotations(destructive_hint = true, open_world_hint = false)
     )]
     async fn grm_batch(
         &self,
         Parameters(params): Parameters<BatchParams>,
     ) -> Result<Json<JsonObject>, McpError> {
-        if self.is_service() {
-            let value = self
-                .service_backend()
-                .map_err(to_mcp_error)?
-                .batch(params.0)
-                .await
-                .map_err(to_mcp_error)?;
-            return Ok(Json(to_object(value)?));
-        }
-        if self.is_neo4j() {
-            let value = self.neo4j_batch(params.0).await.map_err(to_mcp_error)?;
-            return Ok(Json(to_object(value)?));
-        }
-        let mut state = self.state.lock().await;
-        let outcome = apply_session_batch(&mut state, params.0)
+        self.run_batch(params.0, BatchSafetyMode::Compatibility)
             .await
-            .map_err(to_mcp_error)?;
-        if outcome.should_persist {
-            self.append_autocommit_ops(&state, &outcome.durable_ops)
-                .await
-                .map_err(to_mcp_error)?;
-        }
+    }
 
-        Ok(Json(to_object(outcome.value)?))
+    #[tool(
+        description = "Apply an ordered list of non-destructive structured schema/node/edge write operation objects. Allows schema definitions, creates, and updates; rejects node_delete and edge_delete before execution. Prefer this for more than 3 creates or updates.",
+        annotations(destructive_hint = false, open_world_hint = false)
+    )]
+    async fn grm_batch_write(
+        &self,
+        Parameters(params): Parameters<BatchParams>,
+    ) -> Result<Json<JsonObject>, McpError> {
+        self.run_batch(params.0, BatchSafetyMode::WriteOnly).await
+    }
+
+    #[tool(
+        description = "Apply an ordered list of structured schema/node/edge operation objects that may include node_delete or edge_delete. Delete-bearing batches still require allow_deletes=true.",
+        annotations(destructive_hint = true, open_world_hint = false)
+    )]
+    async fn grm_batch_destructive(
+        &self,
+        Parameters(params): Parameters<BatchParams>,
+    ) -> Result<Json<JsonObject>, McpError> {
+        self.run_batch(params.0, BatchSafetyMode::Destructive).await
     }
 
     #[tool(
@@ -752,6 +760,39 @@ impl GrmMcpServer {
 }
 
 impl GrmMcpServer {
+    async fn run_batch(
+        &self,
+        params: SessionBatchParams,
+        safety: BatchSafetyMode,
+    ) -> Result<Json<JsonObject>, McpError> {
+        validate_batch_safety(&params, safety).map_err(to_mcp_error)?;
+
+        if self.is_service() {
+            let value = self
+                .service_backend()
+                .map_err(to_mcp_error)?
+                .batch(params)
+                .await
+                .map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
+        if self.is_neo4j() {
+            let value = self.neo4j_batch(params).await.map_err(to_mcp_error)?;
+            return Ok(Json(to_object(value)?));
+        }
+        let mut state = self.state.lock().await;
+        let outcome = apply_session_batch(&mut state, params)
+            .await
+            .map_err(to_mcp_error)?;
+        if outcome.should_persist {
+            self.append_autocommit_ops(&state, &outcome.durable_ops)
+                .await
+                .map_err(to_mcp_error)?;
+        }
+
+        Ok(Json(to_object(outcome.value)?))
+    }
+
     async fn neo4j_batch(&self, params: SessionBatchParams) -> grm_rs::Result<Value> {
         let _schema_write = self.neo4j_schema_write.lock().await;
         let mut staged = {
@@ -908,6 +949,32 @@ impl GrmMcpServer {
     }
 }
 
+fn validate_batch_safety(
+    params: &SessionBatchParams,
+    safety: BatchSafetyMode,
+) -> grm_rs::Result<()> {
+    match safety {
+        BatchSafetyMode::Compatibility | BatchSafetyMode::Destructive => Ok(()),
+        BatchSafetyMode::WriteOnly => {
+            if params.allow_deletes {
+                return Err(GrmError::Constraint(
+                    "grm_batch_write rejects allow_deletes=true; use grm_batch_destructive for delete-bearing batches".into(),
+                ));
+            }
+
+            if let Some((index, op)) = params.ops.iter().enumerate().find(|(_, op)| op.is_delete())
+            {
+                return Err(GrmError::Constraint(format!(
+                    "grm_batch_write rejects {} at ops[{index}] before execution; use grm_batch_destructive with allow_deletes=true for delete-bearing batches",
+                    op.op_name()
+                )));
+            }
+
+            Ok(())
+        }
+    }
+}
+
 fn with_neo4j_batch_backend(mut value: Value) -> Value {
     value["backend"] = json!({
         "mode": "neo4j",
@@ -1013,13 +1080,13 @@ fn field_value_type(raw: &str) -> Option<FieldValueType> {
 
 fn missing_node_schema(model: &str) -> GrmError {
     GrmError::Constraint(format!(
-        "node model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_node or grm_batch schema_define_node before creating or finding typed Neo4j data"
+        "node model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_node or grm_batch_write schema_define_node before creating or finding typed Neo4j data"
     ))
 }
 
 fn missing_edge_schema(model: &str) -> GrmError {
     GrmError::Constraint(format!(
-        "edge model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_edge or grm_batch schema_define_edge before creating or finding typed Neo4j data"
+        "edge model '{model}' is not registered in the session-local runtime schema; call grm_schema_list and define schema first with grm_schema_define_edge or grm_batch_write schema_define_edge before creating or finding typed Neo4j data"
     ))
 }
 
@@ -1027,9 +1094,9 @@ fn missing_edge_schema(model: &str) -> GrmError {
 impl ServerHandler for GrmMcpServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = if self.is_service() {
-            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node or edge results, edge_find, grm_explain, and grm_profile through ExecuteWorkspace. Direct service RPC families, import/export, and free-form query parity are not supported yet."
+            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node or edge results, edge_find, grm_explain, and grm_profile through ExecuteWorkspace. Direct service RPC families, import/export, and free-form query parity are not supported yet."
         } else if self.is_neo4j() {
-            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status and grm://graph/summary; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch writes. Neo4j mode supports schema define/list/checkpoint, grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, simple node/edge find, and graph summary counts for the current session-local runtime schema."
+            "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status and grm://graph/summary; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch_write writes. Neo4j mode supports schema define/list/checkpoint, grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, simple node/edge find, and graph summary counts for the current session-local runtime schema."
         } else {
             "Use GRM tools to inspect and mutate the local runtime graph session. Prefer structured tools over raw CLI commands when possible."
         };
