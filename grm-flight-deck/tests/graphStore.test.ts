@@ -174,3 +174,120 @@ test("derives visible graph from filter state and clears disappeared selection",
   assert.equal(state.selectedItem, null);
   assert.equal(state.selection, null);
 });
+
+test("starts in the query panel with connection details and insights hidden", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  const state = store.getState();
+
+  assert.equal(state.activeWorkspacePanel, "query");
+  assert.equal(state.graphView, "data");
+  assert.equal(state.connectionDetailsOpen, false);
+  assert.equal(state.explainVisible, false);
+  assert.equal(state.profileVisible, false);
+
+  store.selectWorkspacePanel("audit");
+  store.setGraphView("schema");
+  store.setConnectionDetailsOpen(true);
+  store.setExplainVisible(true);
+  store.setProfileVisible(true);
+
+  const changed = store.getState();
+  assert.equal(changed.activeWorkspacePanel, "audit");
+  assert.equal(changed.graphView, "schema");
+  assert.equal(changed.connectionDetailsOpen, true);
+  assert.equal(changed.explainVisible, true);
+  assert.equal(changed.profileVisible, true);
+});
+
+test("does not record query execution before a snapshot is loaded", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.recordQueryExecution();
+
+  const state = store.getState();
+  assert.equal(state.lastExecutedQuery, null);
+  assert.deepEqual(state.events.map((event) => event.id), ["idle"]);
+});
+
+test("records explicit query execution as a bounded local audit event", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadSnapshot(snapshot);
+  store.applyGraphFilter({
+    text: "connection profiles",
+    model: "",
+    propertyKey: "",
+    propertyValue: ""
+  });
+  store.recordQueryExecution();
+
+  const state = store.getState();
+  assert.equal(state.lastExecutedQuery?.workspace, "flight-deck-demo");
+  assert.equal(state.lastExecutedQuery?.source, "fixture");
+  assert.equal(state.lastExecutedQuery?.visibleNodes, 1);
+  assert.equal(state.lastExecutedQuery?.visibleEdges, 0);
+
+  const queryEvent = state.events.find((event) => event.id.startsWith("query-"));
+  assert.ok(queryEvent);
+  assert.equal(queryEvent.kind, "read");
+  assert.equal(queryEvent.status, "fixture");
+  assert.equal(queryEvent.workspace, "flight-deck-demo");
+  assert.equal(queryEvent.securityContext, "fixture");
+  assert.match(queryEvent.operationSummary ?? "", /text contains/);
+});
+
+test("records schema view execution as a local schema projection", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadSnapshot(snapshot);
+  store.setGraphView("schema");
+  store.recordQueryExecution();
+
+  const state = store.getState();
+  assert.equal(state.lastExecutedQuery?.graphView, "schema");
+  assert.equal(state.lastExecutedQuery?.visibleNodes, 2);
+  assert.equal(state.lastExecutedQuery?.visibleEdges, 1);
+
+  const queryEvent = state.events.find((event) => event.id.startsWith("query-"));
+  assert.ok(queryEvent);
+  assert.equal(queryEvent.label, "schema projection executed: 2 models / 1 schema edges");
+  assert.equal(queryEvent.operationSummary, "schema projection summary");
+  assert.equal(queryEvent.resultState, "2 visible models, 1 visible schema edges");
+});
+
+test("changing graph view clears stale executed query context", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadSnapshot(snapshot);
+  store.recordQueryExecution();
+  assert.ok(store.getState().lastExecutedQuery);
+
+  store.setGraphView("schema");
+  assert.equal(store.getState().lastExecutedQuery, null);
+});
+
+test("does not persist workbench UI state, events, query context, or secret-like fields", () => {
+  const storage = new MemoryStorage();
+  const store = createFlightDeckGraphStore(storage);
+
+  store.setConnectionDetailsOpen(true);
+  store.selectWorkspacePanel("audit");
+  store.setGraphView("schema");
+  store.setExplainVisible(true);
+  store.setProfileVisible(true);
+  store.updateSettings({
+    serviceBaseUrl: "http://admin:secret@127.0.0.1:3001?token=abc",
+    workspace: "project-memory",
+    useFixtureData: false
+  });
+  store.loadSnapshot(snapshot);
+  store.recordQueryExecution();
+  store.saveCurrentProfile();
+
+  const persisted = storage.getItem(STORE_STORAGE_KEY);
+  assert.ok(persisted);
+  assert.equal(persisted.includes("connectionDetailsOpen"), false);
+  assert.equal(persisted.includes("activeWorkspacePanel"), false);
+  assert.equal(persisted.includes("graphView"), false);
+  assert.equal(persisted.includes("lastExecutedQuery"), false);
+  assert.equal(persisted.includes("events"), false);
+  assert.equal(persisted.includes("secret"), false);
+  assert.equal(persisted.includes("token"), false);
+  assert.equal(persisted.includes("admin:"), false);
+});

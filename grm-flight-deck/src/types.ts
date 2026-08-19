@@ -91,6 +91,10 @@ export interface FlightDeckEvent {
   kind: "read" | "write" | "node-created" | "edge-traversed";
   label: string;
   status: "fixture" | "pending" | "observed";
+  operationSummary?: string;
+  securityContext?: string;
+  resultState?: string;
+  workspace?: string;
 }
 
 export type SelectedGraphItem =
@@ -113,5 +117,23 @@ export interface NormalizedGraphSnapshot {
   modelLimit: number;
   omittedEdges: number;
   source: "service" | "fixture";
+  partialReason?: string;
+}
+
+export type WorkspacePanel = "query" | "audit";
+export type GraphView = "data" | "schema";
+
+export interface QueryExecutionContext {
+  id: string;
+  workspace: string;
+  source: "service" | "fixture" | "none";
+  graphView: GraphView;
+  filter: GraphFilter;
+  sourceNodes: number;
+  sourceEdges: number;
+  visibleNodes: number;
+  visibleEdges: number;
+  limit: number | null;
+  omittedEdges: number;
   partialReason?: string;
 }

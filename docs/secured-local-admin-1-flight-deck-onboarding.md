@@ -234,6 +234,18 @@ local-admin/admin-1 via mtls-certificate
 secured-local-policy-v1
 ```
 
+The default workbench view is `Query`. Connection fields stay hidden after the
+profile is selected; use `Change connection` only when you need to edit the
+gateway URL, workspace, profile kind, limit, or fixture toggle. Query can show
+optional Explain/Profile panes, but in this slice those panes are local view
+summaries derived from the bounded snapshot/filter, not service planner truth.
+
+Open `Audit` from the workspace navigation to see the bounded local event
+buffer. It records fixture/service snapshot observations and explicit Query
+executions with redacted context. This is useful workbench navigation for the
+Admin-1 journey, but it is not a live policy editor, permission table viewer,
+external audit forwarding path, signed receipt, or state commitment.
+
 Switch back to a fixture profile and then back to `Admin-1 secured local` to
 confirm the local graph-store profile restoration path.
 
@@ -290,7 +302,12 @@ Common checks:
 - No default admin password.
 - No browser handling of private keys, raw certificates, bearer tokens, or
   policy tables.
+- No browser display of certificate fingerprints, private credential paths, or
+  rendered permission tables.
 - No hosted identity, OIDC/OAuth, or production certificate lifecycle.
 - No live service-side user or permission mutation API.
+- No service-backed query/explain/profile/audit-events endpoint in this
+  workbench slice; current Explain/Profile/Audit entries are local UI
+  summaries unless a later read-only gateway surface replaces them.
 - No hosted durability, multi-writer coordination, or production security
   claim.
