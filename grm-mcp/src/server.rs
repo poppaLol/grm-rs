@@ -182,7 +182,7 @@ impl GrmMcpServer {
         self.is_neo4j().then(|| {
             McpError::internal_error(
                 format!(
-                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_checkpoint, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, simple grm_node_find, and simple grm_edge_find"
+                    "{tool} is not supported in Neo4j MCP mode yet; supported tools are grm_schema_list, grm_schema_checkpoint, grm_schema_define_node, grm_schema_define_edge, grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, simple grm_node_find, and simple grm_edge_find"
                 ),
                 None,
             )
@@ -193,7 +193,7 @@ impl GrmMcpServer {
         self.is_service().then(|| {
             McpError::internal_error(
                 format!(
-                    "{tool} is not supported in gRPC MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, traversal-capable grm_node_find for node or edge results, simple grm_edge_find, grm_explain, and grm_profile"
+                    "{tool} is not supported in gRPC MCP mode yet; supported tools are grm_schema_list, grm_schema_define_node, grm_schema_define_edge, grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema/node/edge create/update/delete, grm_node_create, grm_node_update, grm_node_delete, grm_edge_create, grm_edge_update, grm_edge_delete, traversal-capable grm_node_find for node or edge results, simple grm_edge_find, grm_explain, and grm_profile"
                 ),
                 None,
             )
@@ -229,7 +229,7 @@ impl GrmMcpServer {
                         "Call grm_schema_list.",
                         "Read grm://backend/status for backend/session orientation.",
                         "If schema is empty, ask whether to define a fresh schema or reconstruct one from project docs.",
-                        "Only then perform grm_batch writes."
+                        "Only then perform grm_batch_write writes, or grm_batch_destructive when deletes are intended."
                     ]
                 });
             }
@@ -436,6 +436,8 @@ fn neo4j_backend_status_value(
                 "grm_schema_checkpoint",
                 "grm_schema_define_node",
                 "grm_schema_define_edge",
+                "grm_batch_write",
+                "grm_batch_destructive",
                 "grm_batch",
                 "grm_node_create",
                 "grm_node_update",
@@ -462,7 +464,7 @@ fn neo4j_backend_status_value(
             "If schema_template_loaded is true, verify grm_schema_list contains the intended recovered models and fields before writing.",
             "If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started fresh and will persist schema definitions to the configured local file.",
             "If schema is empty, ask the user whether to define a fresh schema or reconstruct one from project docs.",
-            "Only then perform grm_batch writes."
+            "Only then perform grm_batch_write writes, or grm_batch_destructive when deletes are intended."
         ]
     })
 }

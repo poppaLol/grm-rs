@@ -39,10 +39,11 @@ shape and differ mainly by property values such as `kind`, `type`, or
 
 ## Proposed Tool Split
 
-### `grm_batch`
+### `grm_batch_write`, `grm_batch_destructive`, And Compatibility `grm_batch`
 
-`grm_batch` applies an ordered list of existing MCP-style operations. Its
-operation semantics now live in the shared runtime batch helper, which is also
+`grm_batch_write` applies an ordered list of non-destructive existing MCP-style
+operations. It is the recommended tool for ordinary create/update batches. Its
+accepted operation semantics use the shared runtime batch helper, which is also
 used by Python `Session.batch(...)`; MCP keeps the tool schema and wrapper.
 
 Use it when the caller knows the exact sequence of operations:
@@ -52,13 +53,21 @@ Use it when the caller knows the exact sequence of operations:
 - create edges
 - update nodes
 - update edges
-- delete nodes or edges when `allow_deletes` is explicitly set
 
 The input should be structured JSON rather than CLI text. Agents are generally
 better at producing JSON operation objects than safely composing command strings.
 Before composing the batch, agents should decide whether repeated concepts are
 best represented as richer specific models or sparser broad models with
 discriminating properties.
+
+`grm_batch_destructive` accepts the same structured operation shape and is the
+explicit destructive MCP surface for batches that include `node_delete` or
+`edge_delete`. Delete-bearing batches still require `allow_deletes: true`, and
+the tool is advertised to MCP hosts with destructive metadata.
+
+`grm_batch` remains available as the compatibility/general batch surface for
+existing callers. New callers should use `grm_batch_write` for ordinary
+create/update work and `grm_batch_destructive` for intentional deletes.
 
 Sketch:
 
@@ -98,7 +107,10 @@ Expected behavior:
 - edge create operations can use numeric node ids already known to the caller, or
   batch-local refs from earlier `node_create` operations.
 - batch-local refs must be unique within the batch.
-- delete operations are rejected unless `allow_deletes` is true.
+- `grm_batch_write` rejects `node_delete`, `edge_delete`, and
+  `allow_deletes: true` before execution.
+- `grm_batch_destructive` and compatibility `grm_batch` reject delete operations
+  unless `allow_deletes` is true.
 
 ### `grm_graph_patch`
 
@@ -163,20 +175,24 @@ work toward them.
 
 Required guidance changes:
 
-- `grm_help` should say to prefer `grm_batch` or `grm_graph_patch` when creating
-  or updating more than a few entities.
+- `grm_help` should say to prefer `grm_batch_write` or `grm_graph_patch` when
+  creating or updating more than a few entities, and to reserve
+  `grm_batch_destructive` for delete-bearing batches.
 - `grm_node_create`, `grm_edge_create`, `grm_node_update`, `grm_edge_update`,
   `grm_node_delete`, and `grm_edge_delete` descriptions should mention the
   batch/patch tools for repeated operations.
 - `grm_tool_help` for single-entity write tools should include a batching note.
 - `known_tools` should group these under a new `bulk` or `batch` category.
-- `grm_batch` and `grm_graph_patch` responses should be more token-efficient
-  than many single-operation calls, so agents receive a practical reward for
-  using them.
+- `grm_batch_write`, `grm_batch_destructive`, compatibility `grm_batch`, and
+  `grm_graph_patch` responses should be more token-efficient than many
+  single-operation calls, so agents receive a practical reward for using them.
 
 Suggested threshold language:
 
-> For more than 3 creates or updates, prefer `grm_batch` or `grm_graph_patch`.
+> For more than 3 creates or updates, prefer `grm_batch_write` or
+> `grm_graph_patch`. Use `grm_batch_destructive` only when the intended batch
+> includes `node_delete` or `edge_delete`. `grm_batch` remains available for
+> compatibility/general batch behavior.
 
 ## Result Shape Requirements
 
@@ -220,13 +236,21 @@ mutation batches.
 
 ## Initial Acceptance Tests
 
-- `grm_batch` creates multiple nodes in one call and returns grouped counts.
-- `grm_batch` creates nodes and edges using numeric IDs supplied by the caller
-  or batch-local refs from earlier `node_create` operations.
-- failed `atomic: true` batch leaves the session unchanged.
-- failed non-atomic batch reports partial success with operation indexes.
+- `grm_batch_write` creates multiple nodes in one call and returns grouped
+  counts.
+- `grm_batch_write` creates nodes and edges using numeric IDs supplied by the
+  caller or batch-local refs from earlier `node_create` operations.
+- `grm_batch_write` rejects `node_delete`, `edge_delete`, and
+  `allow_deletes: true` before any side effects, including with `atomic: false`.
+- failed `atomic: true` write batches leave the session unchanged.
+- failed non-atomic write batches report partial success with operation indexes.
 - duplicate batch-local refs are rejected.
-- delete operations require `allow_deletes: true`.
+- `grm_batch_destructive` exposes destructive MCP annotations, still requires
+  `allow_deletes: true` for delete-bearing batches, preserves targets when
+  confirmation is missing, and deletes when explicitly confirmed.
+- compatibility `grm_batch` remains available, advertises destructive MCP
+  annotations, and preserves its intentional `allow_deletes: true` delete
+  behavior.
 - `grm_graph_patch` creates a small connected graph using local refs.
 - `grm_graph_patch` rejects ambiguous updates unless explicit multi-match mode
   is supplied.

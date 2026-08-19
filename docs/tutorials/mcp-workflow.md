@@ -119,8 +119,9 @@ I can use GRM as a typed local graph memory. I can define node and edge models,
 create and update graph data, batch related writes atomically, query nodes and
 edges, run CLI-compatible traversal queries, inspect explain/profile output,
 inspect backend-maintained indexes, and export the graph as GRM interchange
-JSON. For larger writes I should use grm_batch instead of many single create
-calls.
+JSON. For larger creates and updates I should use grm_batch_write instead of
+many single create calls, and reserve grm_batch_destructive for intentional
+delete-bearing batches.
 ```
 
 The agent should also inspect the current schema first by calling `grm_schema_list`.
@@ -135,7 +136,8 @@ whether the runtime schema is empty, whether local schema memory persistence is
 enabled, and whether schema memory was recovered from an existing file. If the
 runtime schema is empty, the agent should ask whether to define a fresh schema
 or reconstruct one from project docs before writing. Only then should it
-perform `grm_batch` writes.
+perform `grm_batch_write` writes, or `grm_batch_destructive` writes when deletes
+are intended.
 
 ## Ask For Molecules
 
@@ -181,8 +183,9 @@ necessarily tightly scoped example:
 - `BOND_FROM` and `BOND_TO`: connect a bond node to the two atoms it joins
 - `CONTAINS`: connects a mixture to representative molecules
 
-The agent can define that schema in one atomic `grm_batch` call. The real call
-would include all node and edge definitions; the excerpt below shows the shape:
+The agent can define that schema in one atomic `grm_batch_write` call. The real
+call would include all node and edge definitions; the excerpt below shows the
+shape:
 
 ```json
 {
@@ -239,7 +242,7 @@ would include all node and edge definitions; the excerpt below shows the shape:
 ```
 
 The omitted operations define `Mixture`, `Atom`, `HAS_BOND`, `BOND_FROM`, and
-`BOND_TO` in the same style. Call the full payload with `grm_batch`.
+`BOND_TO` in the same style. Call the full payload with `grm_batch_write`.
 
 In Neo4j mode, this schema-definition batch is supported and updates only the
 current MCP server's session-local runtime schema. The backing Neo4j graph may
@@ -254,11 +257,11 @@ The human then confirms:
 Yes, store this in the GRM graph and save it to the configured files.
 ```
 
-The agent should use `grm_batch` again for the graph data. This example stores a
-small ball-and-stick sketch rather than a complete atom-by-atom chemical
-database. It uses refs so edges can point at nodes created earlier in the same
-batch. The full call can contain dozens of node and edge operations; the excerpt
-below shows enough of the pattern:
+The agent should use `grm_batch_write` again for the graph data. This example
+stores a small ball-and-stick sketch rather than a complete atom-by-atom
+chemical database. It uses refs so edges can point at nodes created earlier in
+the same batch. The full call can contain dozens of node and edge operations;
+the excerpt below shows enough of the pattern:
 
 ```json
 {
@@ -383,13 +386,15 @@ below shows enough of the pattern:
 The omitted operations add the remaining ethanol bonds, petroleum component
 molecules such as octane and benzene, citric acid atoms and bonds, and the
 `CONTAINS` / `HAS_ATOM` / `HAS_BOND` edges that connect them. Call the full
-payload with `grm_batch`.
+payload with `grm_batch_write`.
 
-Neo4j mode supports this style of `grm_batch` with `atomic=true` for
-`node_create`, `node_update`, `node_delete`, `edge_create`, `edge_update`, and
-`edge_delete` operations, including batch-local refs for creates. It still does
-not support snapshots, import/export, autocommit, explain/profile, or
-traversal/query parity. Graph durability comes from Neo4j; schema metadata
+Neo4j mode supports this style of `grm_batch_write` with `atomic=true` for
+schema definitions, `node_create`, `node_update`, `edge_create`, and
+`edge_update` operations, including batch-local refs for creates. Use
+`grm_batch_destructive` with `allow_deletes=true` when a Neo4j batch
+intentionally includes `node_delete` or `edge_delete`. It still does not support
+snapshots, import/export, autocommit, explain/profile, or traversal/query parity.
+Graph durability comes from Neo4j; schema metadata
 remains session-local.
 
 A good agent response after the batch is:
@@ -526,7 +531,9 @@ schema-aware mutation and simple lookup through:
 - `grm_schema_list`
 - `grm_schema_define_node`
 - `grm_schema_define_edge`
-- `grm_batch` for schema/node/edge create/update/delete operations
+- `grm_batch_write` for schema/node/edge create/update operations
+- `grm_batch_destructive` for delete-bearing batches with `allow_deletes=true`
+- compatibility `grm_batch` for schema/node/edge create/update/delete operations
 - `grm_node_create`
 - `grm_node_update`
 - `grm_node_delete`
@@ -554,9 +561,10 @@ the user prompt:
 You may design and define the GRM runtime schema for this Neo4j memory task.
 First call grm_schema_list and inspect grm://backend/status. If the runtime
 schema is empty or missing required models, choose a compact schema, define it
-with grm_batch schema_define_node/schema_define_edge operations, then create the
-requested graph data. Do not infer schema from Neo4j labels/properties, and do
-not write anything until the runtime schema contains the target models.
+with grm_batch_write schema_define_node/schema_define_edge operations, then
+create the requested graph data. Do not infer schema from Neo4j
+labels/properties, and do not write anything until the runtime schema contains
+the target models.
 ```
 
 ## Recover From Tool Errors
@@ -566,7 +574,7 @@ retrying:
 
 ```json
 {
-  "tool": "grm_batch"
+  "tool": "grm_batch_write"
 }
 ```
 
@@ -576,7 +584,8 @@ Common recovery moves are:
 
 - call `grm_schema_list` when a model, field, or endpoint is uncertain
 - use `grm_node_find` or `grm_edge_find` to locate numeric IDs before updates
-- use `grm_batch` for related writes so validation and rollback happen together
+- use `grm_batch_write` for related creates/updates so validation and rollback happen together
+- use `grm_batch_destructive` only for intentional deletes, with `allow_deletes=true`
 - use `grm_export` when a user needs a handoff file for another system
 - use `GRM_BACKEND=neo4j` when the target is live Neo4j and the workflow fits
   the supported schema/mutation/simple-find tool slice

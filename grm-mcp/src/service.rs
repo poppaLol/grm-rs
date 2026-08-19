@@ -147,6 +147,8 @@ impl ServiceMcpBackend {
                     "grm_schema_list",
                     "grm_schema_define_node",
                     "grm_schema_define_edge",
+                    "grm_batch_write",
+                    "grm_batch_destructive",
                     "grm_batch",
                     "grm_node_create",
                     "grm_node_update",
@@ -170,7 +172,7 @@ impl ServiceMcpBackend {
                 "Start the gRPC workspace service with a configured local workspace root.",
                 "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create, create-or-open, or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files. Set GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME to trust a local TLS service. Set GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when the service requires mutual TLS.",
                 "Call grm_schema_list to verify the workspace schema before writing.",
-                "Use grm_batch or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results. grm_explain and grm_profile support typed node.find and edge.find commands through ExecuteWorkspace."
+                "Use grm_batch_write for ordinary create/update batches, grm_batch_destructive with allow_deletes=true for delete-bearing batches, compatibility grm_batch, or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results. grm_explain and grm_profile support typed node.find and edge.find commands through ExecuteWorkspace."
             ]
         })
     }
