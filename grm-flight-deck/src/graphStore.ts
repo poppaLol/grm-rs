@@ -6,10 +6,13 @@ import type {
   ConnectionSettings,
   FlightDeckEvent,
   FlightDeckSnapshot,
+  GraphView,
   GraphFilter,
   GraphSelection,
   NormalizedGraphSnapshot,
-  SelectedGraphItem
+  QueryExecutionContext,
+  SelectedGraphItem,
+  WorkspacePanel
 } from "./types";
 
 export const STORE_STORAGE_KEY = "grm-flight-deck.graph-store.v1";
@@ -54,6 +57,12 @@ export interface FlightDeckGraphStoreState {
   statusDetail: string;
   lastError: string;
   events: FlightDeckEvent[];
+  activeWorkspacePanel: WorkspacePanel;
+  graphView: GraphView;
+  connectionDetailsOpen: boolean;
+  explainVisible: boolean;
+  profileVisible: boolean;
+  lastExecutedQuery: QueryExecutionContext | null;
 }
 
 export interface StorageLike {
@@ -77,6 +86,12 @@ export interface FlightDeckGraphStore {
   loadSnapshot: (snapshot: FlightDeckSnapshot) => void;
   markConnectionFailed: (message: string) => void;
   selectGraphItem: (selection: GraphSelection | null) => void;
+  selectWorkspacePanel: (panel: WorkspacePanel) => void;
+  setGraphView: (view: GraphView) => void;
+  setConnectionDetailsOpen: (open: boolean) => void;
+  setExplainVisible: (visible: boolean) => void;
+  setProfileVisible: (visible: boolean) => void;
+  recordQueryExecution: () => void;
   applyExecutionEvent: (event: FlightDeckEvent) => void;
   clearWorkspace: () => void;
 }
@@ -99,7 +114,13 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
     status: "Ready for a local service connection.",
     statusDetail: "",
     lastError: "",
-    events: [{ id: "idle", kind: "read", label: "event hook idle", status: "fixture" }]
+    events: [idleEvent()],
+    activeWorkspacePanel: "query",
+    graphView: "data",
+    connectionDetailsOpen: false,
+    explainVisible: false,
+    profileVisible: false,
+    lastExecutedQuery: null
   });
   const listeners = new Set<Listener>();
 
@@ -177,10 +198,10 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
       });
     },
     applyGraphFilter: (filter) => {
-      setState({ ...state, filter });
+      setState({ ...state, filter, lastExecutedQuery: null });
     },
     clearGraphFilter: () => {
-      setState({ ...state, filter: DEFAULT_GRAPH_FILTER });
+      setState({ ...state, filter: DEFAULT_GRAPH_FILTER, lastExecutedQuery: null });
     },
     beginSnapshotLoad: (useFixtureData) => {
       setState({
@@ -201,6 +222,7 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         status: `${snapshot.source} snapshot:`,
         statusDetail: `${snapshot.nodes.length} nodes / ${snapshot.edges.length} edges / limit ${snapshot.modelLimit}`,
         lastError: "",
+        lastExecutedQuery: null,
         events: eventsForSnapshot(snapshot, state.visibleSnapshot)
       });
     },
@@ -216,11 +238,63 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         lastError: message,
         status: "Connection failed.",
         statusDetail: "",
-        events: [{ id: "idle", kind: "read", label: "event hook idle", status: "fixture" }]
+        lastExecutedQuery: null,
+        events: [idleEvent()]
       });
     },
     selectGraphItem: (selection) => {
       setState({ ...state, selection });
+    },
+    selectWorkspacePanel: (panel) => {
+      setState({ ...state, activeWorkspacePanel: panel });
+    },
+    setGraphView: (view) => {
+      setState({ ...state, graphView: view, lastExecutedQuery: null });
+    },
+    setConnectionDetailsOpen: (open) => {
+      setState({ ...state, connectionDetailsOpen: open });
+    },
+    setExplainVisible: (visible) => {
+      setState({ ...state, explainVisible: visible });
+    },
+    setProfileVisible: (visible) => {
+      setState({ ...state, profileVisible: visible });
+    },
+    recordQueryExecution: () => {
+      if (!state.snapshot) {
+        return;
+      }
+      const context = queryExecutionContext(
+        state.snapshot,
+        state.visibleSnapshot,
+        state.filter,
+        state.graphView
+      );
+      const status = context.source === "fixture" ? "fixture" : "observed";
+      setState({
+        ...state,
+        lastExecutedQuery: context,
+        events: [
+          ...state.events.filter((item) => item.id !== "idle"),
+          {
+            id: context.id,
+            kind: "read",
+            label: executionEventLabel(context),
+            operationSummary: predicateEventSummary(context.filter, context.graphView),
+            securityContext:
+              context.source === "fixture"
+                ? "fixture"
+                : context.source === "service"
+                  ? "service snapshot via local gateway"
+                  : "local view without loaded snapshot",
+            resultState: context.partialReason
+              ? `partial: ${context.partialReason}`
+              : executionResultState(context),
+            status,
+            workspace: context.workspace
+          }
+        ]
+      });
     },
     applyExecutionEvent: (event) => {
       setState({ ...state, events: [...state.events.filter((item) => item.id !== "idle"), event] });
@@ -233,7 +307,8 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         visibleSnapshot: null,
         selection: null,
         selectedItem: null,
-        events: [{ id: "idle", kind: "read", label: "event hook idle", status: "fixture" }]
+        lastExecutedQuery: null,
+        events: [idleEvent()]
       });
     }
   };
@@ -333,15 +408,115 @@ function eventsForSnapshot(
       id: "snapshot-read",
       kind: "read",
       label: `${snapshot.nodes.length} nodes observed`,
+      operationSummary: "bounded snapshot read",
+      securityContext: snapshot.source === "fixture" ? "fixture" : "service snapshot via local gateway",
+      resultState: snapshot.partialReason ?? "snapshot loaded",
+      workspace: snapshot.workspace,
       status: snapshot.source === "fixture" ? "fixture" : "observed"
     },
     {
       id: "filter-boundary",
       kind: "edge-traversed",
       label: `${visibleSnapshot?.edges.length ?? snapshot.edges.length} edges visible`,
+      operationSummary: "local view filter",
+      securityContext: snapshot.source === "fixture" ? "fixture" : "client-side projection",
+      resultState: `${visibleSnapshot?.nodes.length ?? snapshot.nodes.length} visible nodes`,
+      workspace: snapshot.workspace,
       status: snapshot.source === "fixture" ? "fixture" : "observed"
     }
   ];
+}
+
+function idleEvent(): FlightDeckEvent {
+  return {
+    id: "idle",
+    kind: "read",
+    label: "event hook idle",
+    operationSummary: "no query executed",
+    securityContext: "local UI event buffer",
+    resultState: "waiting",
+    status: "fixture"
+  };
+}
+
+function queryExecutionContext(
+  snapshot: FlightDeckSnapshot | null,
+  visibleSnapshot: FlightDeckSnapshot | null,
+  filter: GraphFilter,
+  graphView: GraphView
+): QueryExecutionContext {
+  const schemaEdgeCount = schemaEdgeCountForSnapshot(snapshot);
+  const sourceNodes = graphView === "schema" ? snapshot?.nodeModels.length ?? 0 : snapshot?.nodes.length ?? 0;
+  const sourceEdges = graphView === "schema" ? schemaEdgeCount : snapshot?.edges.length ?? 0;
+  const visibleNodes = graphView === "schema" ? snapshot?.nodeModels.length ?? 0 : visibleSnapshot?.nodes.length ?? 0;
+  const visibleEdges = graphView === "schema" ? schemaEdgeCount : visibleSnapshot?.edges.length ?? 0;
+
+  return {
+    id: `query-${Date.now()}`,
+    workspace: snapshot?.workspace ?? "not loaded",
+    source: snapshot?.source ?? "none",
+    graphView,
+    filter,
+    sourceNodes,
+    sourceEdges,
+    visibleNodes,
+    visibleEdges,
+    limit: snapshot?.modelLimit ?? null,
+    omittedEdges: visibleSnapshot?.omittedEdges ?? snapshot?.omittedEdges ?? 0,
+    partialReason: visibleSnapshot?.partialReason ?? snapshot?.partialReason
+  };
+}
+
+function predicateEventSummary(filter: GraphFilter, graphView: GraphView): string {
+  if (graphView === "schema") {
+    return "schema projection summary";
+  }
+
+  const parts = [
+    filter.model.trim() ? `model=${filter.model.trim()}` : "",
+    filter.text.trim() ? `text contains "${filter.text.trim()}"` : "",
+    filter.propertyKey.trim()
+      ? `${filter.propertyKey.trim()} contains ${filter.propertyValue.trim() || "*"}`
+      : ""
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(", ") : "bounded snapshot, no filter";
+}
+
+function executionEventLabel(context: QueryExecutionContext): string {
+  if (context.graphView === "schema") {
+    return `schema projection executed: ${context.visibleNodes} models / ${context.visibleEdges} schema edges`;
+  }
+
+  return `query executed: ${context.visibleNodes} nodes / ${context.visibleEdges} edges`;
+}
+
+function executionResultState(context: QueryExecutionContext): string {
+  if (context.graphView === "schema") {
+    return `${context.visibleNodes} visible models, ${context.visibleEdges} visible schema edges`;
+  }
+
+  return `${context.visibleNodes} visible nodes, ${context.omittedEdges} omitted edges`;
+}
+
+function schemaEdgeCountForSnapshot(snapshot: FlightDeckSnapshot | null): number {
+  if (!snapshot) {
+    return 0;
+  }
+  if (snapshot.schemaEdges) {
+    return snapshot.schemaEdges.length;
+  }
+
+  const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+  const inferredEdges = new Set<string>();
+  for (const edge of snapshot.edges) {
+    const from = nodesById.get(edge.from);
+    const to = nodesById.get(edge.to);
+    if (from && to) {
+      inferredEdges.add(`${edge.model}:${from.model}:${to.model}`);
+    }
+  }
+  return inferredEdges.size;
 }
 
 function restoreInitialProfiles(storage?: StorageLike): {

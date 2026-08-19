@@ -2,24 +2,30 @@ import { useEffect, useRef, useState } from "react";
 import cytoscape, { Core } from "cytoscape";
 
 import { colorForModel } from "./modelColors";
-import type { FlightDeckSnapshot, JsonValue, SelectedGraphItem } from "./types";
+import type { FlightDeckSnapshot, GraphView, JsonValue, SelectedGraphItem } from "./types";
 
 interface GraphCanvasProps {
   snapshot: FlightDeckSnapshot | null;
+  graphView: GraphView;
+  onGraphViewChange: (view: GraphView) => void;
   onSelect: (item: SelectedGraphItem | null) => void;
   onHover: (label: string | null) => void;
 }
 
 type LayoutMode = "force" | "groups" | "hierarchy" | "circle" | "grid";
-type GraphView = "data" | "schema";
 const MIN_RENDERING_MS = 380;
 const RENDER_START_DELAY_MS = 35;
 
-export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
+export function GraphCanvas({
+  snapshot,
+  graphView,
+  onGraphViewChange,
+  onSelect,
+  onHover
+}: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<Core | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
-  const [graphView, setGraphView] = useState<GraphView>("data");
   const [rendering, setRendering] = useState(false);
 
   useEffect(() => {
@@ -163,7 +169,7 @@ export function GraphCanvas({ snapshot, onSelect, onHover }: GraphCanvasProps) {
             value={graphView}
             onChange={(event) => {
               setRendering(true);
-              setGraphView(event.target.value as GraphView);
+              onGraphViewChange(event.target.value as GraphView);
             }}
             disabled={!snapshot}
           >

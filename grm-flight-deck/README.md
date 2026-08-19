@@ -6,7 +6,8 @@ This is the first React/Vite/TypeScript flight-deck workbench promoted from the
 It is a browser adapter over bounded service/runtime data. The UI can configure
 and attempt a local snapshot connection, show connection status and errors,
 show read-only security posture, render a 2D graph, narrow the visible graph
-with simple filters, and inspect selected nodes or edges.
+with simple filters, inspect selected nodes or edges, and navigate between a
+Query arena and a bounded Audit panel.
 
 ## Run
 
@@ -53,6 +54,34 @@ That endpoint is read-only observability. It labels `anonymous_local`,
 principal issuer/subject, authentication method, and policy version when the
 service accepts the gateway credentials.
 
+## Workbench Shape
+
+The app opens in Query. Query is the normal graph-output arena: apply the
+bounded local filter, click `Execute` to record the current query context, view
+the graph, inspect selection, and optionally show Explain/Profile beside the
+graph.
+
+The current Explain/Profile panes are local view summaries derived from the
+loaded snapshot and filter. They are intentionally labelled as client-side
+summaries, not service planner/profile truth. A future service-backed
+query/explain/profile endpoint should feed the same view through typed GRM
+requests.
+
+Audit is a distinct navigable panel. It currently shows a bounded local event
+buffer with fixture/service snapshot observations, local filter observations,
+and explicit query execution events. These entries are redacted UI-side
+summaries and are shaped for later read-only service audit data; they are not
+external/high-assurance audit forwarding, signed receipts, or state
+commitments.
+
+Connection details are hidden by default once a profile is selected. The header
+shows a compact non-secret summary: profile name, connection kind, workspace,
+and the read-only identity/security badge when available. Editable connection
+fields, including the non-secret profile kind such as anonymous local, Docker
+local insecure, or secured, are only shown through `Change connection`. Before
+the read-only security status call succeeds, the header treats that kind as
+configured profile metadata rather than observed service security posture.
+
 ## Current Proof Boundary
 
 - The checked-in React app is real and buildable as a Vite frontend.
@@ -65,7 +94,10 @@ service accepts the gateway credentials.
   requests through the existing gRPC workspace client.
 - The graph filter is a client-side delimiter over a bounded snapshot, not a
   public GRM query language.
-- The event band is a UI-side model hook for future execution animation.
+- Explain/Profile are currently local view summaries over the bounded snapshot,
+  not service planner/profile evidence.
+- The Audit panel is currently backed by a bounded UI event buffer, not a
+  service audit-event read path.
 
 ## Security Boundary
 
