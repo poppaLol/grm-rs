@@ -131,6 +131,49 @@ h3 {
   background: #0d1315;
 }
 
+.mode-toggle {
+  display: inline-flex;
+  align-items: end;
+  min-height: 2.25rem;
+  border: 1px solid #34444b;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.mode-toggle button {
+  min-width: 4.8rem;
+  border: 0;
+  border-radius: 0;
+  background: #11191c;
+}
+
+.mode-toggle button.active {
+  background: #173746;
+  color: #effaff;
+}
+
+.command-input {
+  flex: 1 1 22rem;
+}
+
+.query-message {
+  min-height: 2rem;
+  padding: 0.42rem 1.15rem;
+  border-bottom: 1px solid #263139;
+  background: #0b1012;
+  color: #a9b8b7;
+  font-size: 0.78rem;
+}
+
+.query-message.succeeded {
+  color: #89d59b;
+}
+
+.query-message.failed,
+.query-message.unsupported {
+  color: #ffb2a3;
+}
+
 label {
   display: grid;
   gap: 0.25rem;
@@ -369,6 +412,68 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) minmax(17rem, 24rem);
 }
 
+.schema-inspection {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem;
+  background: #0a0d0e;
+}
+
+.schema-inspection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.schema-detail-list {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schema-detail-list li {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid #34444b;
+  border-radius: 6px;
+  padding: 0.65rem;
+  background: #10171a;
+  color: #c3d0d0;
+  font-size: 0.78rem;
+}
+
+.schema-detail-list strong {
+  color: #e8edf0;
+  font: 0.82rem ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.field-list {
+  display: grid;
+  gap: 0.22rem;
+  margin: 0.15rem 0 0;
+}
+
+.field-list div {
+  display: grid;
+  grid-template-columns: minmax(5rem, 0.8fr) minmax(0, 1fr);
+  gap: 0.45rem;
+}
+
+.field-list dt,
+.field-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.field-list dt {
+  color: #98aaa9;
+  font-weight: 700;
+}
+
 .graph-shell {
   position: relative;
   min-height: 0;
@@ -597,6 +702,11 @@ pre {
     min-width: min(100%, 13rem);
   }
 
+  .mode-toggle,
+  .command-input {
+    flex: 1 1 100%;
+  }
+
   .flight-deck {
     grid-template-columns: 1fr;
   }
@@ -618,6 +728,10 @@ pre {
   }
 
   .audit-item {
+    grid-template-columns: 1fr;
+  }
+
+  .schema-inspection-grid {
     grid-template-columns: 1fr;
   }
 }

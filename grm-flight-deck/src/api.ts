@@ -1,6 +1,7 @@
 import { fixtureSecurityStatus, fixtureSnapshot } from "./fixtures";
 import type {
   ConnectionSettings,
+  FlightDeckQueryResponse,
   FlightDeckSecurityStatus,
   FlightDeckSnapshot,
   GraphFilter,
@@ -50,6 +51,33 @@ export async function fetchSecurityStatus(
   }
 
   return await response.json() as FlightDeckSecurityStatus;
+}
+
+export async function executeQueryCommand(
+  settings: ConnectionSettings,
+  command: string,
+  signal?: AbortSignal
+): Promise<FlightDeckQueryResponse> {
+  if (settings.useFixtureData) {
+    throw new Error("service-backed query execution is unavailable for fixture data");
+  }
+
+  const encodedWorkspace = encodeURIComponent(settings.workspace.trim());
+  const baseUrl = settings.serviceBaseUrl.trim().replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/api/workspaces/${encodedWorkspace}/query`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ command, limit: settings.limit }),
+    signal
+  });
+
+  if (!response.ok) {
+    const diagnostic = await response.text();
+    throw new Error(diagnostic || `query request failed: HTTP ${response.status}`);
+  }
+
+  const result = await response.json() as FlightDeckQueryResponse;
+  return { ...result, result: { ...result.result, source: "service" } };
 }
 
 export function filterSnapshot(

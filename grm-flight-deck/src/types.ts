@@ -46,6 +46,8 @@ export interface FlightDeckSnapshot {
   workspace: string;
   nodeModels: string[];
   edgeModels: string[];
+  schemaNodeModels?: FlightDeckSchemaNodeModel[];
+  schemaEdgeModels?: FlightDeckSchemaEdgeModel[];
   schemaEdges?: FlightDeckSchemaEdge[];
   nodes: FlightDeckNode[];
   edges: FlightDeckEdge[];
@@ -77,6 +79,26 @@ export interface FlightDeckSchemaEdge {
   model: string;
   fromModel: string;
   toModel: string;
+}
+
+export interface FlightDeckSchemaField {
+  name: string;
+  valueType: string;
+  required: boolean;
+}
+
+export interface FlightDeckSchemaNodeModel {
+  name: string;
+  idField: string;
+  fields: FlightDeckSchemaField[];
+}
+
+export interface FlightDeckSchemaEdgeModel {
+  name: string;
+  fromModel: string;
+  toModel: string;
+  idField: string;
+  fields: FlightDeckSchemaField[];
 }
 
 export interface GraphFilter {
@@ -122,12 +144,39 @@ export interface NormalizedGraphSnapshot {
 
 export type WorkspacePanel = "query" | "audit";
 export type GraphView = "data" | "schema";
+export type QueryExecutionKind = "query" | "explain" | "profile";
+export type QueryEvidenceProvenance = "service" | "local_summary" | "unsupported";
+
+export interface QueryEvidence {
+  provenance: QueryEvidenceProvenance;
+  label: string;
+  planKind?: string;
+  steps?: string[];
+  indexes?: string[];
+  rowCount?: number;
+  elapsedMicros?: number;
+  unsupportedReason?: string;
+}
+
+export interface FlightDeckQueryResponse {
+  workspace: string;
+  command: string;
+  kind: QueryExecutionKind;
+  queryShape: "node.find" | "edge.find";
+  result: FlightDeckSnapshot;
+  evidence: QueryEvidence;
+  partialReason?: string;
+}
 
 export interface QueryExecutionContext {
   id: string;
   workspace: string;
   source: "service" | "fixture" | "none";
   graphView: GraphView;
+  commandText: string;
+  queryKind: QueryExecutionKind | "local_summary";
+  queryShape: string;
+  evidenceProvenance: QueryEvidenceProvenance;
   filter: GraphFilter;
   sourceNodes: number;
   sourceEdges: number;

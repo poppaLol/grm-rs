@@ -181,6 +181,9 @@ test("starts in the query panel with connection details and insights hidden", ()
 
   assert.equal(state.activeWorkspacePanel, "query");
   assert.equal(state.graphView, "data");
+  assert.match(state.queryCommand, /^node\.find/);
+  assert.equal(state.queryStatus, "idle");
+  assert.equal(state.queryEvidence, null);
   assert.equal(state.connectionDetailsOpen, false);
   assert.equal(state.explainVisible, false);
   assert.equal(state.profileVisible, false);
@@ -197,6 +200,74 @@ test("starts in the query panel with connection details and insights hidden", ()
   assert.equal(changed.connectionDetailsOpen, true);
   assert.equal(changed.explainVisible, true);
   assert.equal(changed.profileVisible, true);
+});
+
+test("tracks command text without persisting command history", () => {
+  const storage = new MemoryStorage();
+  const store = createFlightDeckGraphStore(storage);
+
+  store.setQueryCommand("node.find WorkSlice secret_token=abc limit=5");
+  store.saveCurrentProfile();
+
+  assert.equal(store.getState().queryCommand, "node.find WorkSlice secret_token=abc limit=5");
+  const persisted = storage.getItem(STORE_STORAGE_KEY);
+  assert.ok(persisted);
+  assert.equal(persisted.includes("secret_token"), false);
+  assert.equal(persisted.includes("queryCommand"), false);
+});
+
+test("applies service query responses as visible graph state with service evidence", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadSnapshot(snapshot);
+  store.applyGraphFilter({
+    text: "connection profiles",
+    model: "",
+    propertyKey: "",
+    propertyValue: ""
+  });
+
+  store.applyQueryResponse({
+    workspace: "flight-deck-demo",
+    command: "session.explain node.find WorkSlice status=active limit=25",
+    kind: "explain",
+    queryShape: "node.find",
+    evidence: {
+      provenance: "service",
+      label: "service/runtime explain evidence",
+      planKind: "node.find",
+      steps: ["schema lookup", "node scan"],
+      indexes: []
+    },
+    result: {
+      ...snapshot,
+      source: "service",
+      nodes: [snapshot.nodes[1]],
+      edges: []
+    }
+  });
+
+  const state = store.getState();
+  assert.equal(state.filter.text, "");
+  assert.equal(state.visibleSnapshot?.source, "service");
+  assert.deepEqual(state.visibleSnapshot?.nodes.map((node) => node.id), ["573"]);
+  assert.equal(state.lastExecutedQuery?.queryKind, "explain");
+  assert.equal(state.lastExecutedQuery?.evidenceProvenance, "service");
+  assert.equal(state.queryEvidence?.planKind, "node.find");
+
+  const queryEvent = state.events.find((event) => event.id.startsWith("query-"));
+  assert.ok(queryEvent);
+  assert.equal(queryEvent.securityContext, "service-backed typed query via local gateway");
+});
+
+test("records unsupported query command state without changing graph result", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadSnapshot(snapshot);
+  store.rejectQueryCommand("write commands are not supported");
+
+  const state = store.getState();
+  assert.equal(state.queryStatus, "unsupported");
+  assert.equal(state.queryEvidence?.provenance, "unsupported");
+  assert.equal(state.visibleSnapshot?.nodes.length, 2);
 });
 
 test("does not record query execution before a snapshot is loaded", () => {
@@ -285,6 +356,9 @@ test("does not persist workbench UI state, events, query context, or secret-like
   assert.equal(persisted.includes("connectionDetailsOpen"), false);
   assert.equal(persisted.includes("activeWorkspacePanel"), false);
   assert.equal(persisted.includes("graphView"), false);
+  assert.equal(persisted.includes("queryCommand"), false);
+  assert.equal(persisted.includes("queryEvidence"), false);
+  assert.equal(persisted.includes("queryMessage"), false);
   assert.equal(persisted.includes("lastExecutedQuery"), false);
   assert.equal(persisted.includes("events"), false);
   assert.equal(persisted.includes("secret"), false);
