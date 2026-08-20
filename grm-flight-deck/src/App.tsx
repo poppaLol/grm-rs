@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useMemo, useState } from "react";
 
-import { fetchSecurityStatus, fetchSnapshot } from "./api";
+import { executeQueryCommand, fetchSecurityStatus, fetchSnapshot } from "./api";
 import {
   createFlightDeckGraphStore,
   DEFAULT_GRAPH_FILTER,
@@ -13,6 +13,7 @@ import type {
   FlightDeckSnapshot,
   GraphFilter,
   GraphView,
+  QueryEvidence,
   QueryExecutionContext,
   SelectedGraphItem
 } from "./types";
@@ -36,6 +37,92 @@ function SchemaList({ title, models }: { title: string; models: string[] }) {
       </ul>
     </section>
   );
+}
+
+function SchemaInspectionPanel({
+  snapshot,
+  filter
+}: {
+  snapshot: FlightDeckSnapshot | null;
+  filter: string;
+}) {
+  const needle = filter.trim().toLowerCase();
+  const nodeModels = (snapshot?.schemaNodeModels ?? snapshot?.nodeModels.map((name) => ({
+    name,
+    idField: "id",
+    fields: []
+  })) ?? []).filter((model) => matchesSchemaModel(model.name, model.fields, needle));
+  const edgeModels = (snapshot?.schemaEdgeModels ?? snapshot?.schemaEdges?.map((edge) => ({
+    name: edge.model,
+    fromModel: edge.fromModel,
+    toModel: edge.toModel,
+    idField: "id",
+    fields: []
+  })) ?? []).filter((model) =>
+    matchesSchemaModel(`${model.name} ${model.fromModel} ${model.toModel}`, model.fields, needle)
+  );
+
+  return (
+    <section className="schema-inspection" aria-label="Schema inspection">
+      <div className="schema-inspection-grid">
+        <section>
+          <h2>Node Models</h2>
+          <ul className="schema-detail-list">
+            {nodeModels.map((model) => (
+              <li key={model.name}>
+                <strong>{model.name}</strong>
+                <span>id: {model.idField}</span>
+                <FieldList fields={model.fields} />
+              </li>
+            ))}
+          </ul>
+        </section>
+        <section>
+          <h2>Edge Models</h2>
+          <ul className="schema-detail-list">
+            {edgeModels.map((model) => (
+              <li key={`${model.name}:${model.fromModel}:${model.toModel}`}>
+                <strong>{model.name}</strong>
+                <span>{model.fromModel} {"->"} {model.toModel}</span>
+                <span>id: {model.idField}</span>
+                <FieldList fields={model.fields} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function FieldList({ fields }: { fields: { name: string; valueType: string; required: boolean }[] }) {
+  if (fields.length === 0) {
+    return <span className="muted">fields unavailable in this snapshot</span>;
+  }
+
+  return (
+    <dl className="field-list">
+      {fields.map((field) => (
+        <div key={field.name}>
+          <dt>{field.name}</dt>
+          <dd>{field.valueType}{field.required ? " required" : ""}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function matchesSchemaModel(
+  text: string,
+  fields: { name: string; valueType: string; required: boolean }[],
+  needle: string
+): boolean {
+  if (!needle) {
+    return true;
+  }
+  return `${text} ${fields.map((field) => `${field.name} ${field.valueType}`).join(" ")}`
+    .toLowerCase()
+    .includes(needle);
 }
 
 function SelectionPanel({ selected }: { selected: SelectedGraphItem | null }) {
@@ -94,7 +181,8 @@ function QueryInsightPanels({
   visibleSnapshot,
   filter,
   graphView,
-  lastExecutedQuery
+  lastExecutedQuery,
+  queryEvidence
 }: {
   explainVisible: boolean;
   profileVisible: boolean;
@@ -103,6 +191,7 @@ function QueryInsightPanels({
   filter: GraphFilter;
   graphView: GraphView;
   lastExecutedQuery: QueryExecutionContext | null;
+  queryEvidence: QueryEvidence | null;
 }) {
   if (!explainVisible && !profileVisible) {
     return null;
@@ -113,34 +202,58 @@ function QueryInsightPanels({
       {explainVisible && (
         <section className="insight-panel">
           <h2>Explain</h2>
-          <p className="muted">Local view summary, not a service planner result.</p>
+          <p className="muted">{evidenceLabel(queryEvidence, "explain")}</p>
           <dl>
             <dt>Operation</dt>
-            <dd>{graphView === "schema" ? "schema projection" : "bounded snapshot filter"}</dd>
+            <dd>{lastExecutedQuery?.queryShape ?? (graphView === "schema" ? "schema projection" : "bounded snapshot filter")}</dd>
             <dt>Workspace</dt>
             <dd>{lastExecutedQuery?.workspace ?? snapshot?.workspace ?? "not loaded"}</dd>
             <dt>Source</dt>
-            <dd>{snapshot?.source === "service" ? "service snapshot, client-side summary" : "fixture/client-side summary"}</dd>
+            <dd>{sourceSummary(snapshot, queryEvidence)}</dd>
             <dt>Model scope</dt>
             <dd>{graphView === "schema" ? "schema catalogue" : filter.model || "all models"}</dd>
             <dt>Predicates</dt>
-            <dd>{graphView === "schema" ? "not applied to schema view" : predicateSummary(filter)}</dd>
+            <dd>{lastExecutedQuery?.commandText || (graphView === "schema" ? "not applied to schema view" : predicateSummary(filter))}</dd>
             <dt>Result shape</dt>
             <dd>{resultShapeSummary(snapshot, visibleSnapshot, graphView, lastExecutedQuery)}</dd>
             <dt>Capability</dt>
-            <dd>{graphView === "schema" ? "local schema projection" : "local summary only"}</dd>
+            <dd>{queryEvidence?.provenance === "service" ? queryEvidence.planKind ?? "service evidence" : graphView === "schema" ? "local schema projection" : "local summary only"}</dd>
+            {queryEvidence?.steps?.length ? (
+              <>
+                <dt>Steps</dt>
+                <dd>{queryEvidence.steps.join(" / ")}</dd>
+              </>
+            ) : null}
+            {queryEvidence?.indexes?.length ? (
+              <>
+                <dt>Indexes</dt>
+                <dd>{queryEvidence.indexes.join(", ")}</dd>
+              </>
+            ) : null}
           </dl>
         </section>
       )}
       {profileVisible && (
         <section className="insight-panel">
           <h2>Profile</h2>
-          <p className="muted">Local row counts from the current visible snapshot.</p>
+          <p className="muted">{evidenceLabel(queryEvidence, "profile")}</p>
           <dl>
             <dt>Source rows</dt>
             <dd>{sourceRowsSummary(snapshot, graphView, lastExecutedQuery)}</dd>
             <dt>Visible rows</dt>
             <dd>{resultShapeSummary(snapshot, visibleSnapshot, graphView, lastExecutedQuery)}</dd>
+            {queryEvidence?.rowCount !== undefined && (
+              <>
+                <dt>Service rows</dt>
+                <dd>{queryEvidence.rowCount}</dd>
+              </>
+            )}
+            {queryEvidence?.elapsedMicros !== undefined && (
+              <>
+                <dt>Elapsed</dt>
+                <dd>{queryEvidence.elapsedMicros} us</dd>
+              </>
+            )}
             <dt>Limit</dt>
             <dd>{lastExecutedQuery?.limit ?? snapshot?.modelLimit ?? "none"}</dd>
             <dt>Omitted edges</dt>
@@ -152,6 +265,25 @@ function QueryInsightPanels({
       )}
     </aside>
   );
+}
+
+function evidenceLabel(evidence: QueryEvidence | null, panel: "explain" | "profile"): string {
+  if (evidence?.provenance === "service") {
+    return `Service/runtime ${panel} evidence.`;
+  }
+  if (evidence?.provenance === "unsupported") {
+    return evidence.unsupportedReason ?? "Unsupported query shape.";
+  }
+  return panel === "explain"
+    ? "Local view summary, not a service planner result."
+    : "Local row counts from the current visible snapshot.";
+}
+
+function sourceSummary(snapshot: FlightDeckSnapshot | null, evidence: QueryEvidence | null): string {
+  if (evidence?.provenance === "service") {
+    return "typed service/runtime query";
+  }
+  return snapshot?.source === "service" ? "service snapshot, client-side summary" : "fixture/client-side summary";
 }
 
 function SecurityStatusPanel({ status }: { status: FlightDeckSecurityStatus | null }) {
@@ -287,6 +419,7 @@ export function App() {
   const [securityStatus, setSecurityStatus] = useState<FlightDeckSecurityStatus | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [queryLoading, setQueryLoading] = useState(false);
 
   const {
     profiles,
@@ -306,7 +439,12 @@ export function App() {
     connectionDetailsOpen,
     explainVisible,
     profileVisible,
-    lastExecutedQuery
+    lastExecutedQuery,
+    queryCommand,
+    queryStatus,
+    queryMessage,
+    queryEvidence,
+    schemaFilter
   } = storeState;
 
   const modelOptions = useMemo(() => {
@@ -349,6 +487,30 @@ export function App() {
   const handleSelect = useCallback((item: SelectedGraphItem | null) => {
     graphStore.selectGraphItem(item ? { kind: item.kind, id: item.id } : null);
   }, []);
+
+  const executeQuery = async () => {
+    if (graphView === "schema") {
+      graphStore.recordQueryExecution();
+      return;
+    }
+    if (settings.useFixtureData) {
+      graphStore.rejectQueryCommand("Typed query execution requires a service connection; fixture mode can use the local filter summary.");
+      return;
+    }
+    setQueryLoading(true);
+    graphStore.beginQueryCommand();
+    const controller = new AbortController();
+    try {
+      const response = await executeQueryCommand(settings, queryCommand, controller.signal);
+      graphStore.applyQueryResponse(response);
+      graphStore.setExplainVisible(response.kind === "explain" || explainVisible);
+      graphStore.setProfileVisible(response.kind === "profile" || profileVisible);
+    } catch (error) {
+      graphStore.failQueryCommand(error instanceof Error ? error.message : String(error));
+    } finally {
+      setQueryLoading(false);
+    }
+  };
 
   return (
     <main>
@@ -512,6 +674,43 @@ export function App() {
           {activeWorkspacePanel === "query" ? (
             <>
               <section className="query-bar" aria-label="Graph filter">
+                <div className="mode-toggle" aria-label="Query mode">
+                  <button
+                    type="button"
+                    className={graphView === "data" ? "active" : ""}
+                    onClick={() => graphStore.setGraphView("data")}
+                  >
+                    Data
+                  </button>
+                  <button
+                    type="button"
+                    className={graphView === "schema" ? "active" : ""}
+                    onClick={() => graphStore.setGraphView("schema")}
+                  >
+                    Schema
+                  </button>
+                </div>
+                {graphView === "data" ? (
+                  <label className="command-input">
+                    GRM command
+                    <input
+                      value={queryCommand}
+                      onChange={(event) => graphStore.setQueryCommand(event.target.value)}
+                      placeholder="node.find WorkSlice status=active limit=25"
+                      disabled={!snapshot && settings.useFixtureData}
+                    />
+                  </label>
+                ) : (
+                  <label className="command-input">
+                    Schema filter
+                    <input
+                      value={schemaFilter}
+                      onChange={(event) => graphStore.setSchemaFilter(event.target.value)}
+                      placeholder="model, field, or edge direction"
+                      disabled={!snapshot}
+                    />
+                  </label>
+                )}
                 <label>
                   Search
                   <input
@@ -564,7 +763,10 @@ export function App() {
                   Clear
                 </button>
                 <button type="button" onClick={graphStore.recordQueryExecution} disabled={!snapshot}>
-                  Execute
+                  Summarize
+                </button>
+                <button type="button" onClick={() => void executeQuery()} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
+                  {queryLoading || queryStatus === "running" ? "Running" : "Execute"}
                 </button>
                 <label className="check-label insight-toggle">
                   <input
@@ -583,14 +785,23 @@ export function App() {
                   Profile
                 </label>
               </section>
+              {queryMessage && (
+                <section className={`query-message ${queryStatus}`} aria-live="polite">
+                  {queryMessage}
+                </section>
+              )}
               <div className={`query-workbench ${explainVisible || profileVisible ? "with-insights" : ""}`}>
-                <GraphCanvas
-                  snapshot={visibleSnapshot}
-                  graphView={graphView}
-                  onGraphViewChange={graphStore.setGraphView}
-                  onSelect={handleSelect}
-                  onHover={setHovered}
-                />
+                {graphView === "schema" ? (
+                  <SchemaInspectionPanel snapshot={snapshot} filter={schemaFilter} />
+                ) : (
+                  <GraphCanvas
+                    snapshot={visibleSnapshot}
+                    graphView={graphView}
+                    onGraphViewChange={graphStore.setGraphView}
+                    onSelect={handleSelect}
+                    onHover={setHovered}
+                  />
+                )}
                 <QueryInsightPanels
                   explainVisible={explainVisible}
                   profileVisible={profileVisible}
@@ -599,6 +810,7 @@ export function App() {
                   filter={filter}
                   graphView={graphView}
                   lastExecutedQuery={lastExecutedQuery}
+                  queryEvidence={queryEvidence}
                 />
               </div>
             </>

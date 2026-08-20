@@ -5,11 +5,13 @@ import type {
   ConnectionProfile,
   ConnectionSettings,
   FlightDeckEvent,
+  FlightDeckQueryResponse,
   FlightDeckSnapshot,
   GraphView,
   GraphFilter,
   GraphSelection,
   NormalizedGraphSnapshot,
+  QueryEvidence,
   QueryExecutionContext,
   SelectedGraphItem,
   WorkspacePanel
@@ -62,6 +64,11 @@ export interface FlightDeckGraphStoreState {
   connectionDetailsOpen: boolean;
   explainVisible: boolean;
   profileVisible: boolean;
+  queryCommand: string;
+  queryStatus: "idle" | "running" | "succeeded" | "failed" | "unsupported";
+  queryMessage: string;
+  queryEvidence: QueryEvidence | null;
+  schemaFilter: string;
   lastExecutedQuery: QueryExecutionContext | null;
 }
 
@@ -91,6 +98,12 @@ export interface FlightDeckGraphStore {
   setConnectionDetailsOpen: (open: boolean) => void;
   setExplainVisible: (visible: boolean) => void;
   setProfileVisible: (visible: boolean) => void;
+  setQueryCommand: (command: string) => void;
+  setSchemaFilter: (filter: string) => void;
+  beginQueryCommand: () => void;
+  rejectQueryCommand: (message: string) => void;
+  failQueryCommand: (message: string) => void;
+  applyQueryResponse: (response: FlightDeckQueryResponse) => void;
   recordQueryExecution: () => void;
   applyExecutionEvent: (event: FlightDeckEvent) => void;
   clearWorkspace: () => void;
@@ -120,6 +133,11 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
     connectionDetailsOpen: false,
     explainVisible: false,
     profileVisible: false,
+    queryCommand: "node.find WorkSlice status=active limit=25",
+    queryStatus: "idle",
+    queryMessage: "Data commands execute through typed service requests.",
+    queryEvidence: null,
+    schemaFilter: "",
     lastExecutedQuery: null
   });
   const listeners = new Set<Listener>();
@@ -260,6 +278,85 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
     setProfileVisible: (visible) => {
       setState({ ...state, profileVisible: visible });
     },
+    setQueryCommand: (command) => {
+      setState({ ...state, queryCommand: command, queryStatus: "idle", queryMessage: "" });
+    },
+    setSchemaFilter: (filter) => {
+      setState({ ...state, schemaFilter: filter, lastExecutedQuery: null });
+    },
+    beginQueryCommand: () => {
+      setState({
+        ...state,
+        queryStatus: "running",
+        queryMessage: "Executing typed service query...",
+        queryEvidence: null
+      });
+    },
+    rejectQueryCommand: (message) => {
+      setState({
+        ...state,
+        queryStatus: "unsupported",
+        queryMessage: message,
+        queryEvidence: {
+          provenance: "unsupported",
+          label: "unsupported",
+          unsupportedReason: message
+        },
+        lastExecutedQuery: null
+      });
+    },
+    failQueryCommand: (message) => {
+      setState({
+        ...state,
+        queryStatus: "failed",
+        queryMessage: message,
+        queryEvidence: null,
+        lastExecutedQuery: null
+      });
+    },
+    applyQueryResponse: (response) => {
+      const result = response.result;
+      const snapshot = {
+        ...result,
+        partialReason: response.partialReason ?? result.partialReason
+      };
+      const context = queryExecutionContext(
+        snapshot,
+        snapshot,
+        DEFAULT_GRAPH_FILTER,
+        "data",
+        response.command,
+        response.kind,
+        response.queryShape,
+        response.evidence.provenance
+      );
+      const event: FlightDeckEvent = {
+        id: context.id,
+        kind: "read",
+        label: `${response.queryShape} ${response.kind}: ${snapshot.nodes.length} nodes / ${snapshot.edges.length} edges`,
+        operationSummary: serviceCommandSummary(response.command),
+        securityContext:
+          response.evidence.provenance === "service"
+            ? "service-backed typed query via local gateway"
+            : response.evidence.label,
+        resultState: response.partialReason ?? result.partialReason ?? executionResultState(context),
+        status: "observed",
+        workspace: response.workspace
+      };
+
+      setState({
+        ...state,
+        snapshot,
+        normalizedSnapshot: normalizeSnapshot(snapshot),
+        filter: DEFAULT_GRAPH_FILTER,
+        selection: null,
+        lastExecutedQuery: context,
+        queryStatus: "succeeded",
+        queryMessage: response.evidence.label,
+        queryEvidence: response.evidence,
+        events: [...state.events.filter((item) => item.id !== "idle"), event]
+      });
+    },
     recordQueryExecution: () => {
       if (!state.snapshot) {
         return;
@@ -268,7 +365,11 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         state.snapshot,
         state.visibleSnapshot,
         state.filter,
-        state.graphView
+        state.graphView,
+        state.queryCommand,
+        "local_summary",
+        state.graphView === "schema" ? "schema projection" : "bounded snapshot filter",
+        "local_summary"
       );
       const status = context.source === "fixture" ? "fixture" : "observed";
       setState({
@@ -308,6 +409,9 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         selection: null,
         selectedItem: null,
         lastExecutedQuery: null,
+        queryStatus: "idle",
+        queryMessage: "",
+        queryEvidence: null,
         events: [idleEvent()]
       });
     }
@@ -443,7 +547,11 @@ function queryExecutionContext(
   snapshot: FlightDeckSnapshot | null,
   visibleSnapshot: FlightDeckSnapshot | null,
   filter: GraphFilter,
-  graphView: GraphView
+  graphView: GraphView,
+  commandText = "",
+  queryKind: QueryExecutionContext["queryKind"] = "local_summary",
+  queryShape = graphView === "schema" ? "schema projection" : "bounded snapshot filter",
+  evidenceProvenance: QueryExecutionContext["evidenceProvenance"] = "local_summary"
 ): QueryExecutionContext {
   const schemaEdgeCount = schemaEdgeCountForSnapshot(snapshot);
   const sourceNodes = graphView === "schema" ? snapshot?.nodeModels.length ?? 0 : snapshot?.nodes.length ?? 0;
@@ -456,6 +564,10 @@ function queryExecutionContext(
     workspace: snapshot?.workspace ?? "not loaded",
     source: snapshot?.source ?? "none",
     graphView,
+    commandText,
+    queryKind,
+    queryShape,
+    evidenceProvenance,
     filter,
     sourceNodes,
     sourceEdges,
@@ -465,6 +577,14 @@ function queryExecutionContext(
     omittedEdges: visibleSnapshot?.omittedEdges ?? snapshot?.omittedEdges ?? 0,
     partialReason: visibleSnapshot?.partialReason ?? snapshot?.partialReason
   };
+}
+
+function serviceCommandSummary(command: string): string {
+  const trimmed = command.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= 120) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 117)}...`;
 }
 
 function predicateEventSummary(filter: GraphFilter, graphView: GraphView): string {

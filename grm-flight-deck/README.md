@@ -54,18 +54,51 @@ That endpoint is read-only observability. It labels `anonymous_local`,
 principal issuer/subject, authentication method, and policy version when the
 service accepts the gateway credentials.
 
+The local HTTP adapter only grants browser CORS access to configured
+flight-deck UI origins. By default those are:
+
+```text
+http://127.0.0.1:8081
+http://localhost:8081
+http://127.0.0.1:3001
+http://localhost:3001
+```
+
+Set `GRM_FLIGHT_DECK_ALLOWED_ORIGINS` to a comma-separated list when serving the
+UI from another trusted local origin.
+
 ## Workbench Shape
 
-The app opens in Query. Query is the normal graph-output arena: apply the
-bounded local filter, click `Execute` to record the current query context, view
-the graph, inspect selection, and optionally show Explain/Profile beside the
-graph.
+The app opens in Query with Data mode selected. Data mode is the graph-instance
+arena: it can still apply the bounded local snapshot filter, and its command bar
+accepts a narrow read-only GRM syntax subset when fixture mode is off:
 
-The current Explain/Profile panes are local view summaries derived from the
-loaded snapshot and filter. They are intentionally labelled as client-side
-summaries, not service planner/profile truth. A future service-backed
-query/explain/profile endpoint should feed the same view through typed GRM
-requests.
+```text
+node.find <Model> [field=value ...] [via=<out|in|both>:<EdgeModel>:<EndModel> ...] [end.<field>=value ...] [edge.<field>=value ...] [return=root|end] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]
+edge.find <EdgeModel> [from=<id>] [to=<id>] [field=value ...] [order=<field>:asc|desc[,<field>:asc|desc ...]] [limit=<n>] [offset=<n>]
+session.explain node.find <Model> ...
+session.explain edge.find <EdgeModel> ...
+session.profile node.find <Model> ...
+session.profile edge.find <EdgeModel> ...
+```
+
+The gateway parses that text into typed `grm-rs` query, explain, and profile
+requests before it calls the workspace service. The browser does not send
+free-form command text as the service contract. Write-like commands, durability
+commands, admin-ish commands, and Cypher-like `MATCH`, `CREATE`, `MERGE`, `SET`,
+or `DELETE` text are rejected before service execution. `node.find return=edge`
+is intentionally deferred in this gateway slice.
+
+Schema mode is separate from Data mode. It inspects the loaded snapshot schema
+catalogue, including node models, edge models, legal edge directions, and model
+fields when the gateway snapshot includes them. Schema filtering is a local
+catalogue inspection control, not data traversal.
+
+Explain/Profile panes remain beside Query. For `session.explain ...` and
+`session.profile ...` commands, they show service/runtime evidence returned by
+the typed workspace path. For local snapshot filtering and Schema mode
+summaries, they are still labelled as local summaries rather than service
+planner/profile truth.
 
 Audit is a distinct navigable panel. It currently shows a bounded local event
 buffer with fixture/service snapshot observations, local filter observations,
@@ -90,12 +123,14 @@ configured profile metadata rather than observed service security posture.
 - The security status panel is fed by a service-side read-only status RPC
   through the local gateway.
 - Real data is loaded through the read-only local HTTP adapter, which opens a
-  GRM service workspace and asks for typed schema, node.find, and edge.find
-  requests through the existing gRPC workspace client.
+  GRM service workspace and asks for typed schema, node.find, edge.find,
+  explain, and profile requests through the existing gRPC workspace client.
 - The graph filter is a client-side delimiter over a bounded snapshot, not a
-  public GRM query language.
-- Explain/Profile are currently local view summaries over the bounded snapshot,
-  not service planner/profile evidence.
+  public GRM query language. The Data command bar is a read-only text adapter
+  over typed GRM requests.
+- Explain/Profile are service/runtime evidence only for the supported
+  `session.explain ...` and `session.profile ...` command subset. Local filters
+  and Schema mode still produce local summaries.
 - The Audit panel is currently backed by a bounded UI event buffer, not a
   service audit-event read path.
 
@@ -121,4 +156,6 @@ certificates, policy table contents, or unbounded request/response bodies.
 - Production authentication, authorization, policy authoring, and admin flows.
 - Hosted or multi-user workspace claims.
 - Real service event streams for execution animation.
+- Cypher support; a future slice may add a documented read-only Cypher-like
+  adapter over typed GRM requests.
 - 3D or spatial navigation layers.
