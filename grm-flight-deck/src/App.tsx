@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { executeQueryCommand, fetchSecurityStatus, fetchSnapshot } from "./api";
 import {
@@ -37,92 +37,6 @@ function SchemaList({ title, models }: { title: string; models: string[] }) {
       </ul>
     </section>
   );
-}
-
-function SchemaInspectionPanel({
-  snapshot,
-  filter
-}: {
-  snapshot: FlightDeckSnapshot | null;
-  filter: string;
-}) {
-  const needle = filter.trim().toLowerCase();
-  const nodeModels = (snapshot?.schemaNodeModels ?? snapshot?.nodeModels.map((name) => ({
-    name,
-    idField: "id",
-    fields: []
-  })) ?? []).filter((model) => matchesSchemaModel(model.name, model.fields, needle));
-  const edgeModels = (snapshot?.schemaEdgeModels ?? snapshot?.schemaEdges?.map((edge) => ({
-    name: edge.model,
-    fromModel: edge.fromModel,
-    toModel: edge.toModel,
-    idField: "id",
-    fields: []
-  })) ?? []).filter((model) =>
-    matchesSchemaModel(`${model.name} ${model.fromModel} ${model.toModel}`, model.fields, needle)
-  );
-
-  return (
-    <section className="schema-inspection" aria-label="Schema inspection">
-      <div className="schema-inspection-grid">
-        <section>
-          <h2>Node Models</h2>
-          <ul className="schema-detail-list">
-            {nodeModels.map((model) => (
-              <li key={model.name}>
-                <strong>{model.name}</strong>
-                <span>id: {model.idField}</span>
-                <FieldList fields={model.fields} />
-              </li>
-            ))}
-          </ul>
-        </section>
-        <section>
-          <h2>Edge Models</h2>
-          <ul className="schema-detail-list">
-            {edgeModels.map((model) => (
-              <li key={`${model.name}:${model.fromModel}:${model.toModel}`}>
-                <strong>{model.name}</strong>
-                <span>{model.fromModel} {"->"} {model.toModel}</span>
-                <span>id: {model.idField}</span>
-                <FieldList fields={model.fields} />
-              </li>
-            ))}
-          </ul>
-        </section>
-      </div>
-    </section>
-  );
-}
-
-function FieldList({ fields }: { fields: { name: string; valueType: string; required: boolean }[] }) {
-  if (fields.length === 0) {
-    return <span className="muted">fields unavailable in this snapshot</span>;
-  }
-
-  return (
-    <dl className="field-list">
-      {fields.map((field) => (
-        <div key={field.name}>
-          <dt>{field.name}</dt>
-          <dd>{field.valueType}{field.required ? " required" : ""}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function matchesSchemaModel(
-  text: string,
-  fields: { name: string; valueType: string; required: boolean }[],
-  needle: string
-): boolean {
-  if (!needle) {
-    return true;
-  }
-  return `${text} ${fields.map((field) => `${field.name} ${field.valueType}`).join(" ")}`
-    .toLowerCase()
-    .includes(needle);
 }
 
 function SelectionPanel({ selected }: { selected: SelectedGraphItem | null }) {
@@ -383,6 +297,81 @@ function schemaEdgeCount(snapshot: FlightDeckSnapshot): number {
   return snapshot.schemaEdges?.length ?? snapshot.edgeModels.length;
 }
 
+function schemaFilteredSnapshot(
+  snapshot: FlightDeckSnapshot | null,
+  filter: string
+): FlightDeckSnapshot | null {
+  if (!snapshot) {
+    return null;
+  }
+  const needle = filter.trim().toLowerCase();
+  if (!needle) {
+    return snapshot;
+  }
+
+  const schemaNodeModels = snapshot.schemaNodeModels ?? snapshot.nodeModels.map((name) => ({
+    name,
+    idField: "id",
+    fields: []
+  }));
+  const schemaEdgeModels = snapshot.schemaEdgeModels ?? snapshot.schemaEdges?.map((edge) => ({
+    name: edge.model,
+    fromModel: edge.fromModel,
+    toModel: edge.toModel,
+    idField: "id",
+    fields: []
+  })) ?? [];
+  const matchingNodeNames = new Set(
+    schemaNodeModels
+      .filter((model) => schemaModelMatches(`${model.name} ${model.idField}`, model.fields, needle))
+      .map((model) => model.name)
+  );
+  const matchingEdgeModels = schemaEdgeModels.filter((model) =>
+    schemaModelMatches(`${model.name} ${model.fromModel} ${model.toModel} ${model.idField}`, model.fields, needle)
+  );
+
+  for (const edge of matchingEdgeModels) {
+    matchingNodeNames.add(edge.fromModel);
+    matchingNodeNames.add(edge.toModel);
+  }
+
+  const schemaEdges = (snapshot.schemaEdges ?? matchingEdgeModels.map((model) => ({
+    model: model.name,
+    fromModel: model.fromModel,
+    toModel: model.toModel
+  }))).filter((edge) =>
+    matchingNodeNames.has(edge.fromModel) &&
+    matchingNodeNames.has(edge.toModel) &&
+    (matchingEdgeModels.some((model) => model.name === edge.model) ||
+      edge.model.toLowerCase().includes(needle) ||
+      edge.fromModel.toLowerCase().includes(needle) ||
+      edge.toModel.toLowerCase().includes(needle))
+  );
+
+  return {
+    ...snapshot,
+    nodeModels: schemaNodeModels
+      .filter((model) => matchingNodeNames.has(model.name))
+      .map((model) => model.name),
+    edgeModels: schemaEdges.map((edge) => edge.model),
+    schemaNodeModels: schemaNodeModels.filter((model) => matchingNodeNames.has(model.name)),
+    schemaEdgeModels: schemaEdgeModels.filter((model) =>
+      schemaEdges.some((edge) => edge.model === model.name && edge.fromModel === model.fromModel && edge.toModel === model.toModel)
+    ),
+    schemaEdges
+  };
+}
+
+function schemaModelMatches(
+  text: string,
+  fields: { name: string; valueType: string; required: boolean }[],
+  needle: string
+): boolean {
+  return `${text} ${fields.map((field) => `${field.name} ${field.valueType}`).join(" ")}`
+    .toLowerCase()
+    .includes(needle);
+}
+
 function connectionKindLabel(
   settings: ReturnType<typeof graphStore.getState>["settings"],
   status: FlightDeckSecurityStatus | null
@@ -420,6 +409,7 @@ export function App() {
   const [hovered, setHovered] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [queryLoading, setQueryLoading] = useState(false);
+  const fixtureAutoLoaded = useRef(false);
 
   const {
     profiles,
@@ -453,6 +443,11 @@ export function App() {
     }
     return [...snapshot.nodeModels, ...snapshot.edgeModels].sort();
   }, [snapshot]);
+  const schemaGraphSnapshot = useMemo(
+    () => schemaFilteredSnapshot(snapshot, schemaFilter),
+    [snapshot, schemaFilter]
+  );
+  const graphSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
 
   const load = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -483,6 +478,15 @@ export function App() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (fixtureAutoLoaded.current || !settings.useFixtureData || snapshot || loading) {
+      return;
+    }
+
+    fixtureAutoLoaded.current = true;
+    void load();
+  }, [settings.useFixtureData, snapshot, loading]);
 
   const handleSelect = useCallback((item: SelectedGraphItem | null) => {
     graphStore.selectGraphItem(item ? { kind: item.kind, id: item.id } : null);
@@ -791,17 +795,13 @@ export function App() {
                 </section>
               )}
               <div className={`query-workbench ${explainVisible || profileVisible ? "with-insights" : ""}`}>
-                {graphView === "schema" ? (
-                  <SchemaInspectionPanel snapshot={snapshot} filter={schemaFilter} />
-                ) : (
-                  <GraphCanvas
-                    snapshot={visibleSnapshot}
-                    graphView={graphView}
-                    onGraphViewChange={graphStore.setGraphView}
-                    onSelect={handleSelect}
-                    onHover={setHovered}
-                  />
-                )}
+                <GraphCanvas
+                  snapshot={graphSnapshot}
+                  graphView={graphView}
+                  onGraphViewChange={graphStore.setGraphView}
+                  onSelect={handleSelect}
+                  onHover={setHovered}
+                />
                 <QueryInsightPanels
                   explainVisible={explainVisible}
                   profileVisible={profileVisible}
