@@ -11,11 +11,12 @@ from pathlib import Path
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--endpoint", default="https://127.0.0.1:50051")
+    parser.add_argument("--gateway-url", default="http://127.0.0.1:3001")
+    parser.add_argument("--upstream-endpoint", default="https://127.0.0.1:50051")
+    parser.add_argument("--workspace", default="flight-deck-demo")
+    parser.add_argument("--issuer", default="local-admin")
     parser.add_argument("--principal", default="admin-1")
     parser.add_argument("--access-level", default="owner-bootstrap-admin")
-    parser.add_argument("--security-config", required=True)
-    parser.add_argument("--ca-cert", required=True)
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
@@ -28,13 +29,14 @@ def main() -> int:
     profile = {
         "version": "secured-local-flight-deck-profile-v1",
         "mode": "secured_local_mtls",
-        "endpoint": args.endpoint,
-        "principal": args.principal,
+        "connector": "Admin-1 secured local",
+        "gateway_url": args.gateway_url,
+        "upstream_endpoint": args.upstream_endpoint,
+        "identity": f"{args.issuer}/{args.principal}",
+        "workspace": args.workspace,
         "access_level_template": args.access_level,
-        "security_config": args.security_config,
-        "tls_ca_cert": args.ca_cert,
         "tls_domain_name": "localhost",
-        "gateway_hint": "use a trusted local gateway or CLI environment for client certificate and key material",
+        "gateway_hint": "start the trusted local gateway with .grm/secured-local/gateway.env",
         "private_key_handling": "not-present-browser-must-not-import-or-cache-private-keys",
     }
     args.output.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
