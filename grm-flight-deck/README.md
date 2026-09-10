@@ -35,12 +35,13 @@ cargo run -p grm-service-api --example local_workspace_client -- \
 ```
 
 Then disable `Fixture` in the UI and use workspace `flight-deck-demo`. Leaving
-`Service base URL` blank uses the Vite `/api` proxy to
+`Gateway URL` blank uses the Vite `/api` proxy to
 `http://127.0.0.1:3001`; setting it to `http://127.0.0.1:3001` also works for
 local development.
 
-For the passwordless secured-local Admin no.1 path, including mTLS bootstrap,
-local gateway credentials, and profile switching in the UI, see
+For the passwordless secured-local Admin no.1 path, including port-aware mTLS
+bootstrap, `.grm/secured-local/gateway.env`, the local connector starter, and
+profile switching in the UI, see
 [`docs/secured-local-admin-1-flight-deck-onboarding.md`](../docs/secured-local-admin-1-flight-deck-onboarding.md).
 
 The gateway also exposes:

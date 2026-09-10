@@ -15,6 +15,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--principal", required=True)
     parser.add_argument("--access-level", required=True)
     parser.add_argument("--policy-version", required=True)
+    parser.add_argument("--service-port", default="50051")
+    parser.add_argument("--gateway-port", default="3001")
+    parser.add_argument("--workspace", default="flight-deck-demo")
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
@@ -26,6 +29,9 @@ def expected_document(args: argparse.Namespace) -> dict[str, str]:
         "principal": args.principal,
         "access_level": args.access_level,
         "policy_version": args.policy_version,
+        "service_port": args.service_port,
+        "gateway_port": args.gateway_port,
+        "workspace": args.workspace,
     }
 
 

@@ -564,7 +564,7 @@ export function App() {
             />
           </label>
           <label>
-            Service base URL
+            Gateway URL
             <input
               placeholder="blank uses /api proxy, or http://127.0.0.1:3001"
               value={settings.serviceBaseUrl}

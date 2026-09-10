@@ -1041,7 +1041,8 @@ fn origin_is_allowed(origin: &HeaderValue, allowed_origins: &[HeaderValue]) -> b
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_endpoint =
         std::env::var("GRM_SERVICE_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:50051".into());
-    let bind = std::env::var("GRM_FLIGHT_DECK_HTTP_BIND")
+    let bind = std::env::var("GRM_FLIGHT_DECK_GATEWAY_BIND")
+        .or_else(|_| std::env::var("GRM_FLIGHT_DECK_HTTP_BIND"))
         .unwrap_or_else(|_| "127.0.0.1:3001".into())
         .parse::<SocketAddr>()?;
     let cors = flight_deck_cors_layer(

@@ -12,7 +12,7 @@ services:
       GRM_SERVICE_TLS_SERVER_KEY: /secured-local/server.key
       GRM_SERVICE_TLS_CLIENT_CA_CERT: /secured-local/ca.crt
     ports:
-      - "127.0.0.1:50051:50051"
+      - "127.0.0.1:${GRM_SECURED_LOCAL_SERVICE_PORT:-50051}:50051"
     volumes:
       - ../../.grm/secured-local:/secured-local:ro
       - ../../.grm/secured-local/workspaces:/workspaces

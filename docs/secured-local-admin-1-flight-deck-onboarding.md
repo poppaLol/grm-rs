@@ -17,17 +17,15 @@ local certificate material
 ```
 
 The browser never handles Admin-1 private keys or raw certificates. The local
-gateway and CLI consume `.grm/secured-local/client.env`; the flight-deck stores
-only safe connection metadata.
+gateway consumes `.grm/secured-local/gateway.env`, the CLI can consume
+`.grm/secured-local/client.env`, and the flight-deck stores only safe
+connection metadata.
 
 This is a local secured demo and operator bootstrap path. It is not production
 PKI, hosted identity, certificate revocation, browser credential handling,
 multi-user admin lifecycle, or a live policy mutation API.
 
-## Known Adoption Friction
-
-This first-time flow is intentionally explicit, but it is too easy to miswire
-for self-hosted use.
+## Connection Shape
 
 Cloud-hosted GRM can hide most of the deployment mechanics behind one HTTPS
 origin and a managed control plane. Self-hosted secured-local currently exposes
@@ -57,14 +55,9 @@ must not handle private keys or raw certificates. The product gap is that the
 safe local connector should make those relationships obvious and harder to
 misconfigure.
 
-Candidate next slice: make self-hosted secured-local use an explicit local
-connector profile rather than asking the operator to assemble separate service,
-client, gateway, and browser configuration by hand. A useful first improvement
-would let bootstrap choose service and gateway ports, write a `gateway.env`,
-provide a one-command gateway starter, and make the flight-deck label the
-browser-facing URL as a gateway URL rather than a generic service URL. The
-candidate engineering prompt is
-[`docs/flight-deck-secured-local-connector-simplification-engineer-prompt.md`](flight-deck-secured-local-connector-simplification-engineer-prompt.md).
+Bootstrap now writes the service/client/gateway files from one set of local
+inputs so the browser-facing gateway URL and upstream secured gRPC endpoint
+stay aligned.
 
 ## Ports
 
@@ -83,7 +76,10 @@ cd /home/laurie/source/grm-rs
 
 examples/secured-local/bootstrap.sh \
   --issuer local-admin \
-  --principal admin-1
+  --principal admin-1 \
+  --service-port 50052 \
+  --gateway-port 3001 \
+  --workspace flight-deck-demo
 ```
 
 The helper writes local material under `.grm/secured-local/`, including:
@@ -100,14 +96,14 @@ security.json
 bootstrap-inputs.json
 service.env
 client.env
+gateway.env
 flight-deck-profile.json
 ```
 
-Inspect the non-secret profile metadata and Admin-1 fingerprint:
+Inspect the non-secret profile metadata:
 
 ```bash
 cat .grm/secured-local/flight-deck-profile.json
-cat .grm/secured-local/admin-1.sha256
 ```
 
 Existing generated material is reused by default. Use `--force` only when you
@@ -166,7 +162,6 @@ set -a
 . .grm/secured-local/client.env
 set +a
 
-GRM_SERVICE_ENDPOINT=https://127.0.0.1:50052 \
 cargo run -p grm-service-api --example local_workspace_client -- \
   https://127.0.0.1:50052 flight-deck-demo
 ```
@@ -181,12 +176,7 @@ Terminal 3:
 ```bash
 cd /home/laurie/source/grm-rs
 
-set -a
-. .grm/secured-local/client.env
-set +a
-
-GRM_SERVICE_ENDPOINT=https://127.0.0.1:50052 \
-cargo run -p grm-flight-deck-gateway
+examples/secured-local/start-flight-deck-gateway.sh
 ```
 
 Expected startup line:
@@ -219,11 +209,11 @@ In the UI:
 2. Name it `Admin-1 secured local`.
 3. Set workspace to `flight-deck-demo`.
 4. Turn `Fixture` off.
-5. Leave `Service base URL` blank.
+5. Leave `Gateway URL` blank.
 6. Click `Save profile`.
 7. Click `Connect`.
 
-Leaving `Service base URL` blank uses the Vite `/api` proxy to the local
+Leaving `Gateway URL` blank uses the Vite `/api` proxy to the local
 gateway at `http://127.0.0.1:3001`.
 
 Expected secured status:
@@ -278,12 +268,7 @@ If the direct client succeeds but the gateway fails, restart the gateway with
 the same Admin-1 TLS environment:
 
 ```bash
-set -a
-. .grm/secured-local/client.env
-set +a
-
-GRM_SERVICE_ENDPOINT=https://127.0.0.1:50052 \
-cargo run -p grm-flight-deck-gateway
+examples/secured-local/start-flight-deck-gateway.sh
 ```
 
 Common checks:

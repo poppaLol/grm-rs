@@ -40,7 +40,10 @@ tamper-evident audit.
 From the repository root:
 
 ```bash
-examples/secured-local/bootstrap.sh
+examples/secured-local/bootstrap.sh \
+  --service-port 50052 \
+  --gateway-port 3001 \
+  --workspace flight-deck-demo
 ```
 
 Generated files are written under `.grm/secured-local/`, including:
@@ -51,7 +54,8 @@ Generated files are written under `.grm/secured-local/`, including:
 - `security.json`;
 - `bootstrap-inputs.json`;
 - `service.env`;
-- `client.env`; and
+- `client.env`;
+- `gateway.env`; and
 - `flight-deck-profile.json`.
 
 Existing credential/config files are reused by default. Pass `--force` only
@@ -73,7 +77,12 @@ assignment, not the first-admin setup.
 Choose the default Admin no.1 principal subject and issuer explicitly with:
 
 ```bash
-examples/secured-local/bootstrap.sh --issuer local-admin --principal admin-1
+examples/secured-local/bootstrap.sh \
+  --issuer local-admin \
+  --principal admin-1 \
+  --service-port 50052 \
+  --gateway-port 3001 \
+  --workspace flight-deck-demo
 ```
 
 Access-level names are templates only. The service enforces the expanded
@@ -89,17 +98,20 @@ set -a
 . .grm/secured-local/service.env
 set +a
 cargo run -p grm-service-api --bin grm-local-workspace-server -- \
-  127.0.0.1:50051 .grm/secured-local/workspaces
+  127.0.0.1:50052 .grm/secured-local/workspaces
 ```
 
 Docker Compose:
 
 ```bash
+GRM_SECURED_LOCAL_SERVICE_PORT=50052 \
 docker compose -f examples/secured-local/docker-compose.secured-local.yml up --build
 ```
 
 The Compose service runs the secured profile and publishes
-`127.0.0.1:50051`. Run `bootstrap.sh` before starting Compose so
+`127.0.0.1:50051` by default. Use
+`GRM_SECURED_LOCAL_SERVICE_PORT=50052` when you want Compose to publish a
+non-default host port. Run `bootstrap.sh` before starting Compose so
 `.grm/secured-local/security.json` and certificates exist.
 
 ## Verify
@@ -125,9 +137,20 @@ examples/secured-local/bootstrap.sh --start --verify
 
 ## Flight Deck
 
-`flight-deck-profile.json` contains safe profile metadata, the endpoint, the
-principal subject, the selected access template, the CA certificate path, and a
-gateway hint. It does not contain client certificate or private-key paths. Use
-`client.env`, the CLI, the local gateway, or another trusted local process to
-hold client certificate and key material when a UI needs to connect through the
-secured-local profile.
+Start the trusted local flight-deck connector with:
+
+```bash
+examples/secured-local/start-flight-deck-gateway.sh
+```
+
+The starter loads `.grm/secured-local/gateway.env`, prints the browser-facing
+gateway URL, upstream secured service endpoint, expected principal, and
+workspace hint, then runs `grm-flight-deck-gateway`.
+
+`flight-deck-profile.json` contains safe browser-facing profile metadata: the
+connector name, gateway URL, upstream endpoint, identity label, workspace, and
+selected access template. It does not contain certificate paths, private-key
+paths, raw certificates, fingerprints, permission tables, or policy internals.
+Use `gateway.env`, `client.env`, the CLI, the local gateway, or another trusted
+local process to hold client certificate and key material when a UI needs to
+connect through the secured-local profile.
