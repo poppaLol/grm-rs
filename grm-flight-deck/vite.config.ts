@@ -1,6 +1,8 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+const gatewayTarget = process.env.GRM_FLIGHT_DECK_DEV_PROXY_TARGET ?? "http://127.0.0.1:3001";
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -9,7 +11,7 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:3001",
+        target: gatewayTarget,
         changeOrigin: true
       }
     }

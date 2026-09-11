@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "examples" / "secured-local" / "scripts" / "render-security-config.py"
 INPUTS_SCRIPT = ROOT / "examples" / "secured-local" / "scripts" / "write-bootstrap-inputs.py"
 PROFILE_SCRIPT = ROOT / "examples" / "secured-local" / "scripts" / "write-flight-deck-profile.py"
+DEMO_RUNNER = ROOT / "examples" / "secured-local" / "start-flight-deck-demo.sh"
 ACCESS_LEVELS = ROOT / "examples" / "secured-local" / "templates" / "access-levels.json"
 TEMPLATE = ROOT / "examples" / "secured-local" / "templates" / "security-config.template.json"
 FINGERPRINT = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -199,6 +200,38 @@ def test_bootstrap_quotes_sourceable_env_values() -> None:
         assert not principal_sentinel.exists()
 
 
+def test_flight_deck_demo_runner_public_options_and_port_validation() -> None:
+    help_result = subprocess.run(
+        [str(DEMO_RUNNER), "--help"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    assert "--service-port" in help_result.stdout
+    assert "--gateway-port" in help_result.stdout
+    assert "--ui-port" in help_result.stdout
+    assert "private key" not in help_result.stdout.lower()
+    assert "fingerprint" not in help_result.stdout.lower()
+
+    conflict = subprocess.run(
+        [
+            str(DEMO_RUNNER),
+            "--service-port",
+            "3001",
+            "--gateway-port",
+            "3001",
+            "--ui-port",
+            "8081",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert conflict.returncode == 2
+    assert "must be distinct" in conflict.stderr
+
+
 if __name__ == "__main__":
     test_owner_template_expands_to_explicit_permissions()
     test_unknown_template_fails_without_writing()
@@ -207,4 +240,5 @@ if __name__ == "__main__":
     test_bootstrap_inputs_reject_identity_mismatch_on_reuse()
     test_flight_deck_profile_excludes_tls_and_policy_paths()
     test_bootstrap_quotes_sourceable_env_values()
+    test_flight_deck_demo_runner_public_options_and_port_validation()
     print("secured-local render config tests passed")
