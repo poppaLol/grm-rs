@@ -39,6 +39,13 @@ Then disable `Fixture` in the UI and use workspace `flight-deck-demo`. Leaving
 `http://127.0.0.1:3001`; setting it to `http://127.0.0.1:3001` also works for
 local development.
 
+For a non-default local gateway port, configure the dev proxy before starting
+Vite:
+
+```bash
+GRM_FLIGHT_DECK_DEV_PROXY_TARGET=http://127.0.0.1:3002 npm run dev -- --strictPort
+```
+
 For the passwordless secured-local Admin no.1 path, including port-aware mTLS
 bootstrap, `.grm/secured-local/gateway.env`, the local connector starter, and
 profile switching in the UI, see
