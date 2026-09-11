@@ -35,7 +35,35 @@ The secured-local helper is still local demo/operator material, not production
 PKI, hosted identity, certificate revocation, multi-user admin lifecycle, or
 tamper-evident audit.
 
-## Bootstrap
+## One-Command Flight Deck Demo
+
+From the repository root:
+
+```bash
+examples/secured-local/start-flight-deck-demo.sh
+```
+
+This starts the secured local service on `127.0.0.1:50052`, starts the trusted
+local flight-deck gateway on `127.0.0.1:3001`, starts the Vite flight-deck UI on
+`127.0.0.1:8081`, verifies Admin no.1, seeds `flight-deck-demo`, and prints the
+browser URL plus log paths.
+
+Use explicit ports when needed:
+
+```bash
+examples/secured-local/start-flight-deck-demo.sh \
+  --service-port 50052 \
+  --gateway-port 3001 \
+  --ui-port 8081 \
+  --workspace flight-deck-demo
+```
+
+The runner prints only safe operator metadata in normal output: browser URL,
+gateway URL, upstream endpoint, workspace, identity label, and log paths. Verbose
+helper output is captured under `.grm/secured-local/logs/`. Press Ctrl-C to stop
+the service, gateway, and UI children.
+
+## Manual Bootstrap
 
 From the repository root:
 
@@ -154,3 +182,8 @@ paths, raw certificates, fingerprints, permission tables, or policy internals.
 Use `gateway.env`, `client.env`, the CLI, the local gateway, or another trusted
 local process to hold client certificate and key material when a UI needs to
 connect through the secured-local profile.
+
+The one-command demo runner configures the Vite `/api` proxy to the selected
+gateway port. When running the UI manually with a non-default gateway port, set
+`GRM_FLIGHT_DECK_DEV_PROXY_TARGET` before `npm run dev`, or enter the full
+gateway URL in the flight-deck connection settings.

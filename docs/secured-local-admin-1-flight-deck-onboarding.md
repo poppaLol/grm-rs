@@ -67,22 +67,86 @@ existing useful service on `127.0.0.1:50051` can keep running.
 The flight-deck gateway still listens on `127.0.0.1:3001`, and the Vite UI
 still listens on `127.0.0.1:8081`.
 
-## 1. Bootstrap Admin-1
+## 1. Start The Secured Flight-Deck Demo
 
 From the repository root:
 
 ```bash
 cd /home/laurie/source/grm-rs
 
-examples/secured-local/bootstrap.sh \
+examples/secured-local/start-flight-deck-demo.sh \
   --issuer local-admin \
   --principal admin-1 \
   --service-port 50052 \
   --gateway-port 3001 \
+  --ui-port 8081 \
   --workspace flight-deck-demo
 ```
 
-The helper writes local material under `.grm/secured-local/`, including:
+The runner:
+
+- bootstraps Admin-1 secured-local material;
+- starts the secured local service;
+- verifies Admin-1 through the public CLI/service surface;
+- seeds `flight-deck-demo`;
+- starts the trusted local gateway; and
+- starts the Flight Deck UI.
+
+It captures verbose process output under `.grm/secured-local/logs/` and prints
+only safe operator metadata: browser URL, gateway URL, upstream endpoint,
+workspace, identity label, and log paths. Press Ctrl-C in that terminal to stop
+the service, gateway, and UI children.
+
+Open:
+
+```text
+http://127.0.0.1:8081
+```
+
+In the UI:
+
+1. Click `New profile`.
+2. Name it `Admin-1 secured local`.
+3. Set workspace to `flight-deck-demo`.
+4. Turn `Fixture` off.
+5. Leave `Gateway URL` blank, or enter `http://127.0.0.1:3001`.
+6. Click `Save profile`.
+7. Click `Connect`.
+
+Leaving `Gateway URL` blank uses the Vite `/api` proxy. The one-command runner
+configures that proxy for the selected gateway port.
+
+Expected secured status:
+
+```text
+Secured
+local-admin/admin-1 via mtls-certificate
+secured-local-policy-v1
+```
+
+The default workbench view is `Query`. Connection fields stay hidden after the
+profile is selected; use `Change connection` only when you need to edit the
+gateway URL, workspace, profile kind, limit, or fixture toggle. Query can show
+optional Explain/Profile panes, but in this slice those panes are local view
+summaries derived from the bounded snapshot/filter, not service planner truth.
+
+Open `Audit` from the workspace navigation to see the bounded local event
+buffer. It records fixture/service snapshot observations and explicit Query
+executions with redacted context. This is useful workbench navigation for the
+Admin-1 journey, but it is not a live policy editor, permission table viewer,
+external audit forwarding path, signed receipt, or state commitment.
+
+Switch back to a fixture profile and then back to `Admin-1 secured local` to
+confirm the local graph-store profile restoration path.
+
+## Manual Flow
+
+Use the manual steps below when troubleshooting or when you want each process in
+its own terminal.
+
+## 2. Bootstrap Admin-1
+
+The bootstrap helper writes local material under `.grm/secured-local/`, including:
 
 ```text
 ca.crt
@@ -109,7 +173,7 @@ cat .grm/secured-local/flight-deck-profile.json
 Existing generated material is reused by default. Use `--force` only when you
 intentionally want to regenerate or replace the local secured setup.
 
-## 2. Start The Secured Service
+## 3. Start The Secured Service
 
 Terminal 1:
 
@@ -132,7 +196,7 @@ This starts a secured local service using:
 - default-deny exact permission-table authorization; and
 - the local secured workspace directory at `.grm/secured-local/workspaces`.
 
-## 3. Verify Admin-1
+## 4. Verify Admin-1
 
 Terminal 2:
 
@@ -151,7 +215,7 @@ The verification script checks that:
 - Admin-1 succeeds through a bounded public CLI service flow; and
 - failure output does not include private key or raw certificate material.
 
-## 4. Seed A Flight-Deck Workspace
+## 5. Seed A Flight-Deck Workspace
 
 Use Admin-1's client environment to create sample data for the UI:
 
@@ -169,7 +233,7 @@ cargo run -p grm-service-api --example local_workspace_client -- \
 The repeated endpoint is deliberate: the environment configures GRM clients,
 and the example also accepts the endpoint as an argument.
 
-## 5. Start The Flight-Deck Gateway As Admin-1
+## 6. Start The Flight-Deck Gateway As Admin-1
 
 Terminal 3:
 
@@ -188,7 +252,7 @@ GRM flight-deck HTTP adapter listening on http://127.0.0.1:3001
 The gateway connects upstream to the secured GRM service using Admin-1's client
 certificate and key. It exposes only bounded read-only JSON to the browser.
 
-## 6. Start The Flight-Deck UI
+## 7. Start The Flight-Deck UI
 
 Terminal 4:
 
@@ -197,47 +261,8 @@ cd /home/laurie/source/grm-rs/grm-flight-deck
 npm run dev
 ```
 
-Open:
-
-```text
-http://127.0.0.1:8081
-```
-
-In the UI:
-
-1. Click `New profile`.
-2. Name it `Admin-1 secured local`.
-3. Set workspace to `flight-deck-demo`.
-4. Turn `Fixture` off.
-5. Leave `Gateway URL` blank.
-6. Click `Save profile`.
-7. Click `Connect`.
-
-Leaving `Gateway URL` blank uses the Vite `/api` proxy to the local
-gateway at `http://127.0.0.1:3001`.
-
-Expected secured status:
-
-```text
-Secured
-local-admin/admin-1 via mtls-certificate
-secured-local-policy-v1
-```
-
-The default workbench view is `Query`. Connection fields stay hidden after the
-profile is selected; use `Change connection` only when you need to edit the
-gateway URL, workspace, profile kind, limit, or fixture toggle. Query can show
-optional Explain/Profile panes, but in this slice those panes are local view
-summaries derived from the bounded snapshot/filter, not service planner truth.
-
-Open `Audit` from the workspace navigation to see the bounded local event
-buffer. It records fixture/service snapshot observations and explicit Query
-executions with redacted context. This is useful workbench navigation for the
-Admin-1 journey, but it is not a live policy editor, permission table viewer,
-external audit forwarding path, signed receipt, or state commitment.
-
-Switch back to a fixture profile and then back to `Admin-1 secured local` to
-confirm the local graph-store profile restoration path.
+Open `http://127.0.0.1:8081` and use the same UI settings from the one-command
+path above.
 
 ## Troubleshooting
 
