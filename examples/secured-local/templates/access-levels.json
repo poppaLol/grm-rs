@@ -10,7 +10,8 @@
         {
           "scope": { "kind": "service" },
           "permissions": [
-            { "action": "workspace.create", "resource": { "kind": "service" } }
+            { "action": "workspace.create", "resource": { "kind": "service" } },
+            { "action": "audit.inspect", "resource": { "kind": "service" } }
           ]
         },
         {
@@ -121,8 +122,15 @@
       "id": "audit-reader",
       "name": "Audit Reader",
       "bootstrap_capable": false,
-      "description": "Placeholder deployment-local template for future audit inspection UI. It intentionally grants no unsupported audit API permission in this slice.",
-      "assignments": []
+      "description": "Deployment-local read-only service audit observability template. This grants bounded audit status/event summaries, not policy mutation or admin authority.",
+      "assignments": [
+        {
+          "scope": { "kind": "service" },
+          "permissions": [
+            { "action": "audit.inspect", "resource": { "kind": "service" } }
+          ]
+        }
+      ]
     },
     {
       "id": "read-only-explorer",

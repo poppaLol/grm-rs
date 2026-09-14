@@ -1,7 +1,8 @@
-import { fixtureSecurityStatus, fixtureSnapshot } from "./fixtures";
+import { fixtureSecurityAuditStatus, fixtureSecurityStatus, fixtureSnapshot } from "./fixtures";
 import type {
   ConnectionSettings,
   FlightDeckQueryResponse,
+  FlightDeckSecurityAuditStatus,
   FlightDeckSecurityStatus,
   FlightDeckSnapshot,
   GraphFilter,
@@ -51,6 +52,24 @@ export async function fetchSecurityStatus(
   }
 
   return await response.json() as FlightDeckSecurityStatus;
+}
+
+export async function fetchSecurityAuditStatus(
+  settings: ConnectionSettings,
+  signal?: AbortSignal
+): Promise<FlightDeckSecurityAuditStatus> {
+  if (settings.useFixtureData) {
+    return fixtureSecurityAuditStatus;
+  }
+
+  const baseUrl = settings.serviceBaseUrl.trim().replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/api/security/audit/status`, { signal });
+
+  if (!response.ok) {
+    throw new Error(`security audit status request failed: HTTP ${response.status}`);
+  }
+
+  return await response.json() as FlightDeckSecurityAuditStatus;
 }
 
 export async function executeQueryCommand(

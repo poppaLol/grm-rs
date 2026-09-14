@@ -413,17 +413,11 @@ impl DurableSecurityAuditStore {
     }
 
     pub fn retained_events(&self) -> Vec<SecurityAuditEvent> {
-        self.state
-            .lock()
-            .map(|state| state.events.iter().cloned().collect())
-            .unwrap_or_default()
+        <Self as SecurityAuditSink>::retained_events(self)
     }
 
     pub fn future_dated_records(&self) -> usize {
-        self.state
-            .lock()
-            .map(|state| state.future_dated_records)
-            .unwrap_or_default()
+        <Self as SecurityAuditSink>::future_dated_records(self)
     }
 
     pub fn audit_directory(&self) -> &Path {
@@ -763,6 +757,31 @@ impl SecurityAuditSink for DurableSecurityAuditStore {
                 Err(SecurityAuditSinkError::Unavailable)
             }
         }
+    }
+
+    fn retained_events(&self) -> Vec<SecurityAuditEvent> {
+        self.state
+            .lock()
+            .map(|state| state.events.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.retained_bytes)
+            .unwrap_or_default()
+    }
+
+    fn retention_limits(&self) -> (usize, usize, Duration) {
+        (self.max_events, self.max_bytes, self.max_age)
+    }
+
+    fn future_dated_records(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.future_dated_records)
+            .unwrap_or_default()
     }
 }
 

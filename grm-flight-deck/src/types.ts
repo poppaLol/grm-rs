@@ -75,6 +75,38 @@ export interface FlightDeckPrincipal {
   subject: string;
 }
 
+export interface FlightDeckSecurityAuditStatus {
+  securityProfile: "anonymous_local" | "docker_local_insecure" | "secured" | "fixture" | "unknown";
+  auditMode: "mandatory" | "best_effort" | "unavailable" | "not_applicable" | "unknown";
+  sinkHealth: "healthy" | "degraded" | "unavailable" | "unknown";
+  mandatoryAuditAvailable: boolean;
+  retainedEventCount: number;
+  recentEventCount: number;
+  retentionMaxEvents: number;
+  retentionMaxBytes: number;
+  retentionMaxAgeSeconds: number;
+  futureDatedRecordCount: number;
+  lastRecoveryStatusCode?: string | null;
+  recentEvents: FlightDeckSecurityAuditEvent[];
+}
+
+export interface FlightDeckSecurityAuditEvent {
+  timestamp?: string | null;
+  requestId: number;
+  serviceSequence: number;
+  stage: string;
+  decision: string;
+  reasonCode?: string | null;
+  principal?: FlightDeckPrincipal | null;
+  authenticationMethod?: string | null;
+  policyVersion?: string | null;
+  operationFamily?: string | null;
+  workspace?: string | null;
+  runtimeOutcome: string;
+  durabilityOutcome: string;
+  deliveryOutcome: string;
+}
+
 export interface FlightDeckSchemaEdge {
   model: string;
   fromModel: string;
