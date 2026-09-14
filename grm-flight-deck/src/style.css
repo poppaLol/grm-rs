@@ -605,6 +605,54 @@ button:disabled {
   list-style: none;
 }
 
+.audit-status {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.75rem 0;
+  border: 1px solid #34444b;
+  border-radius: 6px;
+  padding: 0.75rem;
+  background: #10171a;
+}
+
+.audit-status div:first-child {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.audit-status span,
+.audit-status strong,
+.audit-status dt {
+  color: #62c6f2;
+  font-size: 0.7rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.audit-status strong {
+  color: #d8e8c1;
+}
+
+.audit-status dl {
+  display: grid;
+  grid-template-columns: repeat(4, max-content minmax(0, 1fr));
+  gap: 0.3rem 0.55rem;
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.audit-status dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.service-audit-list {
+  margin-bottom: 0.75rem;
+}
+
 .audit-item {
   display: grid;
   grid-template-columns: 8.5rem minmax(12rem, 0.6fr) minmax(0, 1fr);

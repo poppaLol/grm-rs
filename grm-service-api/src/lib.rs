@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use ring::digest;
@@ -294,6 +294,18 @@ pub async fn grpc_security_status(
     let channel = grpc_channel(endpoint, tls.as_ref()).await?;
     proto::grm_service_client::GrmServiceClient::new(channel)
         .security_status(proto::SecurityStatusRequest {})
+        .await
+        .map(|response| response.into_inner())
+        .map_err(GrpcWorkspaceClientError::from)
+}
+
+pub async fn grpc_security_audit_status(
+    endpoint: impl Into<String>,
+    tls: Option<GrpcClientTlsOptions>,
+) -> GrpcWorkspaceClientResult<proto::SecurityAuditStatusResponse> {
+    let channel = grpc_channel(endpoint, tls.as_ref()).await?;
+    proto::grm_service_client::GrmServiceClient::new(channel)
+        .security_audit_status(proto::SecurityAuditStatusRequest {})
         .await
         .map(|response| response.into_inner())
         .map_err(GrpcWorkspaceClientError::from)
@@ -1295,6 +1307,7 @@ pub enum SecurityAction {
     Profile,
     BatchApply,
     IndexInspect,
+    AuditInspect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1496,6 +1509,22 @@ pub trait SecurityAuditSink: Send + Sync {
     fn try_recover(&self) -> Result<SecurityAuditSinkHealth, SecurityAuditSinkError> {
         Ok(self.health())
     }
+
+    fn retained_events(&self) -> Vec<SecurityAuditEvent> {
+        Vec::new()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        0
+    }
+
+    fn retention_limits(&self) -> (usize, usize, Duration) {
+        (0, 0, Duration::ZERO)
+    }
+
+    fn future_dated_records(&self) -> usize {
+        0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1542,21 +1571,15 @@ impl BoundedSecurityAuditSink {
     }
 
     pub fn retained_events(&self) -> Vec<SecurityAuditEvent> {
-        self.inner
-            .lock()
-            .map(|state| state.events.iter().cloned().collect())
-            .unwrap_or_default()
+        <Self as SecurityAuditSink>::retained_events(self)
     }
 
     pub fn retained_bytes(&self) -> usize {
-        self.inner
-            .lock()
-            .map(|state| state.retained_bytes)
-            .unwrap_or_default()
+        <Self as SecurityAuditSink>::retained_bytes(self)
     }
 
     pub fn retention_limits(&self) -> (usize, usize, Duration) {
-        (self.max_events, self.max_bytes, self.max_age)
+        <Self as SecurityAuditSink>::retention_limits(self)
     }
 }
 
@@ -1644,6 +1667,24 @@ impl SecurityAuditSink for BoundedSecurityAuditSink {
                 }
             })
             .unwrap_or(SecurityAuditSinkHealth::Degraded)
+    }
+
+    fn retained_events(&self) -> Vec<SecurityAuditEvent> {
+        self.inner
+            .lock()
+            .map(|state| state.events.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.inner
+            .lock()
+            .map(|state| state.retained_bytes)
+            .unwrap_or_default()
+    }
+
+    fn retention_limits(&self) -> (usize, usize, Duration) {
+        (self.max_events, self.max_bytes, self.max_age)
     }
 }
 
@@ -2703,6 +2744,7 @@ fn security_action_from_str(
         "profile" => SecurityAction::Profile,
         "batch.apply" => SecurityAction::BatchApply,
         "index.inspect" => SecurityAction::IndexInspect,
+        "audit.inspect" => SecurityAction::AuditInspect,
         other => return Err(ServiceSecurityConfigFileError::UnknownAction(other.into())),
     })
 }
@@ -2891,6 +2933,47 @@ impl GrpcWorkspaceService {
                 .policy_version()
                 .map(bounded_security_status_field)
                 .unwrap_or_default(),
+        }
+    }
+
+    fn security_audit_status_response(
+        &self,
+        include_recent_events: bool,
+    ) -> proto::SecurityAuditStatusResponse {
+        let events = self.security.audit_sink.retained_events();
+        let recent_events = if include_recent_events {
+            events
+                .iter()
+                .rev()
+                .take(25)
+                .rev()
+                .map(security_audit_event_summary)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let (retention_max_events, retention_max_bytes, retention_max_age) =
+            self.security.audit_sink.retention_limits();
+        let sink_health = self.security.audit_sink.health();
+        proto::SecurityAuditStatusResponse {
+            security_profile: security_profile_code(self.security.profile),
+            audit_mode: security_audit_mode_code(self.audit_mode()),
+            sink_health: security_audit_sink_health_code(sink_health),
+            mandatory_audit_available: self.security.profile == ServiceSecurityProfile::Secured
+                && sink_health == SecurityAuditSinkHealth::Healthy
+                && !self.audit_degraded.load(Ordering::Acquire),
+            retained_event_count: events.len() as u64,
+            recent_event_count: recent_events.len() as u64,
+            retention_max_events: retention_max_events as u64,
+            retention_max_bytes: retention_max_bytes as u64,
+            retention_max_age_seconds: retention_max_age.as_secs(),
+            future_dated_record_count: self.security.audit_sink.future_dated_records() as u64,
+            last_recovery_status_code: if self.audit_degraded.load(Ordering::Acquire) {
+                "degraded".into()
+            } else {
+                "ok".into()
+            },
+            recent_events,
         }
     }
 
@@ -3334,6 +3417,95 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         Ok(Response::new(
             self.security_status_response(authenticated_principal),
         ))
+    }
+
+    async fn security_audit_status(
+        &self,
+        request: Request<proto::SecurityAuditStatusRequest>,
+    ) -> Result<Response<proto::SecurityAuditStatusResponse>, Status> {
+        if self.security.profile == ServiceSecurityProfile::Secured
+            && self.audit_degraded.load(Ordering::Acquire)
+        {
+            if let Ok(SecurityAuditSinkHealth::Healthy) = self.security.audit_sink.try_recover() {
+                self.audit_degraded.store(false, Ordering::Release);
+            } else {
+                let (transport_peer, authenticated_principal, asserted_actor) = self
+                    .request_security_inputs(&request)
+                    .map_err(security_status)?;
+                let operations = vec![service_security_operation(SecurityAction::AuditInspect)];
+                let decision = self
+                    .authorize(
+                        transport_peer,
+                        authenticated_principal,
+                        asserted_actor,
+                        "service".into(),
+                        operations,
+                    )
+                    .map_err(security_status)?;
+                if let AuthorizationDecision::Deny { .. } = decision {
+                    return Err(security_status(SecurityEnforcementError::Denied));
+                }
+                return Ok(Response::new(self.security_audit_status_response(false)));
+            }
+        }
+        let mut audit = self.start_audit_request().map_err(security_status)?;
+        audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
+        self.ensure_mandatory_audit_available()
+            .map_err(security_status)?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Attempt,
+                SecurityAuditDecision::NotApplicable,
+                SecurityAuditReason::RequestReceived,
+            ),
+        )
+        .map_err(security_status)?;
+        let (transport_peer, authenticated_principal, asserted_actor) =
+            self.request_security_inputs(&request).map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+            })?;
+        audit.transport_peer = audit_transport_peer(&transport_peer);
+        populate_audit_identity(
+            &mut audit,
+            authenticated_principal.as_ref(),
+            asserted_actor.as_ref(),
+        )
+        .map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
+        })?;
+        self.audit_append(
+            &audit,
+            self.audit_event(
+                &audit,
+                SecurityAuditStage::Authentication,
+                SecurityAuditDecision::Allow,
+                SecurityAuditReason::ExplicitPolicyAllow,
+            ),
+        )
+        .map_err(security_status)?;
+        let operations = vec![service_security_operation(SecurityAction::AuditInspect)];
+        audit.workspace = Some("service".into());
+        audit.operations = audit_operations(&operations).map_err(|error| {
+            audit_security_error(self, &audit, SecurityAuditStage::Admission, error)
+        })?;
+        let decision = self
+            .authorize(
+                transport_peer,
+                authenticated_principal,
+                asserted_actor,
+                "service".into(),
+                operations,
+            )
+            .map_err(|error| {
+                audit_security_error(self, &audit, SecurityAuditStage::Authorization, error)
+            })?;
+        audit_authorization_decision(self, &audit, decision).map_err(security_status)?;
+        audit_admission_allow(self, &audit).map_err(security_status)?;
+        let response = self.security_audit_status_response(true);
+        audit_delivery_handoff(self, &audit);
+        Ok(Response::new(response))
     }
 
     async fn create_workspace(
@@ -4083,6 +4255,188 @@ fn security_identity_status_code(
         (ServiceSecurityProfile::Secured, None) => {
             proto::SecurityIdentityStatus::Unspecified as i32
         }
+    }
+}
+
+fn security_audit_mode_code(mode: SecurityAuditMode) -> i32 {
+    match mode {
+        SecurityAuditMode::BestEffort => proto::SecurityAuditMode::BestEffort as i32,
+        SecurityAuditMode::Mandatory => proto::SecurityAuditMode::Mandatory as i32,
+    }
+}
+
+fn security_audit_sink_health_code(health: SecurityAuditSinkHealth) -> i32 {
+    match health {
+        SecurityAuditSinkHealth::Healthy => proto::SecurityAuditSinkHealth::Healthy as i32,
+        SecurityAuditSinkHealth::Degraded => proto::SecurityAuditSinkHealth::Degraded as i32,
+    }
+}
+
+fn security_audit_stage_code(stage: SecurityAuditStage) -> i32 {
+    match stage {
+        SecurityAuditStage::Attempt => proto::SecurityAuditStage::Attempt as i32,
+        SecurityAuditStage::Authentication => proto::SecurityAuditStage::Authentication as i32,
+        SecurityAuditStage::Authorization => proto::SecurityAuditStage::Authorization as i32,
+        SecurityAuditStage::Admission => proto::SecurityAuditStage::Admission as i32,
+        SecurityAuditStage::Runtime => proto::SecurityAuditStage::Runtime as i32,
+        SecurityAuditStage::Durability => proto::SecurityAuditStage::Durability as i32,
+        SecurityAuditStage::Delivery => proto::SecurityAuditStage::Delivery as i32,
+    }
+}
+
+fn security_audit_decision_code(decision: SecurityAuditDecision) -> i32 {
+    match decision {
+        SecurityAuditDecision::NotApplicable => proto::SecurityAuditDecision::NotApplicable as i32,
+        SecurityAuditDecision::Allow => proto::SecurityAuditDecision::Allow as i32,
+        SecurityAuditDecision::Deny => proto::SecurityAuditDecision::Deny as i32,
+        SecurityAuditDecision::Error => proto::SecurityAuditDecision::Error as i32,
+    }
+}
+
+fn security_audit_runtime_outcome_code(outcome: SecurityAuditRuntimeOutcome) -> i32 {
+    match outcome {
+        SecurityAuditRuntimeOutcome::NotReached => {
+            proto::SecurityAuditRuntimeOutcome::NotReached as i32
+        }
+        SecurityAuditRuntimeOutcome::Succeeded => {
+            proto::SecurityAuditRuntimeOutcome::Succeeded as i32
+        }
+        SecurityAuditRuntimeOutcome::Failed => proto::SecurityAuditRuntimeOutcome::Failed as i32,
+    }
+}
+
+fn security_audit_durability_outcome_code(outcome: SecurityAuditDurabilityOutcome) -> i32 {
+    match outcome {
+        SecurityAuditDurabilityOutcome::NotApplicable => {
+            proto::SecurityAuditDurabilityOutcome::NotApplicable as i32
+        }
+        SecurityAuditDurabilityOutcome::Committed => {
+            proto::SecurityAuditDurabilityOutcome::Committed as i32
+        }
+        SecurityAuditDurabilityOutcome::NotCommitted => {
+            proto::SecurityAuditDurabilityOutcome::NotCommitted as i32
+        }
+        SecurityAuditDurabilityOutcome::Unknown => {
+            proto::SecurityAuditDurabilityOutcome::Unknown as i32
+        }
+    }
+}
+
+fn security_audit_delivery_outcome_code(outcome: SecurityAuditDeliveryOutcome) -> i32 {
+    match outcome {
+        SecurityAuditDeliveryOutcome::NotReached => {
+            proto::SecurityAuditDeliveryOutcome::NotReached as i32
+        }
+        SecurityAuditDeliveryOutcome::HandedOff => {
+            proto::SecurityAuditDeliveryOutcome::HandedOff as i32
+        }
+        SecurityAuditDeliveryOutcome::Unknown => {
+            proto::SecurityAuditDeliveryOutcome::Unknown as i32
+        }
+    }
+}
+
+fn security_audit_event_summary(event: &SecurityAuditEvent) -> proto::SecurityAuditEventSummary {
+    proto::SecurityAuditEventSummary {
+        timestamp: system_time_rfc3339ish(event.timestamp),
+        request_id: event.request_id,
+        service_sequence: event.service_sequence,
+        stage: security_audit_stage_code(event.stage),
+        decision: security_audit_decision_code(event.decision),
+        reason_code: security_audit_reason_label(event.reason).into(),
+        principal: event.authenticated_principal.as_ref().map(|principal| {
+            proto::SecurityAuditPrincipal {
+                issuer: bounded_security_status_field(&principal.issuer),
+                subject: bounded_security_status_field(&principal.subject),
+                authentication_method: bounded_security_status_field(
+                    &principal.authentication_method,
+                ),
+            }
+        }),
+        policy_version: event
+            .policy_version
+            .as_deref()
+            .map(bounded_security_status_field)
+            .unwrap_or_default(),
+        operation_family: audit_operation_family(&event.operations),
+        workspace: event
+            .workspace
+            .as_deref()
+            .map(bounded_security_status_field)
+            .unwrap_or_default(),
+        runtime_outcome: security_audit_runtime_outcome_code(event.runtime_outcome),
+        durability_outcome: security_audit_durability_outcome_code(event.durability_outcome),
+        delivery_outcome: security_audit_delivery_outcome_code(event.delivery_outcome),
+    }
+}
+
+fn system_time_rfc3339ish(time: SystemTime) -> String {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => format!("{}.{:03}Z", duration.as_secs(), duration.subsec_millis()),
+        Err(_) => "before_unix_epoch".into(),
+    }
+}
+
+fn audit_operation_family(operations: &[SecurityAuditOperation]) -> String {
+    operations
+        .first()
+        .map(|operation| security_action_label(operation.action).to_owned())
+        .unwrap_or_default()
+}
+
+fn security_action_label(action: SecurityAction) -> &'static str {
+    match action {
+        SecurityAction::WorkspaceCreate => "workspace.create",
+        SecurityAction::WorkspaceOpen => "workspace.open",
+        SecurityAction::WorkspaceClose => "workspace.close",
+        SecurityAction::WorkspaceInspect => "workspace.inspect",
+        SecurityAction::WorkspaceSave => "workspace.save",
+        SecurityAction::WorkspaceLoad => "workspace.load",
+        SecurityAction::WorkspaceExport => "workspace.export",
+        SecurityAction::WorkspaceImport => "workspace.import",
+        SecurityAction::SchemaDefine => "schema.define",
+        SecurityAction::SchemaInspect => "schema.inspect",
+        SecurityAction::NodeCreate => "node.create",
+        SecurityAction::NodeRead => "node.read",
+        SecurityAction::NodeUpdate => "node.update",
+        SecurityAction::NodeDelete => "node.delete",
+        SecurityAction::EdgeCreate => "edge.create",
+        SecurityAction::EdgeRead => "edge.read",
+        SecurityAction::EdgeUpdate => "edge.update",
+        SecurityAction::EdgeDelete => "edge.delete",
+        SecurityAction::Query => "query",
+        SecurityAction::Traverse => "traverse",
+        SecurityAction::Explain => "explain",
+        SecurityAction::Profile => "profile",
+        SecurityAction::BatchApply => "batch.apply",
+        SecurityAction::IndexInspect => "index.inspect",
+        SecurityAction::AuditInspect => "audit.inspect",
+    }
+}
+
+fn security_audit_reason_label(reason: SecurityAuditReason) -> &'static str {
+    match reason {
+        SecurityAuditReason::RequestReceived => "request_received",
+        SecurityAuditReason::AnonymousLocalProfile => "anonymous_local_profile",
+        SecurityAuditReason::ExplicitPolicyAllow => "explicit_policy_allow",
+        SecurityAuditReason::NoMatchingPermission => "no_matching_permission",
+        SecurityAuditReason::InvalidActorAssertion => "invalid_actor_assertion",
+        SecurityAuditReason::AuthenticationFailed => "authentication_failed",
+        SecurityAuditReason::MissingPrincipal => "missing_principal",
+        SecurityAuditReason::PolicyEvaluationFailed => "policy_evaluation_failed",
+        SecurityAuditReason::MalformedRequest => "malformed_request",
+        SecurityAuditReason::ScopeRejected => "scope_rejected",
+        SecurityAuditReason::LimitExceeded => "limit_exceeded",
+        SecurityAuditReason::ClassificationOverflow => "classification_overflow",
+        SecurityAuditReason::RuntimeSucceeded => "runtime_succeeded",
+        SecurityAuditReason::RuntimeFailed => "runtime_failed",
+        SecurityAuditReason::Committed => "committed",
+        SecurityAuditReason::NotCommitted => "not_committed",
+        SecurityAuditReason::UnknownDurability => "unknown_durability",
+        SecurityAuditReason::NotApplicable => "not_applicable",
+        SecurityAuditReason::ResponseHandedOff => "response_handed_off",
+        SecurityAuditReason::UnknownDelivery => "unknown_delivery",
+        SecurityAuditReason::SinkUnavailable => "sink_unavailable",
     }
 }
 

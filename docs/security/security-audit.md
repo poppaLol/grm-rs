@@ -12,10 +12,16 @@ tamper-evident storage, arbitrary-failure recovery, hosted or public MCP identit
 signed receipts, state commitments, attestation, or high-assurance compliance
 claims.
 
-Future flight-deck work should make this audit stream inspectable alongside the
-query flight-deck, operational log, backend status, and security context. Until
-that UI exists, the audit model should be understood through the event fields,
-modes, and failure behavior described here.
+The flight-deck now exposes narrow read-only audit observability alongside the
+query flight-deck, operational log, backend status, and security context. That
+surface is status-first: it reports audit mode, sink health, retention bounds,
+and bounded recent event summaries. Broader audit search, filtering, external
+forwarding, policy inspection, and administration remain outside this slice.
+If mandatory secured audit is degraded and recovery fails, the observability
+path may still return a health-only degraded status after authenticating and
+authorizing `audit.inspect`; it does not append new audit records or return
+recent event details in that exception path, and protected effects remain
+fail-closed until audit recovers.
 
 ## What The Audit Is For
 
@@ -221,12 +227,14 @@ making the store unavailable. Future-dated events remain subject to count and
 byte retention and are not expired by age until wall time passes their timestamp
 plus the configured maximum age.
 
-## Flight-Deck Direction
+## Flight-Deck Observability
 
-The future flight-deck should make audit understandable without turning it into a
-general SIEM or hosted control plane.
+The flight-deck should make audit understandable without turning it into a
+general SIEM or hosted control plane. The current read-only surface is narrow
+and bounded: it exposes audit status plus recent summaries through service and
+gateway endpoints, not a general audit query API.
 
-Useful audit views include:
+Useful future audit views include:
 
 - per-request timeline grouped by request ID;
 - stage sequence with decision, reason, runtime, durability, and delivery

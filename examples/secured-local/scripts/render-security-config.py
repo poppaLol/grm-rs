@@ -16,6 +16,7 @@ VALID_ACTIONS = {
     "schema.define", "schema.inspect", "node.create", "node.read", "node.update",
     "node.delete", "edge.create", "edge.read", "edge.update", "edge.delete",
     "query", "traverse", "explain", "profile", "batch.apply", "index.inspect",
+    "audit.inspect",
 }
 
 VALID_RESOURCE_KINDS = {
@@ -28,6 +29,7 @@ VALID_SCOPE_KINDS = {"service", "workspace", "deployment_local_all_workspaces"}
 FINGERPRINT_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 BOOTSTRAP_REQUIRED_PERMISSIONS = {
     ("service", "workspace.create", "service"),
+    ("service", "audit.inspect", "service"),
     ("deployment_local_all_workspaces", "schema.define", "any_node_model"),
     ("deployment_local_all_workspaces", "schema.inspect", "workspace"),
     ("deployment_local_all_workspaces", "node.create", "any_node_model"),

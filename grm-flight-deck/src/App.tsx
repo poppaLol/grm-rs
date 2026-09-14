@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { executeQueryCommand, fetchSecurityStatus, fetchSnapshot } from "./api";
+import { executeQueryCommand, fetchSecurityAuditStatus, fetchSecurityStatus, fetchSnapshot } from "./api";
 import {
   createFlightDeckGraphStore,
   DEFAULT_GRAPH_FILTER,
@@ -9,6 +9,7 @@ import {
 import { GraphCanvas } from "./GraphCanvas";
 import { colorForModel } from "./modelColors";
 import type {
+  FlightDeckSecurityAuditStatus,
   FlightDeckSecurityStatus,
   FlightDeckSnapshot,
   GraphFilter,
@@ -58,13 +59,60 @@ function SelectionPanel({ selected }: { selected: SelectedGraphItem | null }) {
   );
 }
 
-function EventStreamPanel({ events }: { events: ReturnType<typeof graphStore.getState>["events"] }) {
+function EventStreamPanel({
+  auditStatus,
+  events
+}: {
+  auditStatus: FlightDeckSecurityAuditStatus | null;
+  events: ReturnType<typeof graphStore.getState>["events"];
+}) {
   return (
     <section className="audit-panel" aria-label="Execution events">
       <div>
         <h2>Audit</h2>
-        <p className="muted">Bounded, redacted local observations for this flight-deck session.</p>
+        <p className="muted">Service-authored audit evidence and bounded local UI observations.</p>
       </div>
+      {auditStatus && (
+        <div className={`audit-status ${auditStatus.auditMode} ${auditStatus.sinkHealth}`}>
+          <div>
+            <span>{securityProfileLabel(auditStatus.securityProfile)}</span>
+            <strong>{auditModeLabel(auditStatus.auditMode)}</strong>
+          </div>
+          <dl>
+            <dt>Sink</dt>
+            <dd>{auditStatus.sinkHealth}</dd>
+            <dt>Mandatory</dt>
+            <dd>{auditStatus.mandatoryAuditAvailable ? "available" : "not available"}</dd>
+            <dt>Retained</dt>
+            <dd>{auditStatus.retainedEventCount} events / max {auditStatus.retentionMaxEvents}</dd>
+            <dt>Recovery</dt>
+            <dd>{auditStatus.lastRecoveryStatusCode ?? "unknown"}</dd>
+          </dl>
+        </div>
+      )}
+      {auditStatus?.recentEvents.length ? (
+        <ol className="audit-list service-audit-list">
+          {auditStatus.recentEvents.map((event) => (
+            <li className={`audit-item ${event.decision}`} key={`${event.requestId}-${event.serviceSequence}`}>
+              <div>
+                <span>{event.stage}</span>
+                <strong>{event.decision}</strong>
+              </div>
+              <p>{event.operationFamily ?? event.reasonCode ?? "service audit event"}</p>
+              <dl>
+                <dt>Principal</dt>
+                <dd>{event.principal ? `${event.principal.issuer}/${event.principal.subject}` : "none"}</dd>
+                <dt>Workspace</dt>
+                <dd>{event.workspace ?? "service"}</dd>
+                <dt>Outcomes</dt>
+                <dd>{event.runtimeOutcome} / {event.durabilityOutcome} / {event.deliveryOutcome}</dd>
+              </dl>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="muted">No service-authored audit events are available for this profile yet.</p>
+      )}
       <ol className="audit-list">
         {events.map((event) => (
           <li className={`audit-item ${event.kind}`} key={event.id}>
@@ -86,6 +134,21 @@ function EventStreamPanel({ events }: { events: ReturnType<typeof graphStore.get
       </ol>
     </section>
   );
+}
+
+function auditModeLabel(mode: FlightDeckSecurityAuditStatus["auditMode"]): string {
+  switch (mode) {
+    case "mandatory":
+      return "Mandatory audit";
+    case "best_effort":
+      return "Best-effort audit";
+    case "unavailable":
+      return "Audit unavailable";
+    case "not_applicable":
+      return "Audit not applicable";
+    default:
+      return "Audit unknown";
+  }
 }
 
 function QueryInsightPanels({
@@ -406,6 +469,7 @@ function configuredConnectionKindLabel(settings: ReturnType<typeof graphStore.ge
 export function App() {
   const storeState = useFlightDeckGraphStore(graphStore);
   const [securityStatus, setSecurityStatus] = useState<FlightDeckSecurityStatus | null>(null);
+  const [securityAuditStatus, setSecurityAuditStatus] = useState<FlightDeckSecurityAuditStatus | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [queryLoading, setQueryLoading] = useState(false);
@@ -468,11 +532,31 @@ export function App() {
           policyVersion: null
         });
       }
+      try {
+        const loadedAuditStatus = await fetchSecurityAuditStatus(settings, controller.signal);
+        setSecurityAuditStatus(loadedAuditStatus);
+      } catch {
+        setSecurityAuditStatus({
+          securityProfile: settings.useFixtureData ? "fixture" : "unknown",
+          auditMode: "unavailable",
+          sinkHealth: "unavailable",
+          mandatoryAuditAvailable: false,
+          retainedEventCount: 0,
+          recentEventCount: 0,
+          retentionMaxEvents: 0,
+          retentionMaxBytes: 0,
+          retentionMaxAgeSeconds: 0,
+          futureDatedRecordCount: 0,
+          lastRecoveryStatusCode: "gateway_or_service_unavailable",
+          recentEvents: []
+        });
+      }
       const loaded = await fetchSnapshot(settings, controller.signal);
       graphStore.loadSnapshot(loaded);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setSecurityStatus(null);
+      setSecurityAuditStatus(null);
       graphStore.markConnectionFailed(message);
     } finally {
       setLoading(false);
@@ -815,7 +899,7 @@ export function App() {
               </div>
             </>
           ) : (
-            <EventStreamPanel events={events} />
+            <EventStreamPanel auditStatus={securityAuditStatus} events={events} />
           )}
         </div>
         <SelectionPanel selected={selectedItem} />
