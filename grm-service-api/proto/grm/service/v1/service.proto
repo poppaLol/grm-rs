@@ -12,6 +12,7 @@ import "grm/service/v1/workspace.proto";
 
 service GrmService {
   rpc SecurityStatus(SecurityStatusRequest) returns (SecurityStatusResponse);
+  rpc SecurityAuditStatus(SecurityAuditStatusRequest) returns (SecurityAuditStatusResponse);
 
   rpc CreateWorkspace(WorkspaceCreateRequest) returns (WorkspaceCreateResponse);
   rpc OpenWorkspace(WorkspaceOpenRequest) returns (WorkspaceOpenResponse);
@@ -72,4 +73,100 @@ message SecurityStatusResponse {
   SecurityPrincipal principal = 3;
   string authentication_method = 4;
   string policy_version = 5;
+}
+
+message SecurityAuditStatusRequest {}
+
+enum SecurityAuditMode {
+  SECURITY_AUDIT_MODE_UNSPECIFIED = 0;
+  SECURITY_AUDIT_MODE_BEST_EFFORT = 1;
+  SECURITY_AUDIT_MODE_MANDATORY = 2;
+  SECURITY_AUDIT_MODE_UNAVAILABLE = 3;
+  SECURITY_AUDIT_MODE_NOT_APPLICABLE = 4;
+}
+
+enum SecurityAuditSinkHealth {
+  SECURITY_AUDIT_SINK_HEALTH_UNSPECIFIED = 0;
+  SECURITY_AUDIT_SINK_HEALTH_HEALTHY = 1;
+  SECURITY_AUDIT_SINK_HEALTH_DEGRADED = 2;
+  SECURITY_AUDIT_SINK_HEALTH_UNAVAILABLE = 3;
+  SECURITY_AUDIT_SINK_HEALTH_UNKNOWN = 4;
+}
+
+enum SecurityAuditStage {
+  SECURITY_AUDIT_STAGE_UNSPECIFIED = 0;
+  SECURITY_AUDIT_STAGE_ATTEMPT = 1;
+  SECURITY_AUDIT_STAGE_AUTHENTICATION = 2;
+  SECURITY_AUDIT_STAGE_AUTHORIZATION = 3;
+  SECURITY_AUDIT_STAGE_ADMISSION = 4;
+  SECURITY_AUDIT_STAGE_RUNTIME = 5;
+  SECURITY_AUDIT_STAGE_DURABILITY = 6;
+  SECURITY_AUDIT_STAGE_DELIVERY = 7;
+}
+
+enum SecurityAuditDecision {
+  SECURITY_AUDIT_DECISION_UNSPECIFIED = 0;
+  SECURITY_AUDIT_DECISION_NOT_APPLICABLE = 1;
+  SECURITY_AUDIT_DECISION_ALLOW = 2;
+  SECURITY_AUDIT_DECISION_DENY = 3;
+  SECURITY_AUDIT_DECISION_ERROR = 4;
+}
+
+enum SecurityAuditRuntimeOutcome {
+  SECURITY_AUDIT_RUNTIME_OUTCOME_UNSPECIFIED = 0;
+  SECURITY_AUDIT_RUNTIME_OUTCOME_NOT_REACHED = 1;
+  SECURITY_AUDIT_RUNTIME_OUTCOME_SUCCEEDED = 2;
+  SECURITY_AUDIT_RUNTIME_OUTCOME_FAILED = 3;
+}
+
+enum SecurityAuditDurabilityOutcome {
+  SECURITY_AUDIT_DURABILITY_OUTCOME_UNSPECIFIED = 0;
+  SECURITY_AUDIT_DURABILITY_OUTCOME_NOT_APPLICABLE = 1;
+  SECURITY_AUDIT_DURABILITY_OUTCOME_COMMITTED = 2;
+  SECURITY_AUDIT_DURABILITY_OUTCOME_NOT_COMMITTED = 3;
+  SECURITY_AUDIT_DURABILITY_OUTCOME_UNKNOWN = 4;
+}
+
+enum SecurityAuditDeliveryOutcome {
+  SECURITY_AUDIT_DELIVERY_OUTCOME_UNSPECIFIED = 0;
+  SECURITY_AUDIT_DELIVERY_OUTCOME_NOT_REACHED = 1;
+  SECURITY_AUDIT_DELIVERY_OUTCOME_HANDED_OFF = 2;
+  SECURITY_AUDIT_DELIVERY_OUTCOME_UNKNOWN = 3;
+}
+
+message SecurityAuditPrincipal {
+  string issuer = 1;
+  string subject = 2;
+  string authentication_method = 3;
+}
+
+message SecurityAuditEventSummary {
+  string timestamp = 1;
+  uint64 request_id = 2;
+  uint64 service_sequence = 3;
+  SecurityAuditStage stage = 4;
+  SecurityAuditDecision decision = 5;
+  string reason_code = 6;
+  SecurityAuditPrincipal principal = 7;
+  string policy_version = 8;
+  string operation_family = 9;
+  string workspace = 10;
+  SecurityAuditRuntimeOutcome runtime_outcome = 11;
+  SecurityAuditDurabilityOutcome durability_outcome = 12;
+  SecurityAuditDeliveryOutcome delivery_outcome = 13;
+}
+
+message SecurityAuditStatusResponse {
+  SecurityProfile security_profile = 1;
+  SecurityAuditMode audit_mode = 2;
+  SecurityAuditSinkHealth sink_health = 3;
+  bool mandatory_audit_available = 4;
+  uint64 retained_event_count = 5;
+  uint64 recent_event_count = 6;
+  uint64 retention_max_events = 7;
+  uint64 retention_max_bytes = 8;
+  uint64 retention_max_age_seconds = 9;
+  uint64 future_dated_record_count = 10;
+  string last_recovery_status_code = 11;
+  repeated SecurityAuditEventSummary recent_events = 12;
 }

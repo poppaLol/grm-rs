@@ -55,12 +55,17 @@ The gateway also exposes:
 
 ```bash
 curl http://127.0.0.1:3001/api/security/status
+curl http://127.0.0.1:3001/api/security/audit/status
 ```
 
-That endpoint is read-only observability. It labels `anonymous_local`,
-`docker_local_insecure`, or `secured`; in secured mode it reports the mapped
-principal issuer/subject, authentication method, and policy version when the
-service accepts the gateway credentials.
+Those endpoints are read-only observability. Security status labels
+`anonymous_local`, `docker_local_insecure`, or `secured`; in secured mode it
+reports the mapped principal issuer/subject, authentication method, and policy
+version when the service accepts the gateway credentials. Audit status reports
+the service-authored audit mode, sink health, retention bounds, and bounded
+recent event summaries through an explicit service permission. It does not
+expose policy tables, credential material, local paths, raw graph values, or an
+audit query language.
 
 The local HTTP adapter only grants browser CORS access to configured
 flight-deck UI origins. By default those are:
@@ -108,12 +113,14 @@ the typed workspace path. For local snapshot filtering and Schema mode
 summaries, they are still labelled as local summaries rather than service
 planner/profile truth.
 
-Audit is a distinct navigable panel. It currently shows a bounded local event
-buffer with fixture/service snapshot observations, local filter observations,
-and explicit query execution events. These entries are redacted UI-side
-summaries and are shaped for later read-only service audit data; they are not
-external/high-assurance audit forwarding, signed receipts, or state
-commitments.
+Audit is a distinct navigable panel. It shows service-authored audit
+observability when the gateway can call the read-only audit status endpoint,
+including audit mode, sink health, retention bounds, and bounded recent event
+summaries. It also keeps the bounded local event buffer for fixture/service
+snapshot observations, local filter observations, and explicit query execution
+events. The panel is not a live policy editor, permission table viewer,
+external/high-assurance audit forwarding surface, signed receipt, or state
+commitment.
 
 Connection details are hidden by default once a profile is selected. The header
 shows a compact non-secret summary: profile name, connection kind, workspace,
@@ -130,6 +137,9 @@ configured profile metadata rather than observed service security posture.
 - Fixture data is clearly labelled and used only for local UI review.
 - The security status panel is fed by a service-side read-only status RPC
   through the local gateway.
+- The Audit panel can read bounded service-authored audit status and recent
+  event summaries through the local gateway, while keeping local UI event
+  observations visibly separate.
 - Real data is loaded through the read-only local HTTP adapter, which opens a
   GRM service workspace and asks for typed schema, node.find, edge.find,
   explain, and profile requests through the existing gRPC workspace client.
@@ -139,8 +149,8 @@ configured profile metadata rather than observed service security posture.
 - Explain/Profile are service/runtime evidence only for the supported
   `session.explain ...` and `session.profile ...` command subset. Local filters
   and Schema mode still produce local summaries.
-- The Audit panel is currently backed by a bounded UI event buffer, not a
-  service audit-event read path.
+- The Audit panel service evidence is status-first and bounded; it is not a
+  general audit search, SIEM, policy viewer, or admin API.
 
 ## Security Boundary
 

@@ -1,4 +1,4 @@
-import type { FlightDeckSecurityStatus, FlightDeckSnapshot } from "./types";
+import type { FlightDeckSecurityAuditStatus, FlightDeckSecurityStatus, FlightDeckSnapshot } from "./types";
 
 export const fixtureSnapshot: FlightDeckSnapshot = {
   workspace: "flight-deck-demo",
@@ -111,4 +111,19 @@ export const fixtureSecurityStatus: FlightDeckSecurityStatus = {
   principal: null,
   authenticationMethod: null,
   policyVersion: null
+};
+
+export const fixtureSecurityAuditStatus: FlightDeckSecurityAuditStatus = {
+  securityProfile: "fixture",
+  auditMode: "not_applicable",
+  sinkHealth: "unknown",
+  mandatoryAuditAvailable: false,
+  retainedEventCount: 0,
+  recentEventCount: 0,
+  retentionMaxEvents: 0,
+  retentionMaxBytes: 0,
+  retentionMaxAgeSeconds: 0,
+  futureDatedRecordCount: 0,
+  lastRecoveryStatusCode: null,
+  recentEvents: []
 };

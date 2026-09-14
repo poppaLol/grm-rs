@@ -130,8 +130,11 @@ gateway URL, workspace, profile kind, limit, or fixture toggle. Query can show
 optional Explain/Profile panes, but in this slice those panes are local view
 summaries derived from the bounded snapshot/filter, not service planner truth.
 
-Open `Audit` from the workspace navigation to see the bounded local event
-buffer. It records fixture/service snapshot observations and explicit Query
+Open `Audit` from the workspace navigation to see read-only security-audit
+observability. In the secured-local Admin-1 path, the panel shows
+service-authored audit mode, sink health, retention bounds, and bounded recent
+audit event summaries through the local gateway. It also keeps the bounded
+local event buffer for fixture/service snapshot observations and explicit Query
 executions with redacted context. This is useful workbench navigation for the
 Admin-1 journey, but it is not a live policy editor, permission table viewer,
 external audit forwarding path, signed receipt, or state commitment.

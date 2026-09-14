@@ -19,7 +19,7 @@ use grm_rs::{
 };
 use grm_service_api::{
     DurabilityFormat, GrpcClientTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceClientError,
-    GrpcWorkspaceMode, grpc_security_status, proto,
+    GrpcWorkspaceMode, grpc_security_audit_status, grpc_security_status, proto,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -175,6 +175,42 @@ struct FlightDeckPrincipal {
     subject: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckSecurityAuditStatus {
+    security_profile: String,
+    audit_mode: String,
+    sink_health: String,
+    mandatory_audit_available: bool,
+    retained_event_count: u64,
+    recent_event_count: u64,
+    retention_max_events: u64,
+    retention_max_bytes: u64,
+    retention_max_age_seconds: u64,
+    future_dated_record_count: u64,
+    last_recovery_status_code: Option<String>,
+    recent_events: Vec<FlightDeckSecurityAuditEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckSecurityAuditEvent {
+    timestamp: Option<String>,
+    request_id: u64,
+    service_sequence: u64,
+    stage: String,
+    decision: String,
+    reason_code: Option<String>,
+    principal: Option<FlightDeckPrincipal>,
+    authentication_method: Option<String>,
+    policy_version: Option<String>,
+    operation_family: Option<String>,
+    workspace: Option<String>,
+    runtime_outcome: String,
+    durability_outcome: String,
+    delivery_outcome: String,
+}
+
 async fn snapshot(
     State(state): State<AppState>,
     Path(workspace): Path<String>,
@@ -194,6 +230,15 @@ async fn security_status(
         .await
         .map(Json)
         .map_err(|error| redacted_gateway_error("security status", &error))
+}
+
+async fn security_audit_status(
+    State(state): State<AppState>,
+) -> Result<Json<FlightDeckSecurityAuditStatus>, (StatusCode, String)> {
+    load_security_audit_status(state.grpc_endpoint.to_string())
+        .await
+        .map(Json)
+        .map_err(|error| redacted_gateway_error("security audit status", &error))
 }
 
 async fn query_command(
@@ -253,6 +298,14 @@ async fn load_security_status(
     let tls = GrpcClientTlsOptions::from_env().map_err(GrpcWorkspaceClientError::TlsConfig)?;
     let status = grpc_security_status(endpoint, tls).await?;
     Ok(flight_deck_security_status(status))
+}
+
+async fn load_security_audit_status(
+    endpoint: impl Into<String>,
+) -> Result<FlightDeckSecurityAuditStatus, GrpcWorkspaceClientError> {
+    let tls = GrpcClientTlsOptions::from_env().map_err(GrpcWorkspaceClientError::TlsConfig)?;
+    let status = grpc_security_audit_status(endpoint, tls).await?;
+    Ok(flight_deck_security_audit_status(status))
 }
 
 async fn load_query_command(
@@ -430,6 +483,58 @@ fn flight_deck_security_status(status: proto::SecurityStatusResponse) -> FlightD
     }
 }
 
+fn flight_deck_security_audit_status(
+    status: proto::SecurityAuditStatusResponse,
+) -> FlightDeckSecurityAuditStatus {
+    FlightDeckSecurityAuditStatus {
+        security_profile: security_profile_label(status.security_profile),
+        audit_mode: security_audit_mode_label(status.audit_mode),
+        sink_health: security_audit_sink_health_label(status.sink_health),
+        mandatory_audit_available: status.mandatory_audit_available,
+        retained_event_count: status.retained_event_count,
+        recent_event_count: status.recent_event_count,
+        retention_max_events: status.retention_max_events,
+        retention_max_bytes: status.retention_max_bytes,
+        retention_max_age_seconds: status.retention_max_age_seconds,
+        future_dated_record_count: status.future_dated_record_count,
+        last_recovery_status_code: non_empty(status.last_recovery_status_code),
+        recent_events: status
+            .recent_events
+            .into_iter()
+            .map(flight_deck_security_audit_event)
+            .collect(),
+    }
+}
+
+fn flight_deck_security_audit_event(
+    event: proto::SecurityAuditEventSummary,
+) -> FlightDeckSecurityAuditEvent {
+    FlightDeckSecurityAuditEvent {
+        timestamp: non_empty(event.timestamp),
+        request_id: event.request_id,
+        service_sequence: event.service_sequence,
+        stage: security_audit_stage_label(event.stage),
+        decision: security_audit_decision_label(event.decision),
+        reason_code: non_empty(event.reason_code),
+        principal: event
+            .principal
+            .as_ref()
+            .map(|principal| FlightDeckPrincipal {
+                issuer: principal.issuer.clone(),
+                subject: principal.subject.clone(),
+            }),
+        authentication_method: event
+            .principal
+            .and_then(|principal| non_empty(principal.authentication_method)),
+        policy_version: non_empty(event.policy_version),
+        operation_family: non_empty(event.operation_family),
+        workspace: non_empty(event.workspace),
+        runtime_outcome: security_audit_runtime_outcome_label(event.runtime_outcome),
+        durability_outcome: security_audit_durability_outcome_label(event.durability_outcome),
+        delivery_outcome: security_audit_delivery_outcome_label(event.delivery_outcome),
+    }
+}
+
 fn security_profile_label(value: i32) -> String {
     match proto::SecurityProfile::try_from(value).ok() {
         Some(proto::SecurityProfile::AnonymousLocal) => "anonymous_local",
@@ -445,6 +550,84 @@ fn security_identity_status_label(value: i32) -> String {
         Some(proto::SecurityIdentityStatus::AnonymousLocal) => "anonymous_local",
         Some(proto::SecurityIdentityStatus::DockerLocalInsecure) => "docker_local_insecure",
         Some(proto::SecurityIdentityStatus::AuthenticatedPrincipal) => "authenticated_principal",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_audit_mode_label(value: i32) -> String {
+    match proto::SecurityAuditMode::try_from(value).ok() {
+        Some(proto::SecurityAuditMode::BestEffort) => "best_effort",
+        Some(proto::SecurityAuditMode::Mandatory) => "mandatory",
+        Some(proto::SecurityAuditMode::Unavailable) => "unavailable",
+        Some(proto::SecurityAuditMode::NotApplicable) => "not_applicable",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_audit_sink_health_label(value: i32) -> String {
+    match proto::SecurityAuditSinkHealth::try_from(value).ok() {
+        Some(proto::SecurityAuditSinkHealth::Healthy) => "healthy",
+        Some(proto::SecurityAuditSinkHealth::Degraded) => "degraded",
+        Some(proto::SecurityAuditSinkHealth::Unavailable) => "unavailable",
+        Some(proto::SecurityAuditSinkHealth::Unknown) => "unknown",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_audit_stage_label(value: i32) -> String {
+    match proto::SecurityAuditStage::try_from(value).ok() {
+        Some(proto::SecurityAuditStage::Attempt) => "attempt",
+        Some(proto::SecurityAuditStage::Authentication) => "authentication",
+        Some(proto::SecurityAuditStage::Authorization) => "authorization",
+        Some(proto::SecurityAuditStage::Admission) => "admission",
+        Some(proto::SecurityAuditStage::Runtime) => "runtime",
+        Some(proto::SecurityAuditStage::Durability) => "durability",
+        Some(proto::SecurityAuditStage::Delivery) => "delivery",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_audit_decision_label(value: i32) -> String {
+    match proto::SecurityAuditDecision::try_from(value).ok() {
+        Some(proto::SecurityAuditDecision::NotApplicable) => "not_applicable",
+        Some(proto::SecurityAuditDecision::Allow) => "allow",
+        Some(proto::SecurityAuditDecision::Deny) => "deny",
+        Some(proto::SecurityAuditDecision::Error) => "error",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_audit_runtime_outcome_label(value: i32) -> String {
+    match proto::SecurityAuditRuntimeOutcome::try_from(value).ok() {
+        Some(proto::SecurityAuditRuntimeOutcome::NotReached) => "not_reached",
+        Some(proto::SecurityAuditRuntimeOutcome::Succeeded) => "succeeded",
+        Some(proto::SecurityAuditRuntimeOutcome::Failed) => "failed",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_audit_durability_outcome_label(value: i32) -> String {
+    match proto::SecurityAuditDurabilityOutcome::try_from(value).ok() {
+        Some(proto::SecurityAuditDurabilityOutcome::NotApplicable) => "not_applicable",
+        Some(proto::SecurityAuditDurabilityOutcome::Committed) => "committed",
+        Some(proto::SecurityAuditDurabilityOutcome::NotCommitted) => "not_committed",
+        Some(proto::SecurityAuditDurabilityOutcome::Unknown) => "unknown",
+        _ => "unknown",
+    }
+    .into()
+}
+
+fn security_audit_delivery_outcome_label(value: i32) -> String {
+    match proto::SecurityAuditDeliveryOutcome::try_from(value).ok() {
+        Some(proto::SecurityAuditDeliveryOutcome::NotReached) => "not_reached",
+        Some(proto::SecurityAuditDeliveryOutcome::HandedOff) => "handed_off",
+        Some(proto::SecurityAuditDeliveryOutcome::Unknown) => "unknown",
         _ => "unknown",
     }
     .into()
@@ -1051,6 +1234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let app = Router::new()
         .route("/api/security/status", get(security_status))
+        .route("/api/security/audit/status", get(security_audit_status))
         .route("/api/workspaces/:workspace/snapshot", get(snapshot))
         .route("/api/workspaces/:workspace/query", post(query_command))
         .with_state(AppState {
@@ -1074,7 +1258,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        close_after_snapshot, flight_deck_edge, flight_deck_node, flight_deck_security_status,
+        close_after_snapshot, flight_deck_edge, flight_deck_node,
+        flight_deck_security_audit_status, flight_deck_security_status,
         include_edges_with_known_endpoints, node_label, origin_is_allowed,
         parse_flight_deck_allowed_origins, redacted_gateway_error, redacted_gateway_log_message,
     };
@@ -1236,6 +1421,57 @@ mod tests {
         assert_eq!(
             status.policy_version.as_deref(),
             Some("secured-local-policy-v1")
+        );
+    }
+
+    #[test]
+    fn security_audit_status_serializes_bounded_recent_evidence() {
+        let status = flight_deck_security_audit_status(super::proto::SecurityAuditStatusResponse {
+            security_profile: super::proto::SecurityProfile::Secured as i32,
+            audit_mode: super::proto::SecurityAuditMode::Mandatory as i32,
+            sink_health: super::proto::SecurityAuditSinkHealth::Healthy as i32,
+            mandatory_audit_available: true,
+            retained_event_count: 7,
+            recent_event_count: 1,
+            retention_max_events: 256,
+            retention_max_bytes: 262_144,
+            retention_max_age_seconds: 86_400,
+            future_dated_record_count: 0,
+            last_recovery_status_code: "ok".into(),
+            recent_events: vec![super::proto::SecurityAuditEventSummary {
+                timestamp: "123.000Z".into(),
+                request_id: 3,
+                service_sequence: 9,
+                stage: super::proto::SecurityAuditStage::Authorization as i32,
+                decision: super::proto::SecurityAuditDecision::Allow as i32,
+                reason_code: "explicit_policy_allow".into(),
+                principal: Some(super::proto::SecurityAuditPrincipal {
+                    issuer: "local-admin".into(),
+                    subject: "admin-1".into(),
+                    authentication_method: "mtls-certificate".into(),
+                }),
+                policy_version: "secured-local-policy-v1".into(),
+                operation_family: "audit.inspect".into(),
+                workspace: "service".into(),
+                runtime_outcome: super::proto::SecurityAuditRuntimeOutcome::NotReached as i32,
+                durability_outcome: super::proto::SecurityAuditDurabilityOutcome::NotApplicable
+                    as i32,
+                delivery_outcome: super::proto::SecurityAuditDeliveryOutcome::NotReached as i32,
+            }],
+        });
+
+        assert_eq!(status.security_profile, "secured");
+        assert_eq!(status.audit_mode, "mandatory");
+        assert_eq!(status.sink_health, "healthy");
+        assert!(status.mandatory_audit_available);
+        assert_eq!(status.recent_events[0].stage, "authorization");
+        assert_eq!(
+            status.recent_events[0].operation_family.as_deref(),
+            Some("audit.inspect")
+        );
+        assert_eq!(
+            status.recent_events[0].authentication_method.as_deref(),
+            Some("mtls-certificate")
         );
     }
 

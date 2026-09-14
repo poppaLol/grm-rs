@@ -313,6 +313,107 @@ async fn secured_security_status_bounds_configured_identity_fields() {
     server.await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn anonymous_local_security_audit_status_reports_best_effort_observability() {
+    let (mut client, shutdown, server) =
+        start_service(ServiceSecurityConfig::anonymous_local()).await;
+
+    let status = client
+        .security_audit_status(proto::SecurityAuditStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status.security_profile,
+        proto::SecurityProfile::AnonymousLocal as i32
+    );
+    assert_eq!(
+        status.audit_mode,
+        proto::SecurityAuditMode::BestEffort as i32
+    );
+    assert_eq!(
+        status.sink_health,
+        proto::SecurityAuditSinkHealth::Healthy as i32
+    );
+    assert!(!status.mandatory_audit_available);
+    assert!(status.retained_event_count >= 4);
+    assert!(status.recent_event_count >= 4);
+    assert!(status.recent_events.iter().any(|event| event.stage
+        == proto::SecurityAuditStage::Authorization as i32
+        && event.decision == proto::SecurityAuditDecision::Allow as i32
+        && event.operation_family == "audit.inspect"));
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn secured_security_audit_status_requires_audit_inspect_permission() {
+    let security =
+        ServiceSecurityConfig::secured().with_authenticator(Arc::new(FixedAuthenticator));
+    let (mut client, shutdown, server) = start_service(security).await;
+
+    let denied = client
+        .security_audit_status(proto::SecurityAuditStatusRequest {})
+        .await
+        .unwrap_err();
+
+    assert_eq!(denied.code(), Code::PermissionDenied);
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn secured_security_audit_status_reports_mandatory_authorized_evidence() {
+    let principal = principal("audit-reader");
+    let security = secured_with_table(
+        principal.clone(),
+        vec![assignment(
+            principal.clone(),
+            PermissionScope::Service,
+            vec![permission(
+                SecurityAction::AuditInspect,
+                ResourceSelector::Service,
+            )],
+        )],
+    );
+    let (mut client, shutdown, server) = start_service(security).await;
+
+    let status = client
+        .security_audit_status(proto::SecurityAuditStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status.security_profile,
+        proto::SecurityProfile::Secured as i32
+    );
+    assert_eq!(
+        status.audit_mode,
+        proto::SecurityAuditMode::Mandatory as i32
+    );
+    assert!(status.mandatory_audit_available);
+    assert_eq!(
+        status.sink_health,
+        proto::SecurityAuditSinkHealth::Healthy as i32
+    );
+    assert!(status.retention_max_events > 0);
+    assert!(status.retention_max_bytes > 0);
+    assert!(status.recent_events.iter().any(|event| {
+        event.operation_family == "audit.inspect"
+            && event.principal.as_ref().is_some_and(|observed| {
+                observed.issuer == principal.issuer && observed.subject == principal.subject
+            })
+            && event.policy_version == "test-policy-v1"
+    }));
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
 #[test]
 fn anonymous_local_profile_refuses_public_bind_addresses() {
     let public: SocketAddr = "0.0.0.0:50051".parse().unwrap();
@@ -2202,6 +2303,59 @@ async fn persistent_durable_recovery_failure_keeps_secured_effects_blocked() {
 }
 
 #[tokio::test]
+async fn degraded_mandatory_audit_status_remains_observable_without_event_details() {
+    let temp = tempfile::tempdir().unwrap();
+    let hooks = AuditStoreInstrumentation::default();
+    let store = DurableSecurityAuditStore::open_with_instrumentation(
+        temp.path(),
+        32,
+        64 * 1024,
+        Duration::from_secs(3600),
+        hooks.clone(),
+    )
+    .unwrap();
+    let failing = Arc::new(FailDurableAfter {
+        store,
+        hooks: hooks.clone(),
+        fail_after: 4,
+        appends: AtomicUsize::new(0),
+        failed_once: AtomicBool::new(false),
+    });
+    let (mut client, shutdown, server) =
+        start_service(secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(failing)).await;
+    client
+        .create_workspace(in_memory_workspace_create_request())
+        .await
+        .unwrap();
+    hooks.fail_next(AuditStoreFailurePoint::RecoveryDirectorySync);
+
+    let status = client
+        .security_audit_status(proto::SecurityAuditStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(
+        status.security_profile,
+        proto::SecurityProfile::Secured as i32
+    );
+    assert_eq!(
+        status.audit_mode,
+        proto::SecurityAuditMode::Mandatory as i32
+    );
+    assert_eq!(
+        status.sink_health,
+        proto::SecurityAuditSinkHealth::Degraded as i32
+    );
+    assert!(!status.mandatory_audit_available);
+    assert_eq!(status.last_recovery_status_code, "degraded");
+    assert!(status.recent_events.is_empty());
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn secured_profile_post_effect_audit_failure_degrades_and_blocks_later_effects() {
     let audit = Arc::new(FailAfterAuditSink::new(4));
     let (mut client, shutdown, server) =
@@ -2482,6 +2636,22 @@ impl SecurityAuditSink for FailDurableAfter {
 
     fn try_recover(&self) -> Result<SecurityAuditSinkHealth, SecurityAuditSinkError> {
         self.store.try_recover()
+    }
+
+    fn retained_events(&self) -> Vec<SecurityAuditEvent> {
+        self.store.retained_events()
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.store.retained_bytes()
+    }
+
+    fn retention_limits(&self) -> (usize, usize, Duration) {
+        self.store.retention_limits()
+    }
+
+    fn future_dated_records(&self) -> usize {
+        self.store.future_dated_records()
     }
 }
 
