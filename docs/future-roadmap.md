@@ -261,17 +261,26 @@ reordering remain future work.
 
 This would build on the existing kernel/query direction and improve trust in the system.
 
-### Visual Schema Exploration
+### Visual Projection Schema
 
-The product already has graph-shaped data output, but schema visualization is still missing.
+The product already has graph-shaped data, graph-shaped schema, and schema
+metadata that can itself be understood as a small graph of models, links,
+fields, and properties. The next step is not only drawing schema diagrams; it
+is defining a typed visual projection layer over graph data, runtime schema, and
+schema metadata.
 
 Future possibilities:
 
-- schema graph rendering for models and links
-- model/link browsing with richer summaries
-- graph-oriented schema diagrams in CLI or exported form
+- generated default visual projections for graph data and schema graphs
+- model/link browsing with richer summaries and detail-panel hints
+- node glyph, edge style, label, grouping, collapse, and layout hints
+- MCP or service helper surfaces that return visual projection guidance for
+  agents and UI clients
+- user-customized visual schema overlays once default projections are proven
 
-This would make runtime-defined graphs easier to understand and demo.
+This would make runtime-defined graphs easier to understand and demo while
+keeping visual state as an advisory projection over typed GRM workspace truth,
+not the canonical service contract.
 
 ### Data Quality And Linting
 

@@ -24,3 +24,4 @@ Current records:
 - [ADR 0009: Use A GRM-Native Service-Owned Audit Log Store](0009-grm-native-audit-log-store.md)
 - [ADR 0010: Use A GRM-Shaped Local Graph Store For The Flight-Deck](0010-flight-deck-local-graph-store.md)
 - [ADR 0011: Use Passwordless Secured-Local Bootstrap With Editable Access Templates](0011-passwordless-secured-local-bootstrap.md)
+- [ADR 0012: Use Visual Projection Schema While Keeping The Flight-Deck Web-First](0012-visual-projection-schema-and-flight-deck-client-boundary.md)
