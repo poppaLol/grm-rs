@@ -18,6 +18,16 @@ npm run dev
 
 Open `http://127.0.0.1:8081`.
 
+The package also includes a small Playwright browser reliability baseline:
+
+```bash
+npm run e2e
+```
+
+It exercises fixture mode, a mocked gateway-unavailable state, audit/security
+legibility, browser error collection, non-persistence of obvious secret-shaped
+fields, and writes a screenshot artifact for the fixture audit path.
+
 The app starts with fixture data enabled so the UI remains reviewable without a
 running service. To use real local service data, run a GRM workspace service and
 the read-only flight-deck HTTP adapter:
@@ -113,7 +123,9 @@ the typed workspace path. For local snapshot filtering and Schema mode
 summaries, they are still labelled as local summaries rather than service
 planner/profile truth.
 
-Audit is a distinct navigable panel. It shows service-authored audit
+Audit is a distinct navigable panel. Fixture mode includes safe sample audit
+status and recent event summaries so the browser surface can be reviewed
+without a service. When connected to a gateway, the panel shows service-authored audit
 observability when the gateway can call the read-only audit status endpoint,
 including audit mode, sink health, retention bounds, and bounded recent event
 summaries. It also keeps the bounded local event buffer for fixture/service

@@ -139,6 +139,11 @@ executions with redacted context. This is useful workbench navigation for the
 Admin-1 journey, but it is not a live policy editor, permission table viewer,
 external audit forwarding path, signed receipt, or state commitment.
 
+If the gateway or service is unavailable, the Audit panel keeps that state
+visible as unavailable observability rather than presenting it as secured audit
+success. The browser reliability baseline in `grm-flight-deck` covers fixture
+and mocked-unavailable flows without requiring the full secured-local stack.
+
 Switch back to a fixture profile and then back to `Admin-1 secured local` to
 confirm the local graph-store profile restoration path.
 
