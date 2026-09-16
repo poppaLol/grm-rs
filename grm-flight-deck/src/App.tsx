@@ -555,8 +555,6 @@ export function App() {
       graphStore.loadSnapshot(loaded);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setSecurityStatus(null);
-      setSecurityAuditStatus(null);
       graphStore.markConnectionFailed(message);
     } finally {
       setLoading(false);

@@ -115,15 +115,73 @@ export const fixtureSecurityStatus: FlightDeckSecurityStatus = {
 
 export const fixtureSecurityAuditStatus: FlightDeckSecurityAuditStatus = {
   securityProfile: "fixture",
-  auditMode: "not_applicable",
-  sinkHealth: "unknown",
+  auditMode: "best_effort",
+  sinkHealth: "healthy",
   mandatoryAuditAvailable: false,
-  retainedEventCount: 0,
-  recentEventCount: 0,
-  retentionMaxEvents: 0,
-  retentionMaxBytes: 0,
-  retentionMaxAgeSeconds: 0,
+  retainedEventCount: 3,
+  recentEventCount: 3,
+  retentionMaxEvents: 25,
+  retentionMaxBytes: 65536,
+  retentionMaxAgeSeconds: 86400,
   futureDatedRecordCount: 0,
-  lastRecoveryStatusCode: null,
-  recentEvents: []
+  lastRecoveryStatusCode: "fixture",
+  recentEvents: [
+    {
+      timestamp: "fixture-001",
+      requestId: 42,
+      serviceSequence: 101,
+      stage: "authentication",
+      decision: "allow",
+      reasonCode: "fixture_principal",
+      principal: {
+        issuer: "local-admin",
+        subject: "admin-1"
+      },
+      authenticationMethod: "mtls-certificate",
+      policyVersion: "secured-local-policy-v1",
+      operationFamily: "security.status",
+      workspace: "service",
+      runtimeOutcome: "not_reached",
+      durabilityOutcome: "not_applicable",
+      deliveryOutcome: "not_reached"
+    },
+    {
+      timestamp: "fixture-002",
+      requestId: 43,
+      serviceSequence: 104,
+      stage: "authorization",
+      decision: "allow",
+      reasonCode: "explicit_policy_allow",
+      principal: {
+        issuer: "local-admin",
+        subject: "admin-1"
+      },
+      authenticationMethod: "mtls-certificate",
+      policyVersion: "secured-local-policy-v1",
+      operationFamily: "audit.inspect",
+      workspace: "service",
+      runtimeOutcome: "not_reached",
+      durabilityOutcome: "not_applicable",
+      deliveryOutcome: "not_reached"
+    },
+    {
+      timestamp: "fixture-003",
+      requestId: 43,
+      serviceSequence: 106,
+      stage: "delivery",
+      decision: "not_applicable",
+      reasonCode: "response_handed_off",
+      principal: {
+        issuer: "local-admin",
+        subject: "admin-1"
+      },
+      authenticationMethod: "mtls-certificate",
+      policyVersion: "secured-local-policy-v1",
+      operationFamily: "audit.inspect",
+      workspace: "service",
+      runtimeOutcome: "not_reached",
+      durabilityOutcome: "not_applicable",
+      deliveryOutcome: "handed_off"
+    }
+  ]
 };
