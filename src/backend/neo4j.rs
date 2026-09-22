@@ -505,6 +505,10 @@ fn json_to_bolt(value: &Value) -> Result<BoltType> {
             }
         }
         Value::String(value) => Ok(BoltType::from(value.clone())),
+        Value::Object(props) if props.contains_key("$grm_type") => Err(GrmError::Mapping(
+            "Neo4j backend does not support portable SOML typed primitive property values yet"
+                .into(),
+        )),
         Value::Object(props) => {
             let mut map = BoltMap::new();
             for (key, value) in props {

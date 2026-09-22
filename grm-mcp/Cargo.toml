@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 axum = "0.7"
+base64 = "0.22"
 grm-service-api = { path = "../grm-service-api" }
 grm-rs = { path = ".." }
 rmcp = { version = "1.5", features = ["server", "client", "macros", "schemars", "transport-io", "transport-child-process", "transport-streamable-http-server", "transport-streamable-http-client-reqwest"] }

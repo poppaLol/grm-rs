@@ -28,6 +28,9 @@ use serde_json::{json, Value};
 
 create_exception!(_grm_rs, PyGrmError, pyo3::exceptions::PyException);
 
+const FIELD_TYPE_EXPECTED: &str =
+    "string, int, float, bool, bytes, decimal, date, datetime, duration, or uuid";
+
 #[pyclass(name = "Session")]
 struct PySession {
     state: SessionState,
@@ -125,6 +128,7 @@ impl PySession {
             "traversal",
             "explain_profile",
             "persistence",
+            "soml_primitive_values",
         ]
     }
 
@@ -721,6 +725,7 @@ impl PyServiceSession {
             "non_atomic_batch",
             "traversal",
             "explain_profile",
+            "soml_primitive_values",
         ]
     }
 
@@ -1496,7 +1501,7 @@ fn parse_fields(fields: &Bound<'_, PyAny>) -> PyResult<Vec<RuntimeField>> {
         let field_type = required_string(field, "type")?;
         let value_type = RuntimeValueType::parse_keyword(&field_type).ok_or_else(|| {
             PyTypeError::new_err(format!(
-                "unsupported field type '{field_type}', expected one of: string, int, float, bool"
+                "unsupported field type '{field_type}', expected one of: {FIELD_TYPE_EXPECTED}"
             ))
         })?;
         let required = required_bool(field, "required")?;
@@ -1522,7 +1527,7 @@ fn parse_field_specs(fields: &Bound<'_, PyAny>) -> PyResult<Vec<FieldSpec>> {
         let field_type = required_string(field, "type")?;
         let value_type = parse_field_value_type(&field_type).ok_or_else(|| {
             PyTypeError::new_err(format!(
-                "unsupported field type '{field_type}', expected one of: string, int, float, bool"
+                "unsupported field type '{field_type}', expected one of: {FIELD_TYPE_EXPECTED}"
             ))
         })?;
         let required = required_bool(field, "required")?;
@@ -1541,6 +1546,12 @@ fn parse_field_value_type(raw: &str) -> Option<FieldValueType> {
         "int" => Some(FieldValueType::Int),
         "float" => Some(FieldValueType::Float),
         "bool" => Some(FieldValueType::Bool),
+        "bytes" => Some(FieldValueType::Bytes),
+        "decimal" => Some(FieldValueType::Decimal),
+        "date" => Some(FieldValueType::Date),
+        "datetime" => Some(FieldValueType::DateTime),
+        "duration" => Some(FieldValueType::Duration),
+        "uuid" => Some(FieldValueType::Uuid),
         _ => None,
     }
 }

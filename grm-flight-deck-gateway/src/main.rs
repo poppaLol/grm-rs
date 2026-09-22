@@ -1025,6 +1025,12 @@ fn value_type_label(value_type: &RuntimeValueType) -> &'static str {
         RuntimeValueType::Int => "int",
         RuntimeValueType::Float => "float",
         RuntimeValueType::Bool => "bool",
+        RuntimeValueType::Bytes => "bytes",
+        RuntimeValueType::Decimal => "decimal",
+        RuntimeValueType::Date => "date",
+        RuntimeValueType::DateTime => "datetime",
+        RuntimeValueType::Duration => "duration",
+        RuntimeValueType::Uuid => "uuid",
     }
 }
 

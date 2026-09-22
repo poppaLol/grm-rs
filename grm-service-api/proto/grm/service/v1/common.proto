@@ -8,6 +8,12 @@ message PropertyValue {
     int64 int_value = 2;
     double float_value = 3;
     bool bool_value = 4;
+    bytes bytes_value = 5;
+    string decimal_value = 6;
+    string date_value = 7;
+    string datetime_value = 8;
+    string duration_value = 9;
+    string uuid_value = 10;
   }
 }
 
@@ -26,6 +32,12 @@ enum FieldValueType {
   FIELD_VALUE_TYPE_INT = 2;
   FIELD_VALUE_TYPE_FLOAT = 3;
   FIELD_VALUE_TYPE_BOOL = 4;
+  FIELD_VALUE_TYPE_BYTES = 5;
+  FIELD_VALUE_TYPE_DECIMAL = 6;
+  FIELD_VALUE_TYPE_DATE = 7;
+  FIELD_VALUE_TYPE_DATETIME = 8;
+  FIELD_VALUE_TYPE_DURATION = 9;
+  FIELD_VALUE_TYPE_UUID = 10;
 }
 
 message FieldSpec {

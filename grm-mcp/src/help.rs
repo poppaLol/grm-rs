@@ -27,7 +27,7 @@ Schema richness vs sparseness:
 - Prefer rich models when future queries will care about the distinction as graph structure or traversal semantics.
 - Prefer sparse models when the distinction is mostly descriptive data.
 
-Property values must be strings, numbers, or booleans. Null, arrays, and objects are not supported as graph property values.
+Property values support string, int, finite float, bool, and canonical tagged SOML primitive objects for bytes, decimal, date, datetime, duration, and uuid. Null and arrays are not supported as graph property values; omit optional fields instead.
 "#;
 
 pub fn help_index() -> Value {

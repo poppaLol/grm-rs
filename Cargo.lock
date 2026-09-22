@@ -794,6 +794,7 @@ name = "grm-mcp"
 version = "0.1.1"
 dependencies = [
  "axum",
+ "base64",
  "grm-rs",
  "grm-service-api",
  "rmcp",
@@ -810,7 +811,9 @@ name = "grm-rs"
 version = "0.1.1"
 dependencies = [
  "async-trait",
+ "base64",
  "bincode",
+ "chrono",
  "criterion",
  "grm-rs-macros",
  "log",
@@ -821,6 +824,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

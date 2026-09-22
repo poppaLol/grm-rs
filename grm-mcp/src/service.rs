@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use grm_rs::{
     EdgeFindRequest, GrmError, NodeFindRequest, OrderDirection, PredicateOp, QueryTerm,
     Result as GrmResult, SessionBatchEndpoint, SessionBatchOp, SessionBatchParams,
@@ -692,6 +693,30 @@ fn property_value_to_json(value: proto::PropertyValue) -> GrmResult<Value> {
         Kind::IntValue(value) => Ok(json!(value)),
         Kind::FloatValue(value) => Ok(json!(value)),
         Kind::BoolValue(value) => Ok(json!(value)),
+        Kind::BytesValue(value) => Ok(grm_rs::parse_typed_value(
+            grm_rs::PrimitiveKind::Bytes,
+            &base64::engine::general_purpose::STANDARD.encode(value),
+        )?),
+        Kind::DecimalValue(value) => Ok(grm_rs::parse_typed_value(
+            grm_rs::PrimitiveKind::Decimal,
+            &value,
+        )?),
+        Kind::DateValue(value) => Ok(grm_rs::parse_typed_value(
+            grm_rs::PrimitiveKind::Date,
+            &value,
+        )?),
+        Kind::DatetimeValue(value) => Ok(grm_rs::parse_typed_value(
+            grm_rs::PrimitiveKind::DateTime,
+            &value,
+        )?),
+        Kind::DurationValue(value) => Ok(grm_rs::parse_typed_value(
+            grm_rs::PrimitiveKind::Duration,
+            &value,
+        )?),
+        Kind::UuidValue(value) => Ok(grm_rs::parse_typed_value(
+            grm_rs::PrimitiveKind::Uuid,
+            &value,
+        )?),
     }
 }
 
@@ -908,6 +933,48 @@ fn property_value(value: Value) -> GrmResult<proto::PropertyValue> {
     let kind = match value {
         Value::String(value) => Kind::StringValue(value),
         Value::Bool(value) => Kind::BoolValue(value),
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("bytes") => {
+            let raw = grm_rs::typed_value_payload(&value)
+                .ok_or_else(|| GrmError::Constraint("invalid typed bytes property value".into()))?;
+            Kind::BytesValue(
+                base64::engine::general_purpose::STANDARD
+                    .decode(raw)
+                    .map_err(|_| {
+                        GrmError::Constraint("invalid typed bytes property value".into())
+                    })?,
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("decimal") => {
+            Kind::DecimalValue(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("date") => Kind::DateValue(
+            grm_rs::typed_value_payload(&value)
+                .unwrap_or_default()
+                .into(),
+        ),
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("datetime") => {
+            Kind::DatetimeValue(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("duration") => {
+            Kind::DurationValue(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("uuid") => Kind::UuidValue(
+            grm_rs::typed_value_payload(&value)
+                .unwrap_or_default()
+                .into(),
+        ),
         Value::Number(value) => {
             if let Some(value) = value.as_i64() {
                 Kind::IntValue(value)
@@ -931,7 +998,7 @@ fn property_value(value: Value) -> GrmResult<proto::PropertyValue> {
         }
         Value::Array(_) | Value::Object(_) => {
             return Err(GrmError::Constraint(
-                "graph values must be strings, numbers, or booleans".into(),
+                "graph values must be primitive values or canonical typed primitive objects".into(),
             ));
         }
     };
@@ -970,8 +1037,14 @@ fn proto_field_type(value_type: &str) -> GrmResult<i32> {
         "int" => Ok(proto::FieldValueType::Int as i32),
         "float" => Ok(proto::FieldValueType::Float as i32),
         "bool" => Ok(proto::FieldValueType::Bool as i32),
+        "bytes" => Ok(proto::FieldValueType::Bytes as i32),
+        "decimal" => Ok(proto::FieldValueType::Decimal as i32),
+        "date" => Ok(proto::FieldValueType::Date as i32),
+        "datetime" => Ok(proto::FieldValueType::Datetime as i32),
+        "duration" => Ok(proto::FieldValueType::Duration as i32),
+        "uuid" => Ok(proto::FieldValueType::Uuid as i32),
         other => Err(GrmError::Constraint(format!(
-            "unsupported field type '{other}'; expected string, int, float, or bool"
+            "unsupported field type '{other}'; expected string, int, float, bool, bytes, decimal, date, datetime, duration, or uuid"
         ))),
     }
 }
@@ -1024,6 +1097,12 @@ fn field_type_display(value: i32) -> &'static str {
         Some(proto::FieldValueType::Int) => "Int",
         Some(proto::FieldValueType::Float) => "Float",
         Some(proto::FieldValueType::Bool) => "Bool",
+        Some(proto::FieldValueType::Bytes) => "Bytes",
+        Some(proto::FieldValueType::Decimal) => "Decimal",
+        Some(proto::FieldValueType::Date) => "Date",
+        Some(proto::FieldValueType::Datetime) => "DateTime",
+        Some(proto::FieldValueType::Duration) => "Duration",
+        Some(proto::FieldValueType::Uuid) => "Uuid",
         _ => "Unspecified",
     }
 }

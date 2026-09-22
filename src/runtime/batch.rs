@@ -461,7 +461,7 @@ fn parse_fields(fields: Vec<SessionBatchFieldParam>) -> Result<Vec<FieldSpec>> {
         .map(|field| {
             let value_type = parse_field_value_type(&field.value_type).ok_or_else(|| {
                 GrmError::Constraint(format!(
-                    "unsupported field type '{}', expected one of: string, int, float, bool",
+                    "unsupported field type '{}', expected one of: string, int, float, bool, bytes, decimal, date, datetime, duration, or uuid",
                     field.value_type
                 ))
             })?;
@@ -480,6 +480,12 @@ fn parse_field_value_type(raw: &str) -> Option<FieldValueType> {
         "int" => Some(FieldValueType::Int),
         "float" => Some(FieldValueType::Float),
         "bool" => Some(FieldValueType::Bool),
+        "bytes" => Some(FieldValueType::Bytes),
+        "decimal" => Some(FieldValueType::Decimal),
+        "date" => Some(FieldValueType::Date),
+        "datetime" => Some(FieldValueType::DateTime),
+        "duration" => Some(FieldValueType::Duration),
+        "uuid" => Some(FieldValueType::Uuid),
         _ => None,
     }
 }

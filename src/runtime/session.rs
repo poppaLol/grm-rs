@@ -30,7 +30,8 @@ use crate::runtime::{
     RuntimeDispatchOutcome, RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
     RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
     RuntimeRequest, RuntimeResponse, RuntimeSchemaListResponse, SchemaRequest, SchemaResponse,
-    TraversalDirection, TraversalReturn,
+    TraversalDirection, TraversalReturn, compare_typed_value_order, compare_typed_values,
+    validate_value_for_kind,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -159,7 +160,13 @@ pub struct SessionCompactSummary {
 struct SessionPredicate {
     field: String,
     op: CompareOp,
-    raw_value: String,
+    value: SessionPredicateValue,
+}
+
+#[derive(Debug, Clone)]
+enum SessionPredicateValue {
+    Lexical(String),
+    Typed(Value),
 }
 
 #[derive(Debug, Clone)]
@@ -962,8 +969,9 @@ impl SessionState {
         &self,
         request: NodeCreateRequest,
     ) -> Result<RuntimeNodeOutcome> {
-        let raw_values = typed_props_to_raw(request.props)?;
-        let node = self.create_instance(&request.model, &raw_values).await?;
+        let node = self
+            .create_instance_from_props(&request.model, request.props)
+            .await?;
         Ok(RuntimeOperationOutcome {
             value: node.clone(),
             durable_op: DurableOperation::UpsertNode { node },
@@ -980,9 +988,8 @@ impl SessionState {
         &self,
         request: NodeUpdateRequest,
     ) -> Result<RuntimeNodeOutcome> {
-        let raw_values = typed_props_to_raw(request.props)?;
         let node = self
-            .update_node_instance(&request.model, &request.id.to_string(), &raw_values)
+            .update_node_instance_from_props(&request.model, request.id, request.props)
             .await?;
         Ok(RuntimeOperationOutcome {
             value: node.clone(),
@@ -1019,13 +1026,12 @@ impl SessionState {
         &self,
         request: EdgeCreateRequest,
     ) -> Result<RuntimeEdgeOutcome> {
-        let raw_values = typed_props_to_raw(request.props)?;
         let edge = self
-            .create_relationship_instance(
+            .create_relationship_instance_from_props(
                 &request.model,
-                &request.from.to_string(),
-                &request.to.to_string(),
-                &raw_values,
+                request.from,
+                request.to,
+                request.props,
             )
             .await?;
         Ok(RuntimeOperationOutcome {
@@ -1044,9 +1050,8 @@ impl SessionState {
         &self,
         request: EdgeUpdateRequest,
     ) -> Result<RuntimeEdgeOutcome> {
-        let raw_values = typed_props_to_raw(request.props)?;
         let edge = self
-            .update_relationship_instance(&request.model, &request.id.to_string(), &raw_values)
+            .update_relationship_instance_from_props(&request.model, request.id, request.props)
             .await?;
         Ok(RuntimeOperationOutcome {
             value: edge.clone(),
@@ -1092,6 +1097,25 @@ impl SessionState {
         Ok(created)
     }
 
+    pub async fn create_instance_from_props(
+        &self,
+        model_name: &str,
+        values: BTreeMap<String, Value>,
+    ) -> Result<StoredNode> {
+        let model = self
+            .catalog
+            .get(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        let props = model.validate_instance_props(&values)?;
+        let mut tx = self.client.transaction().await?;
+        let created = tx
+            .tx_mut()?
+            .create_node(vec![model.label.clone()], props)
+            .await?;
+        tx.commit().await?;
+        Ok(created)
+    }
+
     pub async fn create_relationship_instance(
         &self,
         model_name: &str,
@@ -1106,6 +1130,57 @@ impl SessionState {
         let props = model.validate_instance_input(raw_values)?;
         let from_raw = self.parse_backend_id(from_id, self.node_id_type(), "from node")?;
         let to_raw = self.parse_backend_id(to_id, self.node_id_type(), "to node")?;
+
+        let mut tx = self.client.transaction().await?;
+
+        let from_node = tx
+            .tx_mut()?
+            .find_node_by_id(from_raw)
+            .await?
+            .ok_or_else(|| {
+                crate::GrmError::Constraint(format!("from node '{from_raw}' was not found"))
+            })?;
+        if !from_node
+            .labels
+            .iter()
+            .any(|label| label == &model.from_model)
+        {
+            return Err(crate::GrmError::Constraint(format!(
+                "from node '{}' does not match model '{}'",
+                from_raw, model.from_model
+            )));
+        }
+
+        let to_node = tx.tx_mut()?.find_node_by_id(to_raw).await?.ok_or_else(|| {
+            crate::GrmError::Constraint(format!("to node '{to_raw}' was not found"))
+        })?;
+        if !to_node.labels.iter().any(|label| label == &model.to_model) {
+            return Err(crate::GrmError::Constraint(format!(
+                "to node '{}' does not match model '{}'",
+                to_raw, model.to_model
+            )));
+        }
+
+        let created = tx
+            .tx_mut()?
+            .create_relationship(from_raw, to_raw, &model.rel_type, props)
+            .await?;
+        tx.commit().await?;
+        Ok(created)
+    }
+
+    pub async fn create_relationship_instance_from_props(
+        &self,
+        model_name: &str,
+        from_raw: i64,
+        to_raw: i64,
+        values: BTreeMap<String, Value>,
+    ) -> Result<StoredRel> {
+        let model = self
+            .catalog
+            .get_rel_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        let props = model.validate_instance_props(&values)?;
 
         let mut tx = self.client.transaction().await?;
 
@@ -1179,6 +1254,39 @@ impl SessionState {
         Ok(updated)
     }
 
+    pub async fn update_node_instance_from_props(
+        &self,
+        model_name: &str,
+        raw_id: i64,
+        values: BTreeMap<String, Value>,
+    ) -> Result<StoredNode> {
+        let model = self
+            .catalog
+            .get_node_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        let props = validate_update_props("model", &model.name, &model.fields, &values)?;
+
+        let mut tx = self.client.transaction().await?;
+        let existing =
+            tx.tx_mut()?.find_node_by_id(raw_id).await?.ok_or_else(|| {
+                crate::GrmError::Constraint(format!("node '{raw_id}' was not found"))
+            })?;
+        if !existing.labels.iter().any(|label| label == &model.label) {
+            return Err(crate::GrmError::Constraint(format!(
+                "node '{}' does not match model '{}'",
+                raw_id, model.name
+            )));
+        }
+
+        let updated = tx
+            .tx_mut()?
+            .update_node(raw_id, props)
+            .await?
+            .ok_or_else(|| crate::GrmError::Constraint(format!("node '{raw_id}' was not found")))?;
+        tx.commit().await?;
+        Ok(updated)
+    }
+
     pub async fn delete_node_instance(&self, model_name: &str, id: &str) -> Result<()> {
         let model = self
             .catalog
@@ -1215,6 +1323,38 @@ impl SessionState {
             .ok_or(crate::GrmError::NotFound)?;
         let raw_id = self.parse_backend_id(id, self.rel_id_type(), "edge id")?;
         let props = self.parse_rel_filters(raw_values, model)?;
+
+        let existing = self
+            .find_relationships(
+                model_name,
+                &BTreeMap::from([(String::from("id"), raw_id.to_string())]),
+            )?
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::GrmError::Constraint(format!("edge '{raw_id}' was not found")))?;
+
+        let mut tx = self.client.transaction().await?;
+        let updated = tx
+            .tx_mut()?
+            .update_relationship(existing.id, props)
+            .await?
+            .ok_or_else(|| crate::GrmError::Constraint(format!("edge '{raw_id}' was not found")))?;
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    pub async fn update_relationship_instance_from_props(
+        &self,
+        model_name: &str,
+        raw_id: i64,
+        values: BTreeMap<String, Value>,
+    ) -> Result<StoredRel> {
+        let model = self
+            .catalog
+            .get_rel_model(model_name)
+            .ok_or(crate::GrmError::NotFound)?;
+        let props =
+            validate_update_props("relationship model", &model.name, &model.fields, &values)?;
 
         let existing = self
             .find_relationships(
@@ -1478,7 +1618,7 @@ impl SessionState {
 
         let indexed_property = prop_filters
             .iter()
-            .find(|(_, op, _)| *op == CompareOp::Eq)
+            .find(|(_, op, value)| *op == CompareOp::Eq && !value.is_object())
             .map(|(key, _, value)| (key.as_str(), value));
         let mut nodes = self.client.backend().snapshot_nodes_filtered(
             &model.label,
@@ -1550,7 +1690,7 @@ impl SessionState {
         let prop_filters = self.parse_model_predicates(&query.predicates, &model)?;
         let indexed_property = prop_filters
             .iter()
-            .find(|(_, op, _)| *op == CompareOp::Eq)
+            .find(|(_, op, value)| *op == CompareOp::Eq && !value.is_object())
             .map(|(key, _, value)| (key.as_str(), value));
 
         let mut metrics = Vec::new();
@@ -1625,7 +1765,7 @@ impl SessionState {
         let prop_filters = self.parse_model_predicates(&query.predicates, &root_model)?;
         let indexed_property = prop_filters
             .iter()
-            .find(|(_, op, _)| *op == CompareOp::Eq)
+            .find(|(_, op, value)| *op == CompareOp::Eq && !value.is_object())
             .map(|(key, _, value)| (key.as_str(), value));
 
         let mut metrics = Vec::new();
@@ -2320,11 +2460,14 @@ impl SessionState {
                 )));
             };
 
-            parsed.push((
-                predicate.field.clone(),
-                predicate.op,
-                field.value_type.parse_value(&predicate.raw_value)?,
-            ));
+            let value = predicate_value(
+                &predicate.value,
+                field.value_type,
+                &predicate.field,
+                "model",
+                &model.name,
+            )?;
+            parsed.push((predicate.field.clone(), predicate.op, value));
         }
         Ok(parsed)
     }
@@ -2366,11 +2509,14 @@ impl SessionState {
                 )));
             };
 
-            parsed.push((
-                predicate.field.clone(),
-                predicate.op,
-                field.value_type.parse_value(&predicate.raw_value)?,
-            ));
+            let value = predicate_value(
+                &predicate.value,
+                field.value_type,
+                &predicate.field,
+                "link",
+                &model.name,
+            )?;
+            parsed.push((predicate.field.clone(), predicate.op, value));
         }
         Ok(parsed)
     }
@@ -2471,18 +2617,18 @@ impl SessionState {
                 )?);
                 continue;
             }
-            query.predicates.push(session_predicate(predicate)?);
+            query.predicates.push(session_predicate(predicate));
         }
         query.end_predicates = request
             .end_predicates
             .iter()
             .map(session_predicate)
-            .collect::<Result<_>>()?;
+            .collect();
         query.edge_predicates = request
             .edge_predicates
             .iter()
             .map(session_predicate)
-            .collect::<Result<_>>()?;
+            .collect();
 
         if query.traversals.is_empty() {
             if !query.end_predicates.is_empty() || !query.edge_predicates.is_empty() {
@@ -2545,7 +2691,7 @@ impl SessionState {
                         field,
                     )?);
                 }
-                _ => query.predicates.push(session_predicate(predicate)?),
+                _ => query.predicates.push(session_predicate(predicate)),
             }
         }
 
@@ -2962,12 +3108,7 @@ fn validate_interchange_value_type(
     field: &RuntimeField,
     value: &Value,
 ) -> Result<()> {
-    let matches = match field.value_type {
-        RuntimeValueType::String => value.is_string(),
-        RuntimeValueType::Int => value.as_i64().is_some(),
-        RuntimeValueType::Float => value.as_f64().is_some(),
-        RuntimeValueType::Bool => value.is_boolean(),
-    };
+    let matches = validate_value_for_kind(field.value_type.into(), value);
     if matches {
         return Ok(());
     }
@@ -3753,14 +3894,11 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         model_name: &str,
         assignments: &[KeyValueArg],
     ) -> Result<StoredNode> {
-        let outcome = self
-            .state
-            .apply_node_create(NodeCreateRequest {
-                model: model_name.to_string(),
-                props: typed_props_from_assignments(assignments),
-            })
-            .await?;
-        let created = outcome.value;
+        let raw_values = collect_assignments(assignments);
+        let created = self.state.create_instance(model_name, &raw_values).await?;
+        let durable_op = DurableOperation::UpsertNode {
+            node: created.clone(),
+        };
         let (model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3773,7 +3911,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .inserted_nodes
             .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit_entry(outcome.durable_op)?;
+        self.persist_autocommit_entry(durable_op)?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(
                 self.writer,
@@ -3820,15 +3958,14 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let raw_id = self
             .state
             .parse_backend_id(id, self.state.node_id_type(), "node id")?;
-        let outcome = self
+        let raw_values = collect_assignments(assignments);
+        let updated = self
             .state
-            .apply_node_update(NodeUpdateRequest {
-                model: model_name.to_string(),
-                id: raw_id,
-                props: typed_props_from_assignments(assignments),
-            })
+            .update_node_instance(model_name, &raw_id.to_string(), &raw_values)
             .await?;
-        let updated = outcome.value;
+        let durable_op = DurableOperation::UpsertNode {
+            node: updated.clone(),
+        };
         let (model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3836,7 +3973,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 .ok_or(crate::GrmError::NotFound)?;
             (model.name.clone(), model.id_field_name.clone())
         };
-        self.persist_autocommit_entry(outcome.durable_op)?;
+        self.persist_autocommit_entry(durable_op)?;
         writeln!(
             self.writer,
             "Updated node {} {}={} {}",
@@ -3930,16 +4067,18 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let to_id = self
             .state
             .parse_backend_id(&to_id, self.state.node_id_type(), "to node")?;
-        let outcome = self
+        let created = self
             .state
-            .apply_edge_create(EdgeCreateRequest {
-                model: model_name.to_string(),
-                from: from_id,
-                to: to_id,
-                props: typed_props_from_raw(values),
-            })
+            .create_relationship_instance(
+                model_name,
+                &from_id.to_string(),
+                &to_id.to_string(),
+                &values,
+            )
             .await?;
-        let created = outcome.value;
+        let durable_op = DurableOperation::UpsertRel {
+            rel: created.clone(),
+        };
         let (rel_type, model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3956,7 +4095,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
             .inserted_edges
             .entry(model_name.clone())
             .or_insert(0) += 1;
-        self.persist_autocommit_entry(outcome.durable_op)?;
+        self.persist_autocommit_entry(durable_op)?;
         if self.output_mode != SessionOutputMode::Script {
             writeln!(
                 self.writer,
@@ -3976,15 +4115,14 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
         let raw_id = self
             .state
             .parse_backend_id(id, self.state.rel_id_type(), "edge id")?;
-        let outcome = self
+        let raw_values = collect_assignments(assignments);
+        let updated = self
             .state
-            .apply_edge_update(EdgeUpdateRequest {
-                model: model_name.to_string(),
-                id: raw_id,
-                props: typed_props_from_assignments(assignments),
-            })
+            .update_relationship_instance(model_name, &raw_id.to_string(), &raw_values)
             .await?;
-        let updated = outcome.value;
+        let durable_op = DurableOperation::UpsertRel {
+            rel: updated.clone(),
+        };
         let (model_name, model_id_field_name) = {
             let model = self
                 .state
@@ -3992,7 +4130,7 @@ impl<R: BufRead, W: Write> CliSession<R, W> {
                 .ok_or(crate::GrmError::NotFound)?;
             (model.name.clone(), model.id_field_name.clone())
         };
-        self.persist_autocommit_entry(outcome.durable_op)?;
+        self.persist_autocommit_entry(durable_op)?;
         writeln!(
             self.writer,
             "Updated edge {} {}={} from={} to={} {}",
@@ -5605,6 +5743,33 @@ fn matches_predicates(
     })
 }
 
+fn validate_update_props(
+    kind: &str,
+    model_name: &str,
+    fields: &[RuntimeField],
+    values: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>> {
+    let mut props = BTreeMap::new();
+    for (key, value) in values {
+        let Some(field) = fields.iter().find(|field| field.name == *key) else {
+            return Err(crate::GrmError::Constraint(format!(
+                "unknown field '{key}' for {kind} '{model_name}'"
+            )));
+        };
+        if !validate_value_for_kind(field.value_type.into(), value) {
+            return Err(crate::GrmError::Constraint(format!(
+                "field '{}' for {} '{}' must be {}",
+                field.name,
+                kind,
+                model_name,
+                field.value_type.keyword()
+            )));
+        }
+        props.insert(key.clone(), value.clone());
+    }
+    Ok(props)
+}
+
 fn predicate_keys(filters: &[(String, CompareOp, Value)]) -> Vec<String> {
     filters.iter().map(|(key, _, _)| key.clone()).collect()
 }
@@ -6076,7 +6241,7 @@ fn parse_node_find_terms(
                 query.end_predicates.push(SessionPredicate {
                     field: field.to_string(),
                     op,
-                    raw_value: raw_value.to_string(),
+                    value: SessionPredicateValue::Lexical(raw_value.to_string()),
                 });
             }
             _ if raw_key.starts_with("edge.") || raw_key.starts_with("rel.") => {
@@ -6088,7 +6253,7 @@ fn parse_node_find_terms(
                 query.edge_predicates.push(SessionPredicate {
                     field: field.to_string(),
                     op,
-                    raw_value: raw_value.to_string(),
+                    value: SessionPredicateValue::Lexical(raw_value.to_string()),
                 });
             }
             _ => {
@@ -6101,7 +6266,7 @@ fn parse_node_find_terms(
                 query.predicates.push(SessionPredicate {
                     field: field.to_string(),
                     op,
-                    raw_value: raw_value.to_string(),
+                    value: SessionPredicateValue::Lexical(raw_value.to_string()),
                 });
             }
         }
@@ -6150,7 +6315,7 @@ fn parse_edge_find_query(
                 query.predicates.push(SessionPredicate {
                     field: field.to_string(),
                     op,
-                    raw_value: raw_value.clone(),
+                    value: SessionPredicateValue::Lexical(raw_value.clone()),
                 });
             }
         }
@@ -6240,12 +6405,33 @@ fn parse_backend_id(raw: &str, id_type: crate::BackendIdType, subject: &str) -> 
     }
 }
 
-fn session_predicate(predicate: &PropertyPredicate) -> Result<SessionPredicate> {
-    Ok(SessionPredicate {
+fn session_predicate(predicate: &PropertyPredicate) -> SessionPredicate {
+    SessionPredicate {
         field: predicate.field.clone(),
         op: predicate.op.into(),
-        raw_value: typed_value_to_raw(&predicate.value)?,
-    })
+        value: SessionPredicateValue::Typed(predicate.value.clone()),
+    }
+}
+
+fn predicate_value(
+    value: &SessionPredicateValue,
+    value_type: RuntimeValueType,
+    field: &str,
+    model_kind: &str,
+    model_name: &str,
+) -> Result<Value> {
+    match value {
+        SessionPredicateValue::Lexical(raw) => value_type.parse_value(raw),
+        SessionPredicateValue::Typed(value)
+            if validate_value_for_kind(value_type.into(), value) =>
+        {
+            Ok(value.clone())
+        }
+        SessionPredicateValue::Typed(_) => Err(crate::GrmError::Constraint(format!(
+            "predicate field '{field}' for {model_kind} '{model_name}' must be {}",
+            value_type.keyword()
+        ))),
+    }
 }
 
 fn session_sort_direction(direction: OrderDirection) -> SortDirection {
@@ -6289,18 +6475,16 @@ fn typed_id_value_to_i64(
     parse_backend_id(&typed_value_to_raw(value)?, id_type, subject)
 }
 
-fn typed_props_to_raw(props: BTreeMap<String, Value>) -> Result<BTreeMap<String, String>> {
-    props
-        .into_iter()
-        .map(|(key, value)| typed_value_to_raw(&value).map(|raw| (key, raw)))
-        .collect()
-}
-
 fn typed_value_to_raw(value: &Value) -> Result<String> {
     match value {
         Value::String(value) => Ok(value.clone()),
         Value::Number(value) => Ok(value.to_string()),
         Value::Bool(value) => Ok(value.to_string()),
+        Value::Object(_) if crate::typed_value_payload(value).is_some() => {
+            Ok(crate::typed_value_payload(value)
+                .unwrap_or_default()
+                .to_string())
+        }
         Value::Null => Err(crate::GrmError::Constraint(
             "null property values are not supported by runtime operations".into(),
         )),
@@ -6311,18 +6495,7 @@ fn typed_value_to_raw(value: &Value) -> Result<String> {
 }
 
 fn compare_values(left: &Value, op: CompareOp, right: &Value) -> bool {
-    match op {
-        CompareOp::Eq => left == right,
-        CompareOp::Ne => left != right,
-        CompareOp::Gt => numeric_cmp(left, right, |a, b| a > b),
-        CompareOp::Ge => numeric_cmp(left, right, |a, b| a >= b),
-        CompareOp::Lt => numeric_cmp(left, right, |a, b| a < b),
-        CompareOp::Le => numeric_cmp(left, right, |a, b| a <= b),
-        CompareOp::Contains => match (left.as_str(), right.as_str()) {
-            (Some(lhs), Some(rhs)) => lhs.contains(rhs),
-            _ => false,
-        },
-    }
+    compare_typed_values(left, op, right)
 }
 
 impl OutputFormat {
@@ -6487,16 +6660,6 @@ fn stored_rel_from_kernel(rel: &crate::dsl::RelValue) -> StoredRel {
     }
 }
 
-fn numeric_cmp<F>(a: &Value, b: &Value, cmp: F) -> bool
-where
-    F: Fn(f64, f64) -> bool,
-{
-    match (a.as_f64(), b.as_f64()) {
-        (Some(la), Some(rb)) => cmp(la, rb),
-        _ => false,
-    }
-}
-
 fn validate_node_order_fields(model: &RuntimeNodeModel, orders: &[SessionOrder]) -> Result<()> {
     for order in orders {
         if order.field == "id" || order.field == model.id_field_name {
@@ -6597,16 +6760,7 @@ fn compare_optional_values(left: Option<&Value>, right: Option<&Value>) -> std::
 }
 
 fn compare_orderable_values(left: &Value, right: &Value) -> std::cmp::Ordering {
-    if let (Some(lhs), Some(rhs)) = (left.as_f64(), right.as_f64()) {
-        return lhs.partial_cmp(&rhs).unwrap_or(std::cmp::Ordering::Equal);
-    }
-    if let (Some(lhs), Some(rhs)) = (left.as_str(), right.as_str()) {
-        return lhs.cmp(rhs);
-    }
-    if let (Some(lhs), Some(rhs)) = (left.as_bool(), right.as_bool()) {
-        return lhs.cmp(&rhs);
-    }
-    format_value(left, &SessionColors::plain()).cmp(&format_value(right, &SessionColors::plain()))
+    compare_typed_value_order(left, right).unwrap_or(std::cmp::Ordering::Equal)
 }
 
 fn apply_offset_limit<T>(items: Vec<T>, offset: Option<usize>, limit: Option<usize>) -> Vec<T> {
@@ -6631,17 +6785,6 @@ fn collect_assignments(assignments: &[KeyValueArg]) -> BTreeMap<String, String> 
         .collect()
 }
 
-fn typed_props_from_assignments(assignments: &[KeyValueArg]) -> BTreeMap<String, Value> {
-    typed_props_from_raw(collect_assignments(assignments))
-}
-
-fn typed_props_from_raw(values: BTreeMap<String, String>) -> BTreeMap<String, Value> {
-    values
-        .into_iter()
-        .map(|(key, value)| (key, Value::String(value)))
-        .collect()
-}
-
 fn field_specs_from_runtime(fields: Vec<RuntimeField>) -> Vec<FieldSpec> {
     fields
         .into_iter()
@@ -6659,6 +6802,12 @@ fn field_value_type_from_runtime(value_type: RuntimeValueType) -> FieldValueType
         RuntimeValueType::Int => FieldValueType::Int,
         RuntimeValueType::Float => FieldValueType::Float,
         RuntimeValueType::Bool => FieldValueType::Bool,
+        RuntimeValueType::Bytes => FieldValueType::Bytes,
+        RuntimeValueType::Decimal => FieldValueType::Decimal,
+        RuntimeValueType::Date => FieldValueType::Date,
+        RuntimeValueType::DateTime => FieldValueType::DateTime,
+        RuntimeValueType::Duration => FieldValueType::Duration,
+        RuntimeValueType::Uuid => FieldValueType::Uuid,
     }
 }
 

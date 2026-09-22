@@ -28,6 +28,7 @@ pub async fn neo4j_node_create(
 ) -> Result<StoredNode> {
     let raw = value_map_to_raw(request.props)?;
     let model = node_model(state, &request.model)?;
+    ensure_neo4j_fields_supported(&model.fields)?;
     let props = model.validate_instance_input(&raw)?;
     let mut tx = client.transaction().await?;
     let node = tx
@@ -45,6 +46,7 @@ pub async fn neo4j_node_update(
 ) -> Result<StoredNode> {
     let raw = value_map_to_raw(request.props)?;
     let model = node_model(state, &request.model)?;
+    ensure_neo4j_fields_supported(&model.fields)?;
     let props = node_update_props(&model, &raw)?;
     let mut tx = client.transaction().await?;
     let node = update_node(&mut tx, request.id, &model, props).await?;
@@ -396,6 +398,7 @@ async fn create_batch_node(
     op: &'static str,
 ) -> Result<BatchApplied> {
     let model = node_model(state, &params.model)?;
+    ensure_neo4j_fields_supported(&model.fields)?;
     let props = model.validate_instance_input(&value_map_to_raw(params.props)?)?;
     let node = tx
         .tx_mut()?
@@ -570,6 +573,7 @@ fn validated_edge_create(
     raw: BTreeMap<String, String>,
 ) -> Result<(RuntimeRelModel, String, String, BTreeMap<String, Value>)> {
     let model = rel_model(state, model_name)?;
+    ensure_neo4j_fields_supported(&model.fields)?;
     let from_label = node_model(state, &model.from_model)?.label;
     let to_label = node_model(state, &model.to_model)?.label;
     let props = model.validate_instance_input(&raw)?;
@@ -629,6 +633,7 @@ fn model_update_props(
                 .ok_or_else(|| {
                     GrmError::Constraint(format!("unknown field '{key}' for model '{model_name}'"))
                 })?;
+            ensure_neo4j_value_type_supported(field.value_type)?;
             Ok((key.clone(), field.value_type.parse_value(value)?))
         })
         .collect()
@@ -659,6 +664,7 @@ fn typed_predicates(
                     predicate.field
                 )));
             }
+            ensure_neo4j_value_type_supported(field.value_type)?;
             let raw = value_map_to_raw(BTreeMap::from([(
                 predicate.field.clone(),
                 predicate.value.clone(),
@@ -669,6 +675,53 @@ fn typed_predicates(
             ))
         })
         .collect()
+}
+
+fn ensure_neo4j_value_type_supported(value_type: RuntimeValueType) -> Result<()> {
+    match value_type {
+        RuntimeValueType::String
+        | RuntimeValueType::Int
+        | RuntimeValueType::Float
+        | RuntimeValueType::Bool => Ok(()),
+        RuntimeValueType::Bytes
+        | RuntimeValueType::Decimal
+        | RuntimeValueType::Date
+        | RuntimeValueType::DateTime
+        | RuntimeValueType::Duration
+        | RuntimeValueType::Uuid => Err(GrmError::NotSupported(
+            "Neo4j runtime primitive preservation for bytes, decimal, date, datetime, duration, and uuid",
+        )),
+    }
+}
+
+fn ensure_neo4j_fields_supported(fields: &[RuntimeField]) -> Result<()> {
+    for field in fields {
+        ensure_neo4j_value_type_supported(field.value_type)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod primitive_support_tests {
+    use super::*;
+
+    #[test]
+    fn new_soml_primitives_have_stable_unsupported_behavior() {
+        for value_type in [
+            RuntimeValueType::Bytes,
+            RuntimeValueType::Decimal,
+            RuntimeValueType::Date,
+            RuntimeValueType::DateTime,
+            RuntimeValueType::Duration,
+            RuntimeValueType::Uuid,
+        ] {
+            let error = ensure_neo4j_value_type_supported(value_type).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "operation not supported by backend: Neo4j runtime primitive preservation for bytes, decimal, date, datetime, duration, and uuid"
+            );
+        }
+    }
 }
 
 fn normalize_model_id_alias(
@@ -846,7 +899,7 @@ fn parse_batch_fields(fields: Vec<SessionBatchFieldParam>) -> Result<Vec<Runtime
             let value_type =
                 RuntimeValueType::parse_keyword(&field.value_type).ok_or_else(|| {
                     GrmError::Constraint(format!(
-                        "unsupported field type '{}', expected one of: string, int, float, bool",
+                        "unsupported field type '{}', expected one of: string, int, float, bool, bytes, decimal, date, datetime, duration, or uuid",
                         field.value_type
                     ))
                 })?;

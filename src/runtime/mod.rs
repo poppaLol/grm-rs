@@ -6,6 +6,7 @@ mod neo4j;
 mod ops;
 mod parser;
 mod session;
+mod value;
 mod workspace;
 
 pub use batch::{
@@ -42,4 +43,8 @@ pub use parser::{
     KeyValueArg, QueryTerm, SessionCommand, parse_command_line, parse_query_terms_from_strs,
 };
 pub use session::{CliSession, SessionCompactSummary, SessionFindResult, SessionState};
+pub use value::{
+    PrimitiveKind, compare_typed_value_order, compare_typed_values, parse_typed_value,
+    typed_json_object, typed_value_kind, typed_value_payload, validate_value_for_kind,
+};
 pub use workspace::Workspace;

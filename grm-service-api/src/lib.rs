@@ -5217,6 +5217,12 @@ pub enum FieldValueType {
     Int,
     Float,
     Bool,
+    Bytes,
+    Decimal,
+    Date,
+    DateTime,
+    Duration,
+    Uuid,
 }
 
 impl TryFrom<FieldValueType> for grm_rs::FieldValueType {
@@ -5231,6 +5237,12 @@ impl TryFrom<FieldValueType> for grm_rs::FieldValueType {
             FieldValueType::Int => Ok(Self::Int),
             FieldValueType::Float => Ok(Self::Float),
             FieldValueType::Bool => Ok(Self::Bool),
+            FieldValueType::Bytes => Ok(Self::Bytes),
+            FieldValueType::Decimal => Ok(Self::Decimal),
+            FieldValueType::Date => Ok(Self::Date),
+            FieldValueType::DateTime => Ok(Self::DateTime),
+            FieldValueType::Duration => Ok(Self::Duration),
+            FieldValueType::Uuid => Ok(Self::Uuid),
         }
     }
 }
@@ -5242,6 +5254,12 @@ impl From<grm_rs::FieldValueType> for FieldValueType {
             grm_rs::FieldValueType::Int => Self::Int,
             grm_rs::FieldValueType::Float => Self::Float,
             grm_rs::FieldValueType::Bool => Self::Bool,
+            grm_rs::FieldValueType::Bytes => Self::Bytes,
+            grm_rs::FieldValueType::Decimal => Self::Decimal,
+            grm_rs::FieldValueType::Date => Self::Date,
+            grm_rs::FieldValueType::DateTime => Self::DateTime,
+            grm_rs::FieldValueType::Duration => Self::Duration,
+            grm_rs::FieldValueType::Uuid => Self::Uuid,
         }
     }
 }
@@ -5587,6 +5605,12 @@ pub enum PropertyValue {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Bytes(Vec<u8>),
+    Decimal(String),
+    Date(String),
+    DateTime(String),
+    Duration(String),
+    Uuid(String),
 }
 
 impl TryFrom<PropertyValue> for Value {
@@ -5600,6 +5624,25 @@ impl TryFrom<PropertyValue> for Value {
                 .map(Self::Number)
                 .ok_or_else(|| grm_rs::GrmError::Constraint("float value must be finite".into()))?,
             PropertyValue::Bool(value) => value.into(),
+            PropertyValue::Bytes(value) => grm_rs::parse_typed_value(
+                grm_rs::PrimitiveKind::Bytes,
+                &base64::engine::general_purpose::STANDARD.encode(value),
+            )?,
+            PropertyValue::Decimal(value) => {
+                grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Decimal, &value)?
+            }
+            PropertyValue::Date(value) => {
+                grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Date, &value)?
+            }
+            PropertyValue::DateTime(value) => {
+                grm_rs::parse_typed_value(grm_rs::PrimitiveKind::DateTime, &value)?
+            }
+            PropertyValue::Duration(value) => {
+                grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Duration, &value)?
+            }
+            PropertyValue::Uuid(value) => {
+                grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Uuid, &value)?
+            }
         })
     }
 }
@@ -5611,6 +5654,51 @@ impl TryFrom<Value> for PropertyValue {
         Ok(match value {
             Value::String(value) => Self::String(value),
             Value::Bool(value) => Self::Bool(value),
+            Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("bytes") => {
+                let raw = grm_rs::typed_value_payload(&value).ok_or_else(|| {
+                    grm_rs::GrmError::Constraint("invalid typed bytes property value".into())
+                })?;
+                Self::Bytes(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(raw)
+                        .map_err(|_| {
+                            grm_rs::GrmError::Constraint(
+                                "invalid typed bytes property value".into(),
+                            )
+                        })?,
+                )
+            }
+            Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("decimal") => {
+                Self::Decimal(
+                    grm_rs::typed_value_payload(&value)
+                        .unwrap_or_default()
+                        .into(),
+                )
+            }
+            Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("date") => Self::Date(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            ),
+            Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("datetime") => {
+                Self::DateTime(
+                    grm_rs::typed_value_payload(&value)
+                        .unwrap_or_default()
+                        .into(),
+                )
+            }
+            Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("duration") => {
+                Self::Duration(
+                    grm_rs::typed_value_payload(&value)
+                        .unwrap_or_default()
+                        .into(),
+                )
+            }
+            Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("uuid") => Self::Uuid(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            ),
             Value::Number(value) => {
                 if let Some(value) = value.as_i64() {
                     Self::Int(value)
@@ -6688,6 +6776,12 @@ impl TryFrom<proto::PropertyValue> for PropertyValue {
             Kind::IntValue(value) => Ok(Self::Int(value)),
             Kind::FloatValue(value) => Ok(Self::Float(value)),
             Kind::BoolValue(value) => Ok(Self::Bool(value)),
+            Kind::BytesValue(value) => Ok(Self::Bytes(value)),
+            Kind::DecimalValue(value) => Ok(Self::Decimal(value)),
+            Kind::DateValue(value) => Ok(Self::Date(value)),
+            Kind::DatetimeValue(value) => Ok(Self::DateTime(value)),
+            Kind::DurationValue(value) => Ok(Self::Duration(value)),
+            Kind::UuidValue(value) => Ok(Self::Uuid(value)),
         }
     }
 }
@@ -6701,6 +6795,12 @@ impl From<PropertyValue> for proto::PropertyValue {
             PropertyValue::Int(value) => Kind::IntValue(value),
             PropertyValue::Float(value) => Kind::FloatValue(value),
             PropertyValue::Bool(value) => Kind::BoolValue(value),
+            PropertyValue::Bytes(value) => Kind::BytesValue(value),
+            PropertyValue::Decimal(value) => Kind::DecimalValue(value),
+            PropertyValue::Date(value) => Kind::DateValue(value),
+            PropertyValue::DateTime(value) => Kind::DatetimeValue(value),
+            PropertyValue::Duration(value) => Kind::DurationValue(value),
+            PropertyValue::Uuid(value) => Kind::UuidValue(value),
         };
         Self { kind: Some(kind) }
     }
@@ -7446,6 +7546,49 @@ fn proto_property_value(value: Value) -> grm_rs::Result<proto::PropertyValue> {
             }
         }
         Value::Bool(value) => Kind::BoolValue(value),
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("bytes") => {
+            let raw = grm_rs::typed_value_payload(&value).ok_or_else(|| {
+                grm_rs::GrmError::Constraint("invalid typed bytes property value".into())
+            })?;
+            Kind::BytesValue(
+                base64::engine::general_purpose::STANDARD
+                    .decode(raw)
+                    .map_err(|_| {
+                        grm_rs::GrmError::Constraint("invalid typed bytes property value".into())
+                    })?,
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("decimal") => {
+            Kind::DecimalValue(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("date") => Kind::DateValue(
+            grm_rs::typed_value_payload(&value)
+                .unwrap_or_default()
+                .into(),
+        ),
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("datetime") => {
+            Kind::DatetimeValue(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("duration") => {
+            Kind::DurationValue(
+                grm_rs::typed_value_payload(&value)
+                    .unwrap_or_default()
+                    .into(),
+            )
+        }
+        Value::Object(_) if grm_rs::typed_value_kind(&value) == Some("uuid") => Kind::UuidValue(
+            grm_rs::typed_value_payload(&value)
+                .unwrap_or_default()
+                .into(),
+        ),
         Value::Null | Value::Array(_) | Value::Object(_) => {
             return Err(grm_rs::GrmError::Constraint(
                 "property value cannot be represented in service proto".into(),
@@ -7737,9 +7880,15 @@ fn batch_fields_to_service_fields(
                     "int" => FieldValueType::Int,
                     "float" => FieldValueType::Float,
                     "bool" => FieldValueType::Bool,
+                    "bytes" => FieldValueType::Bytes,
+                    "decimal" => FieldValueType::Decimal,
+                    "date" => FieldValueType::Date,
+                    "datetime" => FieldValueType::DateTime,
+                    "duration" => FieldValueType::Duration,
+                    "uuid" => FieldValueType::Uuid,
                     other => {
                         return Err(grm_rs::GrmError::Constraint(format!(
-                            "unsupported field type '{other}'; expected string, int, float, or bool"
+                            "unsupported field type '{other}'; expected string, int, float, bool, bytes, decimal, date, datetime, duration, or uuid"
                         )));
                     }
                 },
@@ -7817,6 +7966,12 @@ fn field_value_type_keyword(value_type: FieldValueType) -> grm_rs::Result<&'stat
         FieldValueType::Int => Ok("int"),
         FieldValueType::Float => Ok("float"),
         FieldValueType::Bool => Ok("bool"),
+        FieldValueType::Bytes => Ok("bytes"),
+        FieldValueType::Decimal => Ok("decimal"),
+        FieldValueType::Date => Ok("date"),
+        FieldValueType::DateTime => Ok("datetime"),
+        FieldValueType::Duration => Ok("duration"),
+        FieldValueType::Uuid => Ok("uuid"),
     }
 }
 
@@ -7905,6 +8060,12 @@ fn runtime_value_type_from_proto(
         Some(proto::FieldValueType::Int) => Ok(grm_rs::RuntimeValueType::Int),
         Some(proto::FieldValueType::Float) => Ok(grm_rs::RuntimeValueType::Float),
         Some(proto::FieldValueType::Bool) => Ok(grm_rs::RuntimeValueType::Bool),
+        Some(proto::FieldValueType::Bytes) => Ok(grm_rs::RuntimeValueType::Bytes),
+        Some(proto::FieldValueType::Decimal) => Ok(grm_rs::RuntimeValueType::Decimal),
+        Some(proto::FieldValueType::Date) => Ok(grm_rs::RuntimeValueType::Date),
+        Some(proto::FieldValueType::Datetime) => Ok(grm_rs::RuntimeValueType::DateTime),
+        Some(proto::FieldValueType::Duration) => Ok(grm_rs::RuntimeValueType::Duration),
+        Some(proto::FieldValueType::Uuid) => Ok(grm_rs::RuntimeValueType::Uuid),
         _ => Err(GrpcWorkspaceClientError::Runtime(
             grm_rs::GrmError::Constraint(format!("unknown FieldValueType enum value {value}")),
         )),
@@ -8049,6 +8210,12 @@ fn proto_field_value_type_from_service(value_type: FieldValueType) -> grm_rs::Re
         FieldValueType::Int => proto::FieldValueType::Int as i32,
         FieldValueType::Float => proto::FieldValueType::Float as i32,
         FieldValueType::Bool => proto::FieldValueType::Bool as i32,
+        FieldValueType::Bytes => proto::FieldValueType::Bytes as i32,
+        FieldValueType::Decimal => proto::FieldValueType::Decimal as i32,
+        FieldValueType::Date => proto::FieldValueType::Date as i32,
+        FieldValueType::DateTime => proto::FieldValueType::Datetime as i32,
+        FieldValueType::Duration => proto::FieldValueType::Duration as i32,
+        FieldValueType::Uuid => proto::FieldValueType::Uuid as i32,
     })
 }
 
@@ -8111,6 +8278,12 @@ fn proto_field_value_type(value: i32) -> grm_rs::Result<FieldValueType> {
         proto::FieldValueType::Int => Ok(FieldValueType::Int),
         proto::FieldValueType::Float => Ok(FieldValueType::Float),
         proto::FieldValueType::Bool => Ok(FieldValueType::Bool),
+        proto::FieldValueType::Bytes => Ok(FieldValueType::Bytes),
+        proto::FieldValueType::Decimal => Ok(FieldValueType::Decimal),
+        proto::FieldValueType::Date => Ok(FieldValueType::Date),
+        proto::FieldValueType::Datetime => Ok(FieldValueType::DateTime),
+        proto::FieldValueType::Duration => Ok(FieldValueType::Duration),
+        proto::FieldValueType::Uuid => Ok(FieldValueType::Uuid),
     }
 }
 
@@ -8190,6 +8363,12 @@ fn proto_field_value_type_from_runtime(value_type: grm_rs::RuntimeValueType) -> 
         grm_rs::RuntimeValueType::Int => proto::FieldValueType::Int as i32,
         grm_rs::RuntimeValueType::Float => proto::FieldValueType::Float as i32,
         grm_rs::RuntimeValueType::Bool => proto::FieldValueType::Bool as i32,
+        grm_rs::RuntimeValueType::Bytes => proto::FieldValueType::Bytes as i32,
+        grm_rs::RuntimeValueType::Decimal => proto::FieldValueType::Decimal as i32,
+        grm_rs::RuntimeValueType::Date => proto::FieldValueType::Date as i32,
+        grm_rs::RuntimeValueType::DateTime => proto::FieldValueType::Datetime as i32,
+        grm_rs::RuntimeValueType::Duration => proto::FieldValueType::Duration as i32,
+        grm_rs::RuntimeValueType::Uuid => proto::FieldValueType::Uuid as i32,
     }
 }
 
