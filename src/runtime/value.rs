@@ -202,9 +202,18 @@ fn canonical_datetime_value(input: &str) -> Result<Value> {
     let parsed = DateTime::parse_from_rfc3339(raw).map_err(|_| {
         GrmError::Constraint("expected RFC3339 datetime with explicit offset".into())
     })?;
-    let canonical = parsed
-        .with_timezone(&Utc)
-        .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+    let utc = parsed.with_timezone(&Utc);
+    let canonical = if utc.timestamp_subsec_nanos() == 0 {
+        utc.to_rfc3339_opts(SecondsFormat::Secs, true)
+    } else {
+        let mut value = utc.to_rfc3339_opts(SecondsFormat::Nanos, true);
+        value.pop();
+        while value.ends_with('0') {
+            value.pop();
+        }
+        value.push('Z');
+        value
+    };
     Ok(tagged(PrimitiveKind::DateTime, canonical))
 }
 

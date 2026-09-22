@@ -380,6 +380,35 @@ fn soml_primitive_comparisons_are_type_strict_and_chronological() {
     ));
 }
 
+#[test]
+fn datetime_uses_minimal_exact_fractional_precision() {
+    use grm_rs::{PrimitiveKind, parse_typed_value, validate_value_for_kind};
+
+    for (raw, canonical) in [
+        ("2026-09-22T10:30:00Z", "2026-09-22T10:30:00Z"),
+        ("2026-09-22T10:30:00.100Z", "2026-09-22T10:30:00.1Z"),
+        ("2026-09-22T10:30:00.123456Z", "2026-09-22T10:30:00.123456Z"),
+        (
+            "2026-09-22T11:30:00.123456789+01:00",
+            "2026-09-22T10:30:00.123456789Z",
+        ),
+    ] {
+        assert_eq!(
+            parse_typed_value(PrimitiveKind::DateTime, raw).unwrap(),
+            json!({"$grm_type": "datetime", "value": canonical})
+        );
+    }
+
+    assert!(validate_value_for_kind(
+        PrimitiveKind::DateTime,
+        &json!({"$grm_type": "datetime", "value": "2026-09-22T10:30:00.1Z"})
+    ));
+    assert!(!validate_value_for_kind(
+        PrimitiveKind::DateTime,
+        &json!({"$grm_type": "datetime", "value": "2026-09-22T10:30:00.100Z"})
+    ));
+}
+
 #[tokio::test]
 async fn structured_node_and_edge_ordering_uses_logical_primitive_values() {
     let mut state = SessionState::new();
