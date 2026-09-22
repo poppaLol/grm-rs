@@ -3,25 +3,26 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::value::{PrimitiveKind, parse_typed_value, validate_value_for_kind};
 use crate::{BackendIdType, GrmError, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuntimeValueType {
     String,
     Int,
     Float,
     Bool,
+    Bytes,
+    Decimal,
+    Date,
+    DateTime,
+    Duration,
+    Uuid,
 }
 
 impl RuntimeValueType {
     pub fn parse_keyword(input: &str) -> Option<Self> {
-        match input.trim().to_ascii_lowercase().as_str() {
-            "string" => Some(Self::String),
-            "int" => Some(Self::Int),
-            "float" => Some(Self::Float),
-            "bool" => Some(Self::Bool),
-            _ => None,
-        }
+        PrimitiveKind::parse_keyword(input).map(Self::from)
     }
 
     pub fn keyword(&self) -> &'static str {
@@ -30,28 +31,50 @@ impl RuntimeValueType {
             Self::Int => "int",
             Self::Float => "float",
             Self::Bool => "bool",
+            Self::Bytes => "bytes",
+            Self::Decimal => "decimal",
+            Self::Date => "date",
+            Self::DateTime => "datetime",
+            Self::Duration => "duration",
+            Self::Uuid => "uuid",
         }
     }
 
     pub fn parse_value(&self, input: &str) -> Result<Value> {
-        match self {
-            Self::String => Ok(Value::String(input.to_string())),
-            Self::Int => input
-                .trim()
-                .parse::<i64>()
-                .map(Value::from)
-                .map_err(|_| GrmError::Constraint("expected int value".into())),
-            Self::Float => input
-                .trim()
-                .parse::<f64>()
-                .map(Value::from)
-                .map_err(|_| GrmError::Constraint("expected float value".into())),
-            Self::Bool => input
-                .trim()
-                .to_ascii_lowercase()
-                .parse::<bool>()
-                .map(Value::from)
-                .map_err(|_| GrmError::Constraint("expected bool value (true/false)".into())),
+        parse_typed_value((*self).into(), input)
+    }
+}
+
+impl From<PrimitiveKind> for RuntimeValueType {
+    fn from(kind: PrimitiveKind) -> Self {
+        match kind {
+            PrimitiveKind::String => Self::String,
+            PrimitiveKind::Int => Self::Int,
+            PrimitiveKind::Float => Self::Float,
+            PrimitiveKind::Bool => Self::Bool,
+            PrimitiveKind::Bytes => Self::Bytes,
+            PrimitiveKind::Decimal => Self::Decimal,
+            PrimitiveKind::Date => Self::Date,
+            PrimitiveKind::DateTime => Self::DateTime,
+            PrimitiveKind::Duration => Self::Duration,
+            PrimitiveKind::Uuid => Self::Uuid,
+        }
+    }
+}
+
+impl From<RuntimeValueType> for PrimitiveKind {
+    fn from(value_type: RuntimeValueType) -> Self {
+        match value_type {
+            RuntimeValueType::String => Self::String,
+            RuntimeValueType::Int => Self::Int,
+            RuntimeValueType::Float => Self::Float,
+            RuntimeValueType::Bool => Self::Bool,
+            RuntimeValueType::Bytes => Self::Bytes,
+            RuntimeValueType::Decimal => Self::Decimal,
+            RuntimeValueType::Date => Self::Date,
+            RuntimeValueType::DateTime => Self::DateTime,
+            RuntimeValueType::Duration => Self::Duration,
+            RuntimeValueType::Uuid => Self::Uuid,
         }
     }
 }
@@ -169,6 +192,13 @@ impl RuntimeNodeModel {
 
         Ok(props)
     }
+
+    pub fn validate_instance_props(
+        &self,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<BTreeMap<String, Value>> {
+        validate_props_for_fields("model", &self.name, &self.fields, values)
+    }
 }
 
 impl RuntimeRelModel {
@@ -251,6 +281,54 @@ impl RuntimeRelModel {
 
         Ok(props)
     }
+
+    pub fn validate_instance_props(
+        &self,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<BTreeMap<String, Value>> {
+        validate_props_for_fields("relationship model", &self.name, &self.fields, values)
+    }
+}
+
+fn validate_props_for_fields(
+    kind: &str,
+    model_name: &str,
+    fields: &[RuntimeField],
+    values: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>> {
+    for key in values.keys() {
+        if !fields.iter().any(|field| field.name == *key) {
+            return Err(GrmError::Constraint(format!(
+                "unknown field '{key}' for {kind} '{model_name}'"
+            )));
+        }
+    }
+
+    let mut props = BTreeMap::new();
+    for field in fields {
+        match values.get(&field.name) {
+            Some(value) if validate_value_for_kind(field.value_type.into(), value) => {
+                props.insert(field.name.clone(), value.clone());
+            }
+            Some(_) => {
+                return Err(GrmError::Constraint(format!(
+                    "field '{}' for {} '{}' must be {}",
+                    field.name,
+                    kind,
+                    model_name,
+                    field.value_type.keyword()
+                )));
+            }
+            None if field.required => {
+                return Err(GrmError::Constraint(format!(
+                    "missing required field '{}'",
+                    field.name
+                )));
+            }
+            None => {}
+        }
+    }
+    Ok(props)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

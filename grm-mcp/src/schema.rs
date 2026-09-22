@@ -473,11 +473,21 @@ fn value_to_raw(value: Value) -> GrmResult<String> {
         Value::String(value) => Ok(value),
         Value::Bool(value) => Ok(value.to_string()),
         Value::Number(value) => Ok(value.to_string()),
+        Value::Object(ref object) if object.contains_key("$grm_type") => {
+            grm_rs::typed_value_payload(&Value::Object(object.clone()))
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    GrmError::Constraint(
+                        "typed primitive objects must have '$grm_type' and string 'value' fields"
+                            .into(),
+                    )
+                })
+        }
         Value::Null => Err(GrmError::Constraint(
             "null is not a supported graph value; omit the field instead".into(),
         )),
         Value::Array(_) | Value::Object(_) => Err(GrmError::Constraint(
-            "graph values must be strings, numbers, or booleans".into(),
+            "graph values must be primitive values or canonical typed primitive objects".into(),
         )),
     }
 }

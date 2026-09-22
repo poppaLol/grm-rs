@@ -16,14 +16,54 @@ from typing import (
 )
 
 
+BytesValue = TypedDict(
+    "BytesValue", {"$grm_type": Literal["bytes"], "value": str}
+)
+DecimalValue = TypedDict(
+    "DecimalValue", {"$grm_type": Literal["decimal"], "value": str}
+)
+DateValue = TypedDict(
+    "DateValue", {"$grm_type": Literal["date"], "value": str}
+)
+DateTimeValue = TypedDict(
+    "DateTimeValue", {"$grm_type": Literal["datetime"], "value": str}
+)
+DurationValue = TypedDict(
+    "DurationValue", {"$grm_type": Literal["duration"], "value": str}
+)
+UuidValue = TypedDict(
+    "UuidValue", {"$grm_type": Literal["uuid"], "value": str}
+)
+
+
+TypedPrimitiveValue = Union[
+    BytesValue,
+    DecimalValue,
+    DateValue,
+    DateTimeValue,
+    DurationValue,
+    UuidValue,
+]
 GraphValue = Union[bool, int, float, str]
+PropertyValue = Union[GraphValue, TypedPrimitiveValue]
 JsonScalar = Union[None, GraphValue]
 JsonValue = Union[JsonScalar, List["JsonValue"], Dict[str, "JsonValue"]]
 JsonObject = Dict[str, JsonValue]
 GraphId = int
-PropertyMap = Dict[str, GraphValue]
-FilterMap = Dict[str, GraphValue]
-FieldType = Literal["string", "int", "float", "bool"]
+PropertyMap = Dict[str, PropertyValue]
+FilterMap = Dict[str, PropertyValue]
+FieldType = Literal[
+    "string",
+    "int",
+    "float",
+    "bool",
+    "bytes",
+    "decimal",
+    "date",
+    "datetime",
+    "duration",
+    "uuid",
+]
 IdType = Literal["int", "uuid"]
 TraversalDirection = Literal["out", "outgoing", "in", "incoming", "both"]
 TraversalReturn = Literal["root", "end", "edge", "rel"]

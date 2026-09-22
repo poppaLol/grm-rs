@@ -184,6 +184,12 @@ pub enum FieldValueType {
     Int,
     Float,
     Bool,
+    Bytes,
+    Decimal,
+    Date,
+    DateTime,
+    Duration,
+    Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -506,6 +512,12 @@ impl From<FieldValueType> for RuntimeValueType {
             FieldValueType::Int => Self::Int,
             FieldValueType::Float => Self::Float,
             FieldValueType::Bool => Self::Bool,
+            FieldValueType::Bytes => Self::Bytes,
+            FieldValueType::Decimal => Self::Decimal,
+            FieldValueType::Date => Self::Date,
+            FieldValueType::DateTime => Self::DateTime,
+            FieldValueType::Duration => Self::Duration,
+            FieldValueType::Uuid => Self::Uuid,
         }
     }
 }
@@ -710,6 +722,11 @@ fn value_to_raw(value: &Value) -> Result<String> {
         Value::String(value) => Ok(value.clone()),
         Value::Number(value) => Ok(value.to_string()),
         Value::Bool(value) => Ok(value.to_string()),
+        Value::Object(_) if crate::typed_value_payload(value).is_some() => {
+            Ok(crate::typed_value_payload(value)
+                .unwrap_or_default()
+                .to_string())
+        }
         Value::Null => Err(GrmError::Constraint(
             "null property values are not supported by runtime operations".into(),
         )),
