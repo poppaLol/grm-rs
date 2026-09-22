@@ -25,3 +25,4 @@ Current records:
 - [ADR 0010: Use A GRM-Shaped Local Graph Store For The Flight-Deck](0010-flight-deck-local-graph-store.md)
 - [ADR 0011: Use Passwordless Secured-Local Bootstrap With Editable Access Templates](0011-passwordless-secured-local-bootstrap.md)
 - [ADR 0012: Use Visual Projection Schema While Keeping The Flight-Deck Web-First](0012-visual-projection-schema-and-flight-deck-client-boundary.md)
+- [ADR 0013: Establish SOML Primitive Value Types](0013-establish-soml-primitive-value-types.md)
