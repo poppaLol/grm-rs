@@ -76,6 +76,34 @@ fn proto_contract_compiles_with_codegen() {
 }
 
 #[test]
+fn soml_primitive_proto_values_are_additive_and_typed() {
+    assert_eq!(proto::FieldValueType::String as i32, 1);
+    assert_eq!(proto::FieldValueType::Bool as i32, 4);
+    assert_eq!(proto::FieldValueType::Bytes as i32, 5);
+    assert_eq!(proto::FieldValueType::Uuid as i32, 10);
+
+    let uuid_value: serde_json::Value =
+        svc::PropertyValue::Uuid("123e4567-e89b-12d3-a456-426614174000".into())
+            .try_into()
+            .unwrap();
+    assert_eq!(
+        uuid_value,
+        json!({"$grm_type": "uuid", "value": "123e4567-e89b-12d3-a456-426614174000"})
+    );
+
+    let proto_bytes = proto::PropertyValue {
+        kind: Some(proto::property_value::Kind::BytesValue(vec![1, 2, 3])),
+    };
+    let service_value: svc::PropertyValue = proto_bytes.try_into().unwrap();
+    let json_value: serde_json::Value = service_value.try_into().unwrap();
+    assert_eq!(json_value, json!({"$grm_type": "bytes", "value": "AQID"}));
+
+    let non_finite: grm_rs::Result<serde_json::Value> =
+        svc::PropertyValue::Float(f64::INFINITY).try_into();
+    assert!(non_finite.is_err());
+}
+
+#[test]
 fn proto_contract_keeps_query_typed_instead_of_textual() {
     let joined = all_proto_text();
 
@@ -811,11 +839,18 @@ async fn workspace_client_executes_through_workspace_scope() {
             proto::DefineNodeRequest {
                 name: "ClientUser".into(),
                 id_field: "userId".into(),
-                fields: vec![proto::FieldSpec {
-                    name: "name".into(),
-                    value_type: proto::FieldValueType::String as i32,
-                    required: true,
-                }],
+                fields: vec![
+                    proto::FieldSpec {
+                        name: "name".into(),
+                        value_type: proto::FieldValueType::String as i32,
+                        required: true,
+                    },
+                    proto::FieldSpec {
+                        name: "event_id".into(),
+                        value_type: proto::FieldValueType::Uuid as i32,
+                        required: true,
+                    },
+                ],
             },
         ))
         .await
@@ -828,13 +863,21 @@ async fn workspace_client_executes_through_workspace_scope() {
 
     let created = client
         .execute_proto(proto::runtime_request::Request::CreateNode(
-            proto::NodeCreateRequest {
-                model: "ClientUser".into(),
-                props: Some(proto_property_map([(
-                    "name",
-                    proto::property_value::Kind::StringValue("Ada".into()),
-                )])),
-            },
+            node_create_proto(
+                "ClientUser",
+                [
+                    (
+                        "name",
+                        proto::property_value::Kind::StringValue("Ada".into()),
+                    ),
+                    (
+                        "event_id",
+                        proto::property_value::Kind::UuidValue(
+                            "123e4567-e89b-12d3-a456-426614174000".into(),
+                        ),
+                    ),
+                ],
+            ),
         ))
         .await
         .unwrap();
@@ -857,6 +900,17 @@ async fn workspace_client_executes_through_workspace_scope() {
         .await
         .unwrap();
     assert_eq!(node_string_props(found, "name"), vec!["Ada"]);
+
+    let found = reopened
+        .execute_proto(proto::runtime_request::Request::FindNodes(
+            find_nodes_by_id_proto("ClientUser", node_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        node_uuid_props(found, "event_id"),
+        vec!["123e4567-e89b-12d3-a456-426614174000"]
+    );
 
     reopened.close().await.unwrap();
     shutdown_tx.send(()).unwrap();
@@ -1937,6 +1991,31 @@ fn node_string_props(response: proto::WorkspaceRuntimeResponse, field: &str) -> 
         .nodes
         .into_iter()
         .filter_map(|node| proto_string_prop(node.props, field))
+        .collect()
+}
+
+fn node_uuid_props(response: proto::WorkspaceRuntimeResponse, field: &str) -> Vec<String> {
+    let Some(proto::runtime_response::Response::FindNodes(response)) =
+        response.response.and_then(|response| response.response)
+    else {
+        panic!("expected generated NodeFind response");
+    };
+
+    response
+        .nodes
+        .into_iter()
+        .filter_map(|node| {
+            node.props?
+                .properties
+                .into_iter()
+                .find(|property| property.name == field)?
+                .value?
+                .kind
+                .and_then(|kind| match kind {
+                    proto::property_value::Kind::UuidValue(value) => Some(value),
+                    _ => None,
+                })
+        })
         .collect()
 }
 

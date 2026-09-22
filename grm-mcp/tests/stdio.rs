@@ -1281,6 +1281,50 @@ async fn find_tools_accept_adapter_filters_through_public_mcp_surface() {
 }
 
 #[tokio::test]
+async fn soml_primitive_values_round_trip_through_public_mcp_surface() {
+    let client = client(&[]).await;
+    let event_id = json!({
+        "$grm_type": "uuid",
+        "value": "123e4567-e89b-12d3-a456-426614174000"
+    });
+
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "Evidence",
+            "id_field": "evidenceId",
+            "fields": [
+                { "name": "event_id", "type": "uuid", "required": true },
+                { "name": "amount", "type": "decimal", "required": true }
+            ]
+        }),
+    )
+    .await;
+    let created = call(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "Evidence",
+            "props": {
+                "event_id": event_id,
+                "amount": { "$grm_type": "decimal", "value": "12.5" }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(created["props"]["event_id"], event_id);
+
+    let found = call(&client, "grm_node_find", json!({ "model": "Evidence" })).await;
+    assert_eq!(
+        found["nodes"][0]["props"]["event_id"], event_id,
+        "unexpected MCP find response: {found}"
+    );
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn batch_tools_expose_structured_operation_objects() {
     let client = client(&[]).await;
     let tools = client.list_tools(None).await.expect("list tools");

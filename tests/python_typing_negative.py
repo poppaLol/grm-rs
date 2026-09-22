@@ -19,6 +19,10 @@ def rejects_structured_graph_values(session: WorkspaceGraphSession) -> None:
         "User",
         {"metadata": {"active": True}},  # pyright: ignore[reportArgumentType]
     )
+    session.node_create(
+        "User",
+        {"metadata": {"metadata": "anything"}},  # pyright: ignore[reportArgumentType]
+    )
 
 
 def rejects_non_atomic_portable_batch(session: GraphSession) -> None:

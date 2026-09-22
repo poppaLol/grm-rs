@@ -4,8 +4,9 @@ use std::io::{Cursor, Write};
 
 use grm_rs::{
     BackendIdType, BatchRequest, CliSession, DefineEdgeRequest, DefineNodeRequest,
-    DurabilityFormat, DurableOperation, EdgeFindRequest, EdgeRequest, EdgeResponse, ExplainRequest,
-    FieldSpec, FieldValueType, GraphTx, NodeFindRequest, NodeRequest, NodeResponse, PredicateOp,
+    DurabilityFormat, DurableOperation, EdgeCreateRequest, EdgeFindRequest, EdgeRequest,
+    EdgeResponse, ExplainRequest, FieldSpec, FieldValueType, GraphTx, NodeCreateRequest,
+    NodeFindRequest, NodeRequest, NodeResponse, OrderDirection, OrderSpec, PredicateOp,
     ProfileRequest, PropertyPredicate, QueryRequest, QueryTerm, RuntimeField, RuntimeNodeModel,
     RuntimeRelModel, RuntimeRequest, RuntimeResponse, RuntimeValueType, SchemaRequest,
     SchemaResponse, SessionBatchResponse, SessionFindResult, SessionModelCatalog, SessionState,
@@ -198,6 +199,449 @@ fn scalar_field_types_are_parsed() {
         RuntimeValueType::parse_keyword("bool"),
         Some(RuntimeValueType::Bool)
     );
+    assert_eq!(
+        RuntimeValueType::parse_keyword("uuid"),
+        Some(RuntimeValueType::Uuid)
+    );
+    assert_eq!(
+        RuntimeValueType::parse_keyword("datetime"),
+        Some(RuntimeValueType::DateTime)
+    );
+}
+
+#[tokio::test]
+async fn soml_primitive_values_validate_compare_and_reopen() {
+    let mut state = SessionState::new();
+    state
+        .apply_define_node(DefineNodeRequest {
+            name: "Evidence".into(),
+            id_field: "evidenceId".into(),
+            fields: vec![
+                field("blob", FieldValueType::Bytes, true),
+                field("amount", FieldValueType::Decimal, true),
+                field("observed_on", FieldValueType::Date, true),
+                field("observed_at", FieldValueType::DateTime, true),
+                field("elapsed", FieldValueType::Duration, true),
+                field("event_id", FieldValueType::Uuid, true),
+            ],
+        })
+        .unwrap();
+
+    let props = BTreeMap::from([
+        (
+            "blob".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Bytes, "AQID").unwrap(),
+        ),
+        (
+            "amount".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Decimal, "123.45").unwrap(),
+        ),
+        (
+            "observed_on".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Date, "2026-09-21").unwrap(),
+        ),
+        (
+            "observed_at".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::DateTime, "2026-09-21T10:30:00+01:00")
+                .unwrap(),
+        ),
+        (
+            "elapsed".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Duration, "PT1.5S").unwrap(),
+        ),
+        (
+            "event_id".into(),
+            grm_rs::parse_typed_value(
+                grm_rs::PrimitiveKind::Uuid,
+                "123e4567-e89b-12d3-a456-426614174000",
+            )
+            .unwrap(),
+        ),
+    ]);
+
+    let created = state
+        .apply_node_create(grm_rs::NodeCreateRequest {
+            model: "Evidence".into(),
+            props: props.clone(),
+        })
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(created.props["event_id"], props["event_id"]);
+    assert_eq!(
+        created.props["observed_at"],
+        json!({"$grm_type": "datetime", "value": "2026-09-21T09:30:00Z"})
+    );
+
+    let found = state
+        .node_find_response(NodeFindRequest {
+            model: "Evidence".into(),
+            predicates: vec![PropertyPredicate {
+                field: "amount".into(),
+                op: PredicateOp::Ge,
+                value: grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Decimal, "100").unwrap(),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(found.nodes.len(), 1);
+
+    let found = state
+        .node_find_response(
+            NodeFindRequest::from_adapter_filter_values(
+                "Evidence",
+                BTreeMap::from([("event_id".into(), props["event_id"].clone())]),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.nodes.len(), 1);
+
+    let mut invalid_props = props.clone();
+    invalid_props.insert(
+        "event_id".into(),
+        json!({"$grm_type": "uuid", "value": "not-a-uuid"}),
+    );
+    let err = state
+        .apply_node_create(grm_rs::NodeCreateRequest {
+            model: "Evidence".into(),
+            props: invalid_props,
+        })
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("must be uuid"));
+
+    for format in [DurabilityFormat::Json, DurabilityFormat::Binary] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(match format {
+            DurabilityFormat::Json => "typed-session.json",
+            DurabilityFormat::Binary => "typed-session.bin",
+        });
+        state.checkpoint_durable(format, &path).unwrap();
+
+        let mut reopened = SessionState::new();
+        reopened.recover_durable(format, &path).unwrap();
+        let nodes = reopened.find_nodes("Evidence", &BTreeMap::new()).unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].props["event_id"], props["event_id"]);
+        assert_eq!(nodes[0].props["blob"], props["blob"]);
+    }
+}
+
+#[tokio::test]
+async fn soml_primitive_values_reject_invalid_canonical_forms() {
+    for (kind, raw) in [
+        (grm_rs::PrimitiveKind::Bytes, "AQI"),
+        (grm_rs::PrimitiveKind::Decimal, "01.20"),
+        (grm_rs::PrimitiveKind::Date, "2026-9-21"),
+        (grm_rs::PrimitiveKind::DateTime, "2026-09-21T10:30:00"),
+        (grm_rs::PrimitiveKind::Duration, "P1D"),
+        (grm_rs::PrimitiveKind::Duration, "PT01S"),
+        (
+            grm_rs::PrimitiveKind::Uuid,
+            "123E4567-E89B-12D3-A456-426614174000",
+        ),
+    ] {
+        assert!(
+            grm_rs::parse_typed_value(kind, raw).is_err(),
+            "{kind:?} {raw} should be rejected"
+        );
+    }
+    assert!(grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Float, "NaN").is_err());
+    assert!(grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Float, "inf").is_err());
+}
+
+#[test]
+fn soml_primitive_comparisons_are_type_strict_and_chronological() {
+    use grm_rs::{CompareOp, PrimitiveKind, compare_typed_values, parse_typed_value};
+
+    let integer = json!(1);
+    let float = json!(1.0);
+    assert!(!grm_rs::validate_value_for_kind(
+        PrimitiveKind::Float,
+        &integer
+    ));
+    assert!(grm_rs::validate_value_for_kind(
+        PrimitiveKind::Float,
+        &float
+    ));
+    assert!(!compare_typed_values(&integer, CompareOp::Eq, &float));
+    assert!(!compare_typed_values(&integer, CompareOp::Ne, &float));
+    assert!(!compare_typed_values(&integer, CompareOp::Lt, &json!(1.5)));
+
+    let whole_second = parse_typed_value(PrimitiveKind::DateTime, "2026-09-21T10:30:00Z").unwrap();
+    let fractional = parse_typed_value(PrimitiveKind::DateTime, "2026-09-21T10:30:00.1Z").unwrap();
+    assert!(compare_typed_values(
+        &whole_second,
+        CompareOp::Lt,
+        &fractional
+    ));
+}
+
+#[tokio::test]
+async fn structured_node_and_edge_ordering_uses_logical_primitive_values() {
+    let mut state = SessionState::new();
+    state
+        .apply_define_node(DefineNodeRequest {
+            name: "Metric".into(),
+            id_field: "metricId".into(),
+            fields: vec![
+                field("amount", FieldValueType::Decimal, true),
+                field("observed_at", FieldValueType::DateTime, true),
+                field("elapsed", FieldValueType::Duration, true),
+            ],
+        })
+        .unwrap();
+    for name in ["Source", "Target"] {
+        state
+            .apply_define_node(DefineNodeRequest {
+                name: name.into(),
+                id_field: format!("{}Id", name.to_ascii_lowercase()),
+                fields: vec![],
+            })
+            .unwrap();
+    }
+    state
+        .apply_define_edge(DefineEdgeRequest {
+            name: "Measured".into(),
+            from_model: "Source".into(),
+            to_model: "Target".into(),
+            id_field: "measuredId".into(),
+            fields: vec![
+                field("amount", FieldValueType::Decimal, true),
+                field("observed_at", FieldValueType::DateTime, true),
+                field("elapsed", FieldValueType::Duration, true),
+            ],
+        })
+        .unwrap();
+
+    let later = BTreeMap::from([
+        (
+            "amount".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Decimal, "10").unwrap(),
+        ),
+        (
+            "observed_at".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::DateTime, "2026-09-21T10:30:00.1Z")
+                .unwrap(),
+        ),
+        (
+            "elapsed".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Duration, "PT10S").unwrap(),
+        ),
+    ]);
+    let earlier = BTreeMap::from([
+        (
+            "amount".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Decimal, "2").unwrap(),
+        ),
+        (
+            "observed_at".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::DateTime, "2026-09-21T10:30:00Z")
+                .unwrap(),
+        ),
+        (
+            "elapsed".into(),
+            grm_rs::parse_typed_value(grm_rs::PrimitiveKind::Duration, "PT2S").unwrap(),
+        ),
+    ]);
+
+    let later_node = state
+        .apply_node_create(NodeCreateRequest {
+            model: "Metric".into(),
+            props: later.clone(),
+        })
+        .await
+        .unwrap()
+        .value;
+    let earlier_node = state
+        .apply_node_create(NodeCreateRequest {
+            model: "Metric".into(),
+            props: earlier.clone(),
+        })
+        .await
+        .unwrap()
+        .value;
+
+    for order_field in ["amount", "observed_at", "elapsed"] {
+        let found = state
+            .node_find_response(NodeFindRequest {
+                model: "Metric".into(),
+                order: vec![OrderSpec {
+                    field: order_field.into(),
+                    direction: OrderDirection::Asc,
+                }],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            found.nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+            vec![earlier_node.id, later_node.id],
+            "node order for {order_field}"
+        );
+    }
+
+    let source = state
+        .apply_node_create(NodeCreateRequest {
+            model: "Source".into(),
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap()
+        .value;
+    let target = state
+        .apply_node_create(NodeCreateRequest {
+            model: "Target".into(),
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap()
+        .value;
+    let later_edge = state
+        .apply_edge_create(EdgeCreateRequest {
+            model: "Measured".into(),
+            from: source.id,
+            to: target.id,
+            props: later,
+        })
+        .await
+        .unwrap()
+        .value;
+    let earlier_edge = state
+        .apply_edge_create(EdgeCreateRequest {
+            model: "Measured".into(),
+            from: source.id,
+            to: target.id,
+            props: earlier,
+        })
+        .await
+        .unwrap()
+        .value;
+
+    for order_field in ["amount", "observed_at", "elapsed"] {
+        let found = state
+            .edge_find_response(EdgeFindRequest {
+                model: "Measured".into(),
+                order: vec![OrderSpec {
+                    field: order_field.into(),
+                    direction: OrderDirection::Asc,
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            found.edges.iter().map(|edge| edge.id).collect::<Vec<_>>(),
+            vec![earlier_edge.id, later_edge.id],
+            "edge order for {order_field}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn structured_predicates_reject_implicit_numeric_coercion() {
+    let mut state = SessionState::new();
+    state
+        .apply_define_node(DefineNodeRequest {
+            name: "Reading".into(),
+            id_field: "readingId".into(),
+            fields: vec![field("value", FieldValueType::Float, true)],
+        })
+        .unwrap();
+    state
+        .apply_node_create(NodeCreateRequest {
+            model: "Reading".into(),
+            props: BTreeMap::from([("value".into(), json!(1.0))]),
+        })
+        .await
+        .unwrap();
+
+    let error = state
+        .node_find_response(NodeFindRequest {
+            model: "Reading".into(),
+            predicates: vec![PropertyPredicate {
+                field: "value".into(),
+                op: PredicateOp::Eq,
+                value: json!(1),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "constraint violation: predicate field 'value' for model 'Reading' must be float"
+    );
+
+    for name in ["Meter", "Sample"] {
+        state
+            .apply_define_node(DefineNodeRequest {
+                name: name.into(),
+                id_field: format!("{}Id", name.to_ascii_lowercase()),
+                fields: vec![],
+            })
+            .unwrap();
+    }
+    state
+        .apply_define_edge(DefineEdgeRequest {
+            name: "Recorded".into(),
+            from_model: "Meter".into(),
+            to_model: "Sample".into(),
+            id_field: "recordedId".into(),
+            fields: vec![field("value", FieldValueType::Float, true)],
+        })
+        .unwrap();
+    let meter = state
+        .apply_node_create(NodeCreateRequest {
+            model: "Meter".into(),
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap()
+        .value;
+    let sample = state
+        .apply_node_create(NodeCreateRequest {
+            model: "Sample".into(),
+            props: BTreeMap::new(),
+        })
+        .await
+        .unwrap()
+        .value;
+    state
+        .apply_edge_create(EdgeCreateRequest {
+            model: "Recorded".into(),
+            from: meter.id,
+            to: sample.id,
+            props: BTreeMap::from([("value".into(), json!(1.0))]),
+        })
+        .await
+        .unwrap();
+
+    let error = state
+        .edge_find_response(EdgeFindRequest {
+            model: "Recorded".into(),
+            predicates: vec![PropertyPredicate {
+                field: "value".into(),
+                op: PredicateOp::Eq,
+                value: json!(1),
+            }],
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "constraint violation: predicate field 'value' for link 'Recorded' must be float"
+    );
+}
+
+fn field(name: &str, value_type: FieldValueType, required: bool) -> FieldSpec {
+    FieldSpec {
+        name: name.into(),
+        value_type,
+        required,
+    }
 }
 
 #[tokio::test]
@@ -3100,11 +3544,11 @@ async fn session_import_rejects_invalid_interchange_headers() {
 #[tokio::test]
 async fn session_import_rejects_invalid_interchange_schema() {
     let mut document = valid_interchange_document();
-    document["schema"]["nodes"][0]["fields"][0]["type"] = json!("date");
+    document["schema"]["nodes"][0]["fields"][0]["type"] = json!("time");
     assert_import_contract_error(
         "unsupported-field-type",
         document,
-        "constraint violation: unsupported import field type 'date'",
+        "constraint violation: unsupported import field type 'time'",
     )
     .await;
 
