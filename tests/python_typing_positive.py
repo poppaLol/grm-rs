@@ -12,11 +12,16 @@ from grm_rs import (
     Session,
     WorkspaceGraphSession,
 )
+from grm_rs.typing import UuidValue
 
 
 FIELDS: Sequence[FieldDefinition] = [
     {"name": "name", "type": "string", "required": True},
 ]
+UUID_VALUE: UuidValue = {
+    "$grm_type": "uuid",
+    "value": "123e4567-e89b-12d3-a456-426614174000",
+}
 
 
 class TypedUser:

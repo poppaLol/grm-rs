@@ -174,6 +174,52 @@ def main() -> None:
         )
         assert len(same_path_reopened.node_find("User", {"name": "Alice"})) == 1
 
+        primitive_path = Path(tmpdir) / "primitive-session.json"
+        primitive_session = Session(
+            autocommit=True,
+            autocommit_path=str(primitive_path),
+        )
+        primitive_session.model_create(
+            "PrimitiveEvidence",
+            "evidenceId",
+            [
+                {"name": "event_id", "type": "uuid", "required": True},
+                {"name": "amount", "type": "decimal", "required": True},
+                {"name": "observed_at", "type": "datetime", "required": True},
+            ],
+        )
+        event_id = {
+            "$grm_type": "uuid",
+            "value": "123e4567-e89b-12d3-a456-426614174000",
+        }
+        evidence = primitive_session.node_create(
+            "PrimitiveEvidence",
+            {
+                "event_id": event_id,
+                "amount": {"$grm_type": "decimal", "value": "12.5"},
+                "observed_at": {
+                    "$grm_type": "datetime",
+                    "value": "2026-09-21T09:30:00Z",
+                },
+            },
+        )
+        updated = primitive_session.node_update(
+            "PrimitiveEvidence",
+            evidence["id"],
+            {"amount": {"$grm_type": "decimal", "value": "13.25"}},
+        )
+        assert updated["props"]["amount"]["value"] == "13.25"
+        assert primitive_session.node_find(
+            "PrimitiveEvidence", {"event_id": event_id}
+        )[0]["props"]["event_id"] == event_id
+        reopened_primitives = Session(
+            autocommit=True,
+            autocommit_path=str(primitive_path),
+        )
+        assert reopened_primitives.node_find(
+            "PrimitiveEvidence", {"event_id": event_id}
+        )[0]["props"]["amount"]["value"] == "13.25"
+
         export_path = Path(tmpdir) / "interchange.json"
         session.export_json(str(export_path))
         exported = json.loads(export_path.read_text())
