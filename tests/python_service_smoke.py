@@ -1,3 +1,4 @@
+import os
 import socket
 import subprocess
 import time
@@ -8,6 +9,9 @@ from typing import cast
 from grm_rs import Edge, ServiceSession, WorkspaceGraphSession
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -15,10 +19,17 @@ def free_port() -> int:
         return address[1]
 
 
-def wait_for_service(endpoint: str, workspace_ref: str) -> None:
+def wait_for_service(
+    endpoint: str, workspace_ref: str, server: subprocess.Popen[str]
+) -> None:
     deadline = time.monotonic() + 15
     last_error = None
     while time.monotonic() < deadline:
+        if server.poll() is not None:
+            stdout, stderr = server.communicate()
+            raise RuntimeError(
+                f"service exited with {server.returncode}:\n{stdout}{stderr}"
+            )
         try:
             ServiceSession(
                 endpoint=endpoint,
@@ -33,20 +44,32 @@ def wait_for_service(endpoint: str, workspace_ref: str) -> None:
 
 
 def main() -> None:
+    subprocess.run(
+        [
+            "cargo",
+            "build",
+            "-p",
+            "grm-service-api",
+            "--bin",
+            "grm-local-workspace-server",
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
+    if not target_dir.is_absolute():
+        target_dir = ROOT / target_dir
+    server_binary = target_dir / "debug" / "grm-local-workspace-server"
+
     with TemporaryDirectory() as tmpdir:
         port = free_port()
         endpoint = f"http://127.0.0.1:{port}"
         root = Path(tmpdir) / "workspaces"
         root.mkdir()
+        root.chmod(0o700)
         server = subprocess.Popen(
             [
-                "cargo",
-                "run",
-                "-p",
-                "grm-service-api",
-                "--bin",
-                "grm-local-workspace-server",
-                "--",
+                str(server_binary),
                 f"127.0.0.1:{port}",
                 str(root),
             ],
@@ -55,7 +78,7 @@ def main() -> None:
             text=True,
         )
         try:
-            wait_for_service(endpoint, "python-service-ready")
+            wait_for_service(endpoint, "python-service-ready", server)
             session = ServiceSession(
                 endpoint=endpoint,
                 workspace_ref="python-service-smoke",
