@@ -8,7 +8,7 @@ SOML types should not be limited to basic storage values such as `string` and `n
 
 The goal is not to build a full programming language immediately. The goal is to define a practical type vocabulary that can grow from simple schema validation into richer graph-resident operational semantics.
 
-This is not an implementation claim. Current GRM runtime schema supports a much smaller field type set, and richer SOML primitive, generic, sensitive, attested, and graph-native types should become product claims only after runtime/service surfaces and tests make them true.
+This document remains exploratory rather than a blanket implementation claim. ADR 0013 now establishes the operational primitive foundation for `string`, `bool`, signed 64-bit `int`, finite binary64 `float`, `bytes`, `decimal`, `date`, `datetime`, `duration`, and `uuid`; the richer generic, sensitive, attested, refinement, and graph-native material below remains design direction until runtime/service surfaces and tests make it true.
 
 ---
 
