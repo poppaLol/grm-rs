@@ -1412,6 +1412,166 @@ async fn neo4j_batch_defines_schema_creates_graph_and_finds_records() {
 }
 
 #[tokio::test]
+#[ignore = "requires a running Neo4j Bolt endpoint and NEO4J_* env vars"]
+async fn neo4j_mcp_round_trips_extended_primitives() {
+    let Some(client) = neo4j_client().await else {
+        eprintln!(
+            "skipping Neo4j MCP primitive smoke test; set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD"
+        );
+        return;
+    };
+    let smoke_id = unique_smoke_id();
+    let event_id = json!({ "$grm_type": "uuid", "value": "123e4567-e89b-12d3-a456-426614174000" });
+
+    let result = call(
+        &client,
+        "grm_batch_write",
+        json!({
+            "atomic": true,
+            "response": "detailed",
+            "ops": [
+                {
+                    "op": "schema_define_node",
+                    "args": {
+                        "name": "GrmMcpPrimitiveEvent",
+                        "id_field": "eventId",
+                        "fields": [
+                            { "name": "smoke_id", "type": "string", "required": true },
+                            { "name": "event_id", "type": "uuid", "required": true },
+                            { "name": "amount", "type": "decimal", "required": true },
+                            { "name": "captured_on", "type": "date", "required": true },
+                            { "name": "observed_at", "type": "datetime", "required": true },
+                            { "name": "duration", "type": "duration", "required": true },
+                            { "name": "payload", "type": "bytes", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "schema_define_edge",
+                    "args": {
+                        "name": "GRM_MCP_PRIMITIVE_LINK",
+                        "from_model": "GrmMcpPrimitiveEvent",
+                        "to_model": "GrmMcpPrimitiveEvent",
+                        "id_field": "linkId",
+                        "fields": [
+                            { "name": "smoke_id", "type": "string", "required": true },
+                            { "name": "amount", "type": "decimal", "required": true },
+                            { "name": "duration", "type": "duration", "required": true }
+                        ]
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "first",
+                        "model": "GrmMcpPrimitiveEvent",
+                        "props": {
+                            "smoke_id": smoke_id,
+                            "event_id": event_id,
+                            "amount": { "$grm_type": "decimal", "value": "12.5" },
+                            "captured_on": { "$grm_type": "date", "value": "2026-09-21" },
+                            "observed_at": { "$grm_type": "datetime", "value": "2026-09-21T09:30:00Z" },
+                            "duration": { "$grm_type": "duration", "value": "PT1.5S" },
+                            "payload": { "$grm_type": "bytes", "value": "AQID" }
+                        }
+                    }
+                },
+                {
+                    "op": "node_create",
+                    "args": {
+                        "ref": "second",
+                        "model": "GrmMcpPrimitiveEvent",
+                        "props": {
+                            "smoke_id": smoke_id,
+                            "event_id": event_id,
+                            "amount": { "$grm_type": "decimal", "value": "2" },
+                            "captured_on": { "$grm_type": "date", "value": "2026-09-21" },
+                            "observed_at": { "$grm_type": "datetime", "value": "2026-09-21T09:29:00Z" },
+                            "duration": { "$grm_type": "duration", "value": "PT0.5S" },
+                            "payload": { "$grm_type": "bytes", "value": "AQID" }
+                        }
+                    }
+                },
+                {
+                    "op": "edge_create",
+                    "args": {
+                        "model": "GRM_MCP_PRIMITIVE_LINK",
+                        "from": "first",
+                        "to": "second",
+                        "props": {
+                            "smoke_id": smoke_id,
+                            "amount": { "$grm_type": "decimal", "value": "8.25" },
+                            "duration": { "$grm_type": "duration", "value": "PT2S" }
+                        }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(result["applied"], json!(true));
+    let first_id = result["ids"][0]["id"].as_i64().unwrap();
+    let edge_id = result["ids"][2]["id"].as_i64().unwrap();
+
+    let found = call(
+        &client,
+        "grm_node_find",
+        json!({
+            "model": "GrmMcpPrimitiveEvent",
+            "filters": {
+                "smoke_id": smoke_id,
+                "amount>": { "$grm_type": "decimal", "value": "10" },
+                "order": "observed_at:asc"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(found["nodes"][0]["id"], json!(first_id));
+    assert_eq!(found["nodes"][0]["props"]["event_id"], event_id);
+    assert_eq!(
+        found["nodes"][0]["props"]["amount"],
+        json!({ "$grm_type": "decimal", "value": "12.5" })
+    );
+
+    let updated = call(
+        &client,
+        "grm_node_update",
+        json!({
+            "model": "GrmMcpPrimitiveEvent",
+            "id": first_id,
+            "props": { "duration": { "$grm_type": "duration", "value": "PT3S" } }
+        }),
+    )
+    .await;
+    assert_eq!(
+        updated["props"]["duration"],
+        json!({ "$grm_type": "duration", "value": "PT3S" })
+    );
+
+    let edges = call(
+        &client,
+        "grm_edge_find",
+        json!({
+            "model": "GRM_MCP_PRIMITIVE_LINK",
+            "filters": {
+                "id": edge_id,
+                "duration>": { "$grm_type": "duration", "value": "PT1S" }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(edges["edges"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        edges["edges"][0]["props"]["duration"],
+        json!({ "$grm_type": "duration", "value": "PT2S" })
+    );
+
+    client.cancel().await.unwrap();
+    cleanup_neo4j_smoke_graph(&smoke_id).await;
+}
+
+#[tokio::test]
 async fn initialize_reports_grm_mcp_package_version() {
     let client = client(&[]).await;
     let info = client.peer_info().expect("server initialize info");
