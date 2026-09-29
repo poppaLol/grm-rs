@@ -509,6 +509,19 @@ fn neo4j_backend_status_value(
                 "explain/profile",
                 "traversal/query parity"
             ],
+            "primitive_property_support": {
+                "string": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering", "contains_predicate"],
+                "bool": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "int": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "float": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "bytes": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "decimal": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "date": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "datetime": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "duration": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"],
+                "uuid": ["create", "read", "update", "equality_predicate", "comparison_predicate", "ordering"]
+            },
+            "primitive_property_note": "Neo4j mode stores extended SOML primitive payloads as schema-aware scalar properties and reconstructs canonical tagged GRM values on schema-aware reads; this is not raw Cypher/query parity.",
             "supported_orientation_resources": ["grm://backend/status", "grm://graph/summary"],
             "future_orientation_tools": ["grm_schema_introspect"]
         },
