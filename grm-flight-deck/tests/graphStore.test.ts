@@ -192,6 +192,16 @@ test("scrubs credential-bearing service URLs before browser persistence", () => 
   assert.equal(persistedUrl.includes("admin"), false);
   assert.equal(persistedUrl.includes("secret"), false);
   assert.equal(persistedUrl.includes("token"), false);
+
+  store.updateSettings({
+    serviceBaseUrl: "https://admin:secret@127.0.0.1:3001/client.key?token=abc#fingerprint"
+  });
+  store.saveCurrentProfile();
+  const secretPathUrl = JSON.parse(storage.getItem(STORE_STORAGE_KEY) ?? "{}").profiles[0].settings.serviceBaseUrl;
+
+  assert.equal(secretPathUrl, "https://127.0.0.1:3001");
+  assert.equal(secretPathUrl.includes("client.key"), false);
+  assert.equal(secretPathUrl.includes("fingerprint"), false);
 });
 
 test("can create a second selected connection profile from draft settings", () => {
