@@ -960,7 +960,7 @@ export function App() {
   const [schemaPanelOpen, setSchemaPanelOpen] = useState(false);
   const [selectionPanelOpen, setSelectionPanelOpen] = useState(false);
   const [projectionOverlay, setProjectionOverlay] = useState(() =>
-    emptyVisualProjectionOverlay(graphStore.getState().selectedProfileId, graphStore.getState().settings.workspace)
+    readVisualProjectionOverlay(window.localStorage, graphStore.getState().selectedProfileId, graphStore.getState().settings.workspace)
   );
   const fixtureAutoLoaded = useRef(false);
 

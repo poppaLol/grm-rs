@@ -848,12 +848,20 @@ function sanitizeServiceBaseUrl(value: unknown): string {
     url.password = "";
     url.search = "";
     url.hash = "";
+    if (looksLikeSecretLocalPath(url.pathname)) {
+      url.pathname = "/";
+    }
     return url.toString().replace(/\/$/, "");
   } catch {
-    return raw
+    const withoutCredentials = raw
       .replace(/[?#].*$/, "")
       .replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]+@/i, "$1")
       .replace(/^(\/\/)[^/?#@]+@/, "$1")
       .replace(/\/$/, "");
+    return withoutCredentials.replace(/\/[^/]*(?:key|cert|certificate|credential|secret|fingerprint|policy)[^/]*$/i, "");
   }
+}
+
+function looksLikeSecretLocalPath(pathname: string): boolean {
+  return /(?:key|cert|certificate|credential|secret|fingerprint|policy)/i.test(pathname);
 }
