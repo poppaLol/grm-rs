@@ -14,6 +14,26 @@ use crate::config::{AutocommitTarget, StartupOptions};
 use crate::service::{ServiceMcpBackend, ServiceWorkspaceFormat, ServiceWorkspaceMode};
 use crate::tools::to_mcp_error;
 
+const READ_ONLY_DISABLED_TOOLS: &[&str] = &[
+    "grm_schema_checkpoint",
+    "grm_batch",
+    "grm_batch_write",
+    "grm_batch_destructive",
+    "grm_schema_define_node",
+    "grm_schema_define_edge",
+    "grm_node_create",
+    "grm_node_update",
+    "grm_node_delete",
+    "grm_edge_create",
+    "grm_edge_update",
+    "grm_edge_delete",
+    "grm_query",
+    "grm_save",
+    "grm_load",
+    "grm_import",
+    "grm_export",
+];
+
 #[derive(Clone)]
 pub struct GrmMcpServer {
     pub(crate) state: Arc<Mutex<SessionState>>,
@@ -24,12 +44,13 @@ pub struct GrmMcpServer {
     pub(crate) schema_template_loaded_from_file: bool,
     pub(crate) autocommit: Option<AutocommitTarget>,
     pub(crate) export_json: Option<PathBuf>,
-    #[allow(dead_code)]
+    pub(crate) read_only: bool,
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
 impl GrmMcpServer {
     pub fn new(options: StartupOptions) -> GrmResult<Self> {
+        let read_only = options.read_only;
         let mut state = SessionState::new();
         let has_startup_source = options.load_json.is_some()
             || options.load_bin.is_some()
@@ -61,7 +82,8 @@ impl GrmMcpServer {
             schema_template_loaded_from_file: false,
             autocommit: options.autocommit,
             export_json: options.export_json,
-            tool_router: Self::tool_router(),
+            read_only,
+            tool_router: Self::configured_tool_router(read_only),
         })
     }
 
@@ -77,6 +99,7 @@ impl GrmMcpServer {
     }
 
     async fn new_neo4j(options: StartupOptions) -> GrmResult<Self> {
+        let read_only = options.read_only;
         if options.load_json.is_some()
             || options.load_bin.is_some()
             || options.import_json.is_some()
@@ -106,11 +129,13 @@ impl GrmMcpServer {
             schema_template_loaded_from_file,
             autocommit: None,
             export_json: None,
-            tool_router: Self::tool_router(),
+            read_only,
+            tool_router: Self::configured_tool_router(read_only),
         })
     }
 
     async fn new_service(options: StartupOptions) -> GrmResult<Self> {
+        let read_only = options.read_only;
         if options.load_json.is_some()
             || options.load_bin.is_some()
             || options.import_json.is_some()
@@ -154,8 +179,27 @@ impl GrmMcpServer {
             schema_template_loaded_from_file: false,
             autocommit: None,
             export_json: None,
-            tool_router: Self::tool_router(),
+            read_only,
+            tool_router: Self::configured_tool_router(read_only),
         })
+    }
+
+    fn configured_tool_router(read_only: bool) -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        if read_only {
+            for tool in READ_ONLY_DISABLED_TOOLS {
+                router.remove_route(tool);
+            }
+        }
+        router
+    }
+
+    fn annotate_access_mode(&self, value: &mut Value) {
+        value["backend"]["mcp_access_mode"] = json!(if self.read_only {
+            "read-only"
+        } else {
+            "read-write"
+        });
     }
 
     pub(crate) fn is_neo4j(&self) -> bool {
@@ -202,7 +246,9 @@ impl GrmMcpServer {
 
     pub async fn schema_json(&self) -> GrmResult<Value> {
         if let Some(service) = &self.service {
-            return service.schema_json().await;
+            let mut value = service.schema_json().await?;
+            self.annotate_access_mode(&mut value);
+            return Ok(value);
         }
         let state = self.state.lock().await;
         let mut value = state.schema_value();
@@ -234,17 +280,20 @@ impl GrmMcpServer {
                 });
             }
         }
+        self.annotate_access_mode(&mut value);
         Ok(value)
     }
 
     pub async fn backend_status_json(&self) -> Value {
         if let Some(service) = &self.service {
-            return service.status_value();
+            let mut value = service.status_value();
+            self.annotate_access_mode(&mut value);
+            return value;
         }
         let state = self.state.lock().await;
         let node_count = state.catalog().list_node_models().len();
         let edge_count = state.catalog().list_rel_models().len();
-        if self.is_neo4j() {
+        let mut value = if self.is_neo4j() {
             neo4j_backend_status_value(
                 node_count,
                 edge_count,
@@ -260,7 +309,9 @@ impl GrmMcpServer {
                     "runtime_schema_empty": node_count == 0 && edge_count == 0
                 }
             })
-        }
+        };
+        self.annotate_access_mode(&mut value);
+        value
     }
 
     pub async fn export_json(&self) -> GrmResult<Value> {
