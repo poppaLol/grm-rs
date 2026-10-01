@@ -218,14 +218,39 @@ test("applies browser-local visual projection overlays without changing generate
   overlay.nodeModels.RoadmapItem = {
     label: "PM roadmap",
     colorToken: "flight-deck-amber",
-    group: "product planning"
+    group: "product planning",
+    shape: "card",
+    detailDensity: "rich",
+    visualRole: "anchor"
   };
+  overlay.edgeModels.HAS_WORK_SLICE = {
+    styleToken: "dependency",
+    directionEmphasis: "strong",
+    lineWeight: "strong",
+    lineStyle: "dashed",
+    labelVisibility: "always"
+  };
+  overlay.containers["edge:HAS_WORK_SLICE"] = {
+    parentModel: "RoadmapItem",
+    childModel: "WorkSlice",
+    viaEdgeModel: "HAS_WORK_SLICE",
+    renderAs: "section",
+    collapse: "expanded"
+  };
+  overlay.layout = { mode: "container-map", style: "groups" };
 
   const projected = applyVisualProjectionOverlay(visualProjection, overlay);
 
   assert.equal(projected?.nodeModels[0].label, "PM roadmap");
   assert.equal(projected?.nodeModels[0].colorToken, "flight-deck-amber");
   assert.equal(projected?.nodeModels[0].group, "product planning");
+  assert.equal(projected?.nodeModels[0].shape, "card");
+  assert.equal(projected?.nodeModels[0].detailDensity, "rich");
+  assert.equal(projected?.nodeModels[0].visualRole, "anchor");
+  assert.equal(projected?.edgeModels[0].styleToken, "dependency");
+  assert.equal(projected?.edgeModels[0].labelVisibility, "always");
+  assert.equal(projected?.dataLayout.layoutToken, "container-map-local");
+  assert.equal(overlay.containers["edge:HAS_WORK_SLICE"].renderAs, "section");
   assert.equal(visualProjection.nodeModels[0].label, "roadmap item");
 });
 
@@ -235,8 +260,17 @@ test("persists local visual projection overlays by profile and workspace only", 
   overlay.nodeModels.WorkSlice = {
     label: "delivery slice",
     colorToken: "flight-deck-green",
-    group: "roadmap"
+    group: "roadmap",
+    visualRole: "process"
   };
+  overlay.edgeModels.HAS_WORK_SLICE = { styleToken: "evidence", labelVisibility: "always" };
+  overlay.containers["edge:HAS_WORK_SLICE"] = {
+    parentModel: "RoadmapItem",
+    childModel: "WorkSlice",
+    viaEdgeModel: "HAS_WORK_SLICE",
+    renderAs: "lane"
+  };
+  overlay.layout = { mode: "container-map" };
 
   writeVisualProjectionOverlay(storage, overlay);
 
@@ -245,6 +279,10 @@ test("persists local visual projection overlays by profile and workspace only", 
   const persisted = storage.getItem(VISUAL_OVERLAY_STORAGE_KEY) ?? "";
 
   assert.equal(restored.nodeModels.WorkSlice.label, "delivery slice");
+  assert.equal(restored.nodeModels.WorkSlice.visualRole, "process");
+  assert.equal(restored.edgeModels.HAS_WORK_SLICE.styleToken, "evidence");
+  assert.equal(restored.containers["edge:HAS_WORK_SLICE"].renderAs, "lane");
+  assert.equal(restored.layout.mode, "container-map");
   assert.deepEqual(otherWorkspace.nodeModels, {});
   assert.equal(persisted.includes("BEGIN CERTIFICATE"), false);
   assert.equal(persisted.includes("privateKey"), false);

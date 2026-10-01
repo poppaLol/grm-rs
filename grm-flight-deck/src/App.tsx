@@ -14,6 +14,9 @@ import {
   overlayHasOverrides,
   readVisualProjectionOverlay,
   writeVisualProjectionOverlay,
+  type VisualProjectionContainerOverlay,
+  type VisualProjectionEdgeOverlay,
+  type VisualProjectionNodeOverlay,
   type VisualProjectionOverlay
 } from "./projectionOverlay";
 import type {
@@ -40,6 +43,18 @@ const PROJECTION_COLOR_OPTIONS = [
   "flight-deck-rose",
   "flight-deck-sky"
 ];
+
+const NODE_SHAPE_OPTIONS = ["generated", "dot", "card", "hex", "diamond", "lane"];
+const NODE_DETAIL_OPTIONS = ["generated", "compact", "standard", "rich"];
+const NODE_ROLE_OPTIONS = ["generated", "anchor", "context", "evidence", "decision", "risk", "actor", "object", "process"];
+const EDGE_STYLE_OPTIONS = ["generated", "directed", "dependency", "evidence", "warning"];
+const EDGE_DIRECTION_OPTIONS = ["generated", "normal", "strong", "muted"];
+const EDGE_WEIGHT_OPTIONS = ["generated", "fine", "normal", "strong"];
+const EDGE_LINE_OPTIONS = ["generated", "solid", "dashed", "dotted"];
+const EDGE_LABEL_OPTIONS = ["generated", "hidden", "self-loops", "always"];
+const CONTAINER_RENDER_OPTIONS = ["generated", "region", "card", "lane", "section"];
+const CONTAINER_COLLAPSE_OPTIONS = ["generated", "expanded", "collapsed"];
+const LAYOUT_STYLE_OPTIONS = ["generated", "force", "groups", "hierarchy", "grid"];
 
 function SchemaList({ title, models, projection }: { title: string; models: string[]; projection: FlightDeckVisualProjection | null }) {
   return (
@@ -129,99 +144,273 @@ function ProjectionOverlayControls({
   onOverlayChange: (overlay: VisualProjectionOverlay) => void;
   onReset: () => void;
 }) {
-  const [selectedModel, setSelectedModel] = useState("");
+  const [selectedNodeModel, setSelectedNodeModel] = useState("");
+  const [selectedEdgeModel, setSelectedEdgeModel] = useState("");
   const nodeModels = projection?.nodeModels ?? [];
-  const activeModel = nodeModels.find((model) => model.model === selectedModel) ?? nodeModels[0] ?? null;
-  const activeOverride = activeModel ? overlay.nodeModels[activeModel.model] ?? {} : {};
+  const edgeModels = projection?.edgeModels ?? [];
+  const activeNode = nodeModels.find((model) => model.model === selectedNodeModel) ?? nodeModels[0] ?? null;
+  const activeEdge = edgeModels.find((model) => model.model === selectedEdgeModel) ?? edgeModels[0] ?? null;
+  const activeNodeOverride = activeNode ? overlay.nodeModels[activeNode.model] ?? {} : {};
+  const activeEdgeOverride = activeEdge ? overlay.edgeModels[activeEdge.model] ?? {} : {};
+  const containerKey = activeEdge ? containerKeyFor(activeEdge.model) : "default-container";
+  const activeContainer = overlay.containers[containerKey] ?? {};
 
   useEffect(() => {
-    if (!activeModel) {
-      setSelectedModel("");
+    if (!activeNode) {
+      setSelectedNodeModel("");
       return;
     }
-    if (!nodeModels.some((model) => model.model === selectedModel)) {
-      setSelectedModel(activeModel.model);
+    if (!nodeModels.some((model) => model.model === selectedNodeModel)) {
+      setSelectedNodeModel(activeNode.model);
     }
-  }, [activeModel, nodeModels, selectedModel]);
+  }, [activeNode, nodeModels, selectedNodeModel]);
 
-  const updateActiveOverride = (patch: { label?: string; colorToken?: string; group?: string }) => {
-    if (!activeModel) {
+  useEffect(() => {
+    if (!activeEdge) {
+      setSelectedEdgeModel("");
       return;
     }
-    const nextNodeModels = {
-      ...overlay.nodeModels,
-      [activeModel.model]: {
-        ...activeOverride,
-        ...patch
-      }
-    };
-    const compacted = Object.fromEntries(
-      Object.entries(nextNodeModels).filter(([, value]) =>
-        Object.values(value).some((item) => typeof item === "string" && item.trim() !== "")
-      )
-    );
+    if (!edgeModels.some((model) => model.model === selectedEdgeModel)) {
+      setSelectedEdgeModel(activeEdge.model);
+    }
+  }, [activeEdge, edgeModels, selectedEdgeModel]);
+
+  const updateNode = (patch: VisualProjectionNodeOverlay) => {
+    if (!activeNode) {
+      return;
+    }
     onOverlayChange({
       ...overlay,
-      nodeModels: compacted
+      nodeModels: compactRecord({
+        ...overlay.nodeModels,
+        [activeNode.model]: {
+          ...activeNodeOverride,
+          ...patch
+        }
+      })
+    });
+  };
+
+  const updateEdge = (patch: VisualProjectionEdgeOverlay) => {
+    if (!activeEdge) {
+      return;
+    }
+    onOverlayChange({
+      ...overlay,
+      edgeModels: compactRecord({
+        ...overlay.edgeModels,
+        [activeEdge.model]: {
+          ...activeEdgeOverride,
+          ...patch
+        }
+      })
+    });
+  };
+
+  const updateContainer = (patch: VisualProjectionContainerOverlay) => {
+    if (!activeEdge) {
+      return;
+    }
+    onOverlayChange({
+      ...overlay,
+      containers: compactRecord({
+        ...overlay.containers,
+        [containerKey]: {
+          parentModel: activeEdge.fromModel,
+          childModel: activeEdge.toModel,
+          viaEdgeModel: activeEdge.model,
+          ...activeContainer,
+          ...patch
+        }
+      })
     });
   };
 
   return (
-    <section className="projection-controls" aria-label="Local visual projection overrides">
+    <section className="visual-design-space" aria-label="Visual Design Space">
       <div className="projection-panel-heading">
-        <h2>Local overlays</h2>
+        <h2>Visual Design Space</h2>
         <span>{overlayHasOverrides(overlay) ? "custom" : "default"}</span>
       </div>
-      <p className="projection-note">Browser-local advisory model styling for this profile and workspace.</p>
-      <label>
-        Model
-        <select
-          value={activeModel?.model ?? ""}
-          onChange={(event) => setSelectedModel(event.target.value)}
-          disabled={!activeModel}
-        >
-          {nodeModels.map((model) => (
-            <option value={model.model} key={model.model}>{model.model}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Label
-        <input
-          value={activeOverride.label ?? ""}
-          onChange={(event) => updateActiveOverride({ label: event.target.value })}
-          placeholder={activeModel?.label ?? "generated label"}
-          disabled={!activeModel}
-        />
-      </label>
-      <label>
-        Color
-        <select
-          value={activeOverride.colorToken ?? ""}
-          onChange={(event) => updateActiveOverride({ colorToken: event.target.value })}
-          disabled={!activeModel}
-        >
-          <option value="">Generated</option>
-          {PROJECTION_COLOR_OPTIONS.map((token) => (
-            <option value={token} key={token}>{token.replace("flight-deck-", "")}</option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Group
-        <input
-          value={activeOverride.group ?? ""}
-          onChange={(event) => updateActiveOverride({ group: event.target.value })}
-          placeholder={activeModel?.group ?? "generated group"}
-          disabled={!activeModel}
-        />
-      </label>
-      <button type="button" onClick={onReset} disabled={!overlayHasOverrides(overlay)}>
-        Reset
+      <p className="projection-note">Browser-local advisory design intent layered over generated projection defaults.</p>
+
+      <section className="design-space-section" aria-label="Node Setup">
+        <div className="design-section-heading">
+          <h3>Node Setup</h3>
+          <span>models as marks</span>
+        </div>
+        <label>
+          Node model
+          <select value={activeNode?.model ?? ""} onChange={(event) => setSelectedNodeModel(event.target.value)} disabled={!activeNode}>
+            {nodeModels.map((model) => (
+              <option value={model.model} key={model.model}>{model.model}</option>
+            ))}
+          </select>
+        </label>
+        <div className="design-grid two">
+          <label>
+            Display name
+            <input value={activeNodeOverride.label ?? ""} onChange={(event) => updateNode({ label: event.target.value })} placeholder={activeNode?.label ?? "generated label"} disabled={!activeNode} />
+          </label>
+          <label>
+            Colour
+            <select value={activeNodeOverride.colorToken ?? ""} onChange={(event) => updateNode({ colorToken: event.target.value })} disabled={!activeNode}>
+              <option value="">Generated</option>
+              {PROJECTION_COLOR_OPTIONS.map((token) => (
+                <option value={token} key={token}>{token.replace("flight-deck-", "")}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Glyph / shape
+            <select value={activeNodeOverride.shape ?? "generated"} onChange={(event) => updateNode({ shape: event.target.value })} disabled={!activeNode}>
+              {NODE_SHAPE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Detail density
+            <select value={activeNodeOverride.detailDensity ?? "generated"} onChange={(event) => updateNode({ detailDensity: event.target.value })} disabled={!activeNode}>
+              {NODE_DETAIL_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Visual role
+            <select value={activeNodeOverride.visualRole ?? "generated"} onChange={(event) => updateNode({ visualRole: event.target.value })} disabled={!activeNode}>
+              {NODE_ROLE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Group / lane
+            <input value={activeNodeOverride.group ?? ""} onChange={(event) => updateNode({ group: event.target.value })} placeholder={activeNode?.group ?? "generated group"} disabled={!activeNode} />
+          </label>
+        </div>
+      </section>
+
+      <section className="design-space-section" aria-label="Edge Links">
+        <div className="design-section-heading">
+          <h3>Edge Links</h3>
+          <span>relationships as strokes</span>
+        </div>
+        <label>
+          Edge model
+          <select value={activeEdge?.model ?? ""} onChange={(event) => setSelectedEdgeModel(event.target.value)} disabled={!activeEdge}>
+            {edgeModels.map((model) => (
+              <option value={model.model} key={`${model.model}:${model.fromModel}:${model.toModel}`}>{model.model}</option>
+            ))}
+          </select>
+        </label>
+        <div className="design-grid two">
+          <label>
+            Link label
+            <input value={activeEdgeOverride.label ?? ""} onChange={(event) => updateEdge({ label: event.target.value })} placeholder={activeEdge?.label ?? "generated label"} disabled={!activeEdge} />
+          </label>
+          <label>
+            Link style
+            <select value={activeEdgeOverride.styleToken ?? "generated"} onChange={(event) => updateEdge({ styleToken: event.target.value })} disabled={!activeEdge}>
+              {EDGE_STYLE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Direction emphasis
+            <select value={activeEdgeOverride.directionEmphasis ?? "generated"} onChange={(event) => updateEdge({ directionEmphasis: event.target.value })} disabled={!activeEdge}>
+              {EDGE_DIRECTION_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Line weight
+            <select value={activeEdgeOverride.lineWeight ?? "generated"} onChange={(event) => updateEdge({ lineWeight: event.target.value })} disabled={!activeEdge}>
+              {EDGE_WEIGHT_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Line style
+            <select value={activeEdgeOverride.lineStyle ?? "generated"} onChange={(event) => updateEdge({ lineStyle: event.target.value })} disabled={!activeEdge}>
+              {EDGE_LINE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Label visibility
+            <select value={activeEdgeOverride.labelVisibility ?? "generated"} onChange={(event) => updateEdge({ labelVisibility: event.target.value })} disabled={!activeEdge}>
+              {EDGE_LABEL_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="design-space-section" aria-label="Containers">
+        <div className="design-section-heading">
+          <h3>Containers</h3>
+          <span>visual only</span>
+        </div>
+        <p className="projection-note">Containment-like rendering is advisory and does not create canonical GRM containment.</p>
+        <div className="design-grid two">
+          <label>
+            Containment source
+            <select value={activeEdge?.model ?? ""} onChange={(event) => setSelectedEdgeModel(event.target.value)} disabled={!activeEdge}>
+              {edgeModels.map((model) => (
+                <option value={model.model} key={`container:${model.model}:${model.fromModel}:${model.toModel}`}>{model.fromModel} {"->"} {model.toModel}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Render as
+            <select value={activeContainer.renderAs ?? "generated"} onChange={(event) => updateContainer({ renderAs: event.target.value })} disabled={!activeEdge}>
+              {CONTAINER_RENDER_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Collapse affordance
+            <select value={activeContainer.collapse ?? "generated"} onChange={(event) => updateContainer({ collapse: event.target.value })} disabled={!activeEdge}>
+              {CONTAINER_COLLAPSE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Style token
+            <input value={activeContainer.styleToken ?? ""} onChange={(event) => updateContainer({ styleToken: event.target.value })} placeholder="warning-lane, roadmap-section" disabled={!activeEdge} />
+          </label>
+        </div>
+      </section>
+
+      <section className="design-space-section" aria-label="Layout Mode">
+        <div className="design-section-heading">
+          <h3>Layout Mode</h3>
+          <span>map strategy</span>
+        </div>
+        <div className="layout-choice-row" role="group" aria-label="Visual layout strategy">
+          <button type="button" className={(overlay.layout.mode ?? "edge-network") === "edge-network" ? "active" : ""} onClick={() => onOverlayChange({ ...overlay, layout: { ...overlay.layout, mode: "edge-network" } })}>
+            Edge-network
+          </button>
+          <button type="button" className={overlay.layout.mode === "container-map" ? "active" : ""} onClick={() => onOverlayChange({ ...overlay, layout: { ...overlay.layout, mode: "container-map" } })}>
+            Container/map
+          </button>
+        </div>
+        <label>
+          Layout style
+          <select value={overlay.layout.style ?? "generated"} onChange={(event) => onOverlayChange({ ...overlay, layout: { ...overlay.layout, style: event.target.value } })}>
+            {LAYOUT_STYLE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+          </select>
+        </label>
+      </section>
+
+      <button type="button" className="reset-design-button" onClick={onReset} disabled={!overlayHasOverrides(overlay)}>
+        Reset to generated defaults
       </button>
     </section>
   );
 }
+
+function containerKeyFor(edgeModel: string): string {
+  return `edge:${edgeModel}`;
+}
+
+function compactRecord<T extends object>(record: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) =>
+      Object.values(value as Record<string, unknown>).some((item) => typeof item === "string" && item.trim() !== "" && item !== "generated")
+    )
+  );
+}
+
 
 function SelectionPanel({
   selected,
@@ -1267,6 +1456,8 @@ export function App() {
                   onSelect={handleSelect}
                   onHover={setHovered}
                   visualProjection={effectiveVisualProjection}
+                  visualLayoutMode={projectionOverlay.layout.mode}
+                  visualLayoutStyle={projectionOverlay.layout.style}
                 />
                 <QueryInsightPanels
                   explainVisible={graphView === "data" && explainVisible}
