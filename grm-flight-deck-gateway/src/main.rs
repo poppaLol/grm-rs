@@ -25,7 +25,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-const DEFAULT_MODEL_LIMIT: usize = 200;
+const DEFAULT_MODEL_LIMIT: usize = 5_000;
+// Browser-facing JSON responses are for inspection, not bulk export. Keep the
+// cap high enough for real workspace browsing while avoiding accidental 100k
+// row graph renders through the local UI gateway.
+const MAX_MODEL_LIMIT: usize = 25_000;
 const DEFAULT_FLIGHT_DECK_ALLOWED_ORIGINS: &str =
     "http://127.0.0.1:8081,http://localhost:8081,http://127.0.0.1:3001,http://localhost:3001";
 
@@ -37,6 +41,59 @@ struct AppState {
 #[derive(Deserialize)]
 struct SnapshotQuery {
     limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckVisualProjection {
+    workspace: String,
+    provenance: FlightDeckVisualProjectionProvenance,
+    node_models: Vec<FlightDeckNodeProjection>,
+    edge_models: Vec<FlightDeckEdgeProjection>,
+    schema_layout: FlightDeckLayoutProjection,
+    data_layout: FlightDeckLayoutProjection,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckVisualProjectionProvenance {
+    source: String,
+    generated_from: String,
+    advisory: bool,
+    model_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckNodeProjection {
+    model: String,
+    label: String,
+    glyph: String,
+    color_token: String,
+    group: String,
+    id_field: String,
+    detail_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckEdgeProjection {
+    model: String,
+    label: String,
+    style_token: String,
+    direction_emphasis: String,
+    group: String,
+    from_model: String,
+    to_model: String,
+    detail_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckLayoutProjection {
+    layout_token: String,
+    group_by: String,
+    rank_by: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -216,11 +273,29 @@ async fn snapshot(
     Path(workspace): Path<String>,
     Query(query): Query<SnapshotQuery>,
 ) -> Result<Json<FlightDeckSnapshot>, (StatusCode, String)> {
-    let limit = query.limit.unwrap_or(DEFAULT_MODEL_LIMIT).clamp(1, 1_000);
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_MODEL_LIMIT)
+        .clamp(1, MAX_MODEL_LIMIT);
     load_snapshot(state.grpc_endpoint.to_string(), workspace, limit)
         .await
         .map(Json)
         .map_err(|error| redacted_gateway_error("snapshot", &error))
+}
+
+async fn visual_projection(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Query(query): Query<SnapshotQuery>,
+) -> Result<Json<FlightDeckVisualProjection>, (StatusCode, String)> {
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_MODEL_LIMIT)
+        .clamp(1, MAX_MODEL_LIMIT);
+    load_visual_projection(state.grpc_endpoint.to_string(), workspace, limit)
+        .await
+        .map(Json)
+        .map_err(|error| redacted_gateway_error("visual projection", &error))
 }
 
 async fn security_status(
@@ -246,7 +321,10 @@ async fn query_command(
     Path(workspace): Path<String>,
     Json(request): Json<FlightDeckQueryRequest>,
 ) -> Result<Json<FlightDeckQueryResponse>, (StatusCode, String)> {
-    let limit = request.limit.unwrap_or(DEFAULT_MODEL_LIMIT).clamp(1, 1_000);
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_MODEL_LIMIT)
+        .clamp(1, MAX_MODEL_LIMIT);
     let parsed = parse_read_only_query_command(&request.command, limit)
         .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
 
@@ -290,6 +368,60 @@ async fn load_snapshot(
 
     let snapshot_result = collect_snapshot(&mut client, workspace, model_limit).await;
     close_after_snapshot(snapshot_result, async { client.close().await.map(|_| ()) }).await
+}
+
+async fn load_visual_projection(
+    endpoint: impl Into<String>,
+    workspace: impl Into<String>,
+    model_limit: usize,
+) -> Result<FlightDeckVisualProjection, SnapshotLoadError> {
+    let endpoint = endpoint.into();
+    let workspace = workspace.into();
+    let tls = GrpcClientTlsOptions::from_env().map_err(GrpcWorkspaceClientError::TlsConfig)?;
+    let mut client = GrpcWorkspaceClient::connect_with_format_and_tls(
+        endpoint,
+        workspace.clone(),
+        GrpcWorkspaceMode::Open,
+        DurabilityFormat::Binary,
+        tls,
+    )
+    .await?;
+
+    let projection_result = async {
+        let schema = client.schema_list().await?;
+        let schema_node_models = schema
+            .node_models
+            .iter()
+            .map(|model| FlightDeckSchemaNodeModel {
+                name: model.name.clone(),
+                id_field: model.id_field_name.clone(),
+                fields: schema_fields(&model.fields),
+            })
+            .collect::<Vec<_>>();
+        let schema_edge_models = schema
+            .edge_models
+            .iter()
+            .map(|model| FlightDeckSchemaEdgeModel {
+                name: model.name.clone(),
+                from_model: model.from_model.clone(),
+                to_model: model.to_model.clone(),
+                id_field: model.id_field_name.clone(),
+                fields: schema_fields(&model.fields),
+            })
+            .collect::<Vec<_>>();
+        Ok(default_visual_projection(
+            workspace,
+            schema_node_models,
+            schema_edge_models,
+            model_limit,
+            "runtime_schema_metadata",
+        ))
+    }
+    .await;
+    close_after_snapshot(projection_result, async {
+        client.close().await.map(|_| ())
+    })
+    .await
 }
 
 async fn load_security_status(
@@ -766,7 +898,12 @@ fn bounded_node_find_request(
 ) -> Result<NodeFindRequest, String> {
     let mut request = NodeFindRequest::from_adapter_query_terms(model_name, terms)
         .map_err(|error| error.to_string())?;
-    request.limit = Some(request.limit.unwrap_or(default_limit).clamp(1, 1_000));
+    request.limit = Some(
+        request
+            .limit
+            .unwrap_or(default_limit)
+            .clamp(1, MAX_MODEL_LIMIT),
+    );
     if let Some(offset) = request.offset {
         request.offset = Some(offset.min(100_000));
     }
@@ -784,7 +921,12 @@ fn bounded_edge_find_request(
         .collect::<BTreeMap<_, _>>();
     let mut request = EdgeFindRequest::from_adapter_filter_values(model_name, filters)
         .map_err(|error| error.to_string())?;
-    request.limit = Some(request.limit.unwrap_or(default_limit).clamp(1, 1_000));
+    request.limit = Some(
+        request
+            .limit
+            .unwrap_or(default_limit)
+            .clamp(1, MAX_MODEL_LIMIT),
+    );
     if let Some(offset) = request.offset {
         request.offset = Some(offset.min(100_000));
     }
@@ -1019,6 +1161,184 @@ fn schema_fields(fields: &[RuntimeField]) -> Vec<FlightDeckSchemaField> {
         .collect()
 }
 
+fn default_visual_projection(
+    workspace: String,
+    mut node_models: Vec<FlightDeckSchemaNodeModel>,
+    mut edge_models: Vec<FlightDeckSchemaEdgeModel>,
+    model_limit: usize,
+    generated_from: impl Into<String>,
+) -> FlightDeckVisualProjection {
+    node_models.sort_by(|left, right| left.name.cmp(&right.name));
+    edge_models.sort_by(|left, right| {
+        (
+            left.from_model.as_str(),
+            left.name.as_str(),
+            left.to_model.as_str(),
+        )
+            .cmp(&(
+                right.from_model.as_str(),
+                right.name.as_str(),
+                right.to_model.as_str(),
+            ))
+    });
+
+    FlightDeckVisualProjection {
+        workspace,
+        provenance: FlightDeckVisualProjectionProvenance {
+            source: "generated_default".into(),
+            generated_from: generated_from.into(),
+            advisory: true,
+            model_limit,
+        },
+        node_models: node_models
+            .into_iter()
+            .map(|model| FlightDeckNodeProjection {
+                label: readable_model_label(&model.name),
+                glyph: glyph_for_model(&model.name).into(),
+                color_token: color_token_for_model(&model.name).into(),
+                group: format!("node:{}", model.name),
+                detail_fields: detail_fields(&model.id_field, &model.fields),
+                id_field: model.id_field,
+                model: model.name,
+            })
+            .collect(),
+        edge_models: edge_models
+            .into_iter()
+            .map(|model| FlightDeckEdgeProjection {
+                label: readable_edge_label(&model.name),
+                style_token: edge_style_token(&model.name).into(),
+                direction_emphasis: if model.from_model == model.to_model {
+                    "self_loop"
+                } else {
+                    "directed"
+                }
+                .into(),
+                group: format!("edge:{}->{}", model.from_model, model.to_model),
+                detail_fields: detail_fields(&model.id_field, &model.fields),
+                from_model: model.from_model,
+                to_model: model.to_model,
+                model: model.name,
+            })
+            .collect(),
+        schema_layout: FlightDeckLayoutProjection {
+            layout_token: "schema-by-endpoints".into(),
+            group_by: "node-model,edge-model,relationship-endpoints".into(),
+            rank_by: "model-label".into(),
+        },
+        data_layout: FlightDeckLayoutProjection {
+            layout_token: "data-by-model".into(),
+            group_by: "model".into(),
+            rank_by: "model-label".into(),
+        },
+    }
+}
+
+fn detail_fields(id_field: &str, fields: &[FlightDeckSchemaField]) -> Vec<String> {
+    let mut ordered = Vec::new();
+    push_unique(&mut ordered, id_field);
+    for field in fields.iter().filter(|field| field.required) {
+        push_unique(&mut ordered, &field.name);
+    }
+    for field in fields.iter().filter(|field| !field.required) {
+        if ordered.len() >= 6 {
+            break;
+        }
+        push_unique(&mut ordered, &field.name);
+    }
+    ordered
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !value.is_empty() && !values.iter().any(|existing| existing == value) {
+        values.push(value.into());
+    }
+}
+
+fn readable_model_label(model: &str) -> String {
+    split_identifier_words(model).join(" ")
+}
+
+fn readable_edge_label(model: &str) -> String {
+    split_identifier_words(model).join(" ")
+}
+
+fn split_identifier_words(value: &str) -> Vec<String> {
+    let normalized = value.replace(['_', '-'], " ");
+    let mut words = Vec::new();
+    for segment in normalized.split_whitespace() {
+        let mut current = String::new();
+        let chars = segment.chars().collect::<Vec<_>>();
+        for (index, ch) in chars.iter().enumerate() {
+            let previous = index.checked_sub(1).and_then(|item| chars.get(item));
+            let next = chars.get(index + 1);
+            let boundary = index > 0
+                && ch.is_uppercase()
+                && (previous.is_some_and(|item| item.is_lowercase())
+                    || next.is_some_and(|item| item.is_lowercase()));
+            if boundary && !current.is_empty() {
+                words.push(current.to_ascii_lowercase());
+                current.clear();
+            }
+            current.push(*ch);
+        }
+        if !current.is_empty() {
+            words.push(current.to_ascii_lowercase());
+        }
+    }
+    if words.is_empty() {
+        vec![value.to_ascii_lowercase()]
+    } else {
+        words
+    }
+}
+
+fn glyph_for_model(model: &str) -> &'static str {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("security") || lower.contains("policy") || lower.contains("control") {
+        "shield"
+    } else if lower.contains("doc") {
+        "document"
+    } else if lower.contains("decision") {
+        "decision"
+    } else if lower.contains("question") {
+        "question"
+    } else if lower.contains("risk") || lower.contains("threat") {
+        "alert"
+    } else if lower.contains("work") || lower.contains("roadmap") {
+        "plan"
+    } else {
+        "node"
+    }
+}
+
+fn color_token_for_model(model: &str) -> &'static str {
+    const TOKENS: [&str; 8] = [
+        "flight-deck-blue",
+        "flight-deck-teal",
+        "flight-deck-indigo",
+        "flight-deck-green",
+        "flight-deck-violet",
+        "flight-deck-amber",
+        "flight-deck-rose",
+        "flight-deck-sky",
+    ];
+    TOKENS[stable_hash(model) % TOKENS.len()]
+}
+
+fn edge_style_token(model: &str) -> &'static str {
+    if model.to_ascii_lowercase().contains("depends") {
+        "dependency"
+    } else {
+        "directed"
+    }
+}
+
+fn stable_hash(value: &str) -> usize {
+    value.bytes().fold(0usize, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as usize)
+    })
+}
+
 fn value_type_label(value_type: &RuntimeValueType) -> &'static str {
     match value_type {
         RuntimeValueType::String => "string",
@@ -1034,10 +1354,10 @@ fn value_type_label(value_type: &RuntimeValueType) -> &'static str {
     }
 }
 
-async fn close_after_snapshot(
-    snapshot_result: Result<FlightDeckSnapshot, GrpcWorkspaceClientError>,
+async fn close_after_snapshot<T>(
+    snapshot_result: Result<T, GrpcWorkspaceClientError>,
     close: impl Future<Output = Result<(), GrpcWorkspaceClientError>>,
-) -> Result<FlightDeckSnapshot, SnapshotLoadError> {
+) -> Result<T, SnapshotLoadError> {
     match snapshot_result {
         Ok(snapshot) => {
             close.await.map_err(SnapshotLoadError::Close)?;
@@ -1242,6 +1562,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/security/status", get(security_status))
         .route("/api/security/audit/status", get(security_audit_status))
         .route("/api/workspaces/:workspace/snapshot", get(snapshot))
+        .route(
+            "/api/workspaces/:workspace/visual-projection",
+            get(visual_projection),
+        )
         .route("/api/workspaces/:workspace/query", post(query_command))
         .with_state(AppState {
             grpc_endpoint: grpc_endpoint.into(),
@@ -1264,7 +1588,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        close_after_snapshot, flight_deck_edge, flight_deck_node,
+        FlightDeckSchemaEdgeModel, FlightDeckSchemaField, FlightDeckSchemaNodeModel,
+        close_after_snapshot, default_visual_projection, flight_deck_edge, flight_deck_node,
         flight_deck_security_audit_status, flight_deck_security_status,
         include_edges_with_known_endpoints, node_label, origin_is_allowed,
         parse_flight_deck_allowed_origins, redacted_gateway_error, redacted_gateway_log_message,
@@ -1361,7 +1686,7 @@ mod tests {
         let primary = GrpcWorkspaceClientError::MissingField("schema");
         let close = async { Err(GrpcWorkspaceClientError::UnexpectedResponse("close")) };
 
-        let error = close_after_snapshot(Err(primary), close)
+        let error = close_after_snapshot(Err::<super::FlightDeckSnapshot, _>(primary), close)
             .await
             .expect_err("snapshot error should be returned");
         let message = error.to_string();
@@ -1395,6 +1720,66 @@ mod tests {
             error
                 .to_string()
                 .contains("failed to close workspace handle")
+        );
+    }
+
+    #[test]
+    fn default_visual_projection_is_deterministic_advisory_json() {
+        let projection = default_visual_projection(
+            "flight-deck-demo".into(),
+            vec![FlightDeckSchemaNodeModel {
+                name: "WorkSlice".into(),
+                id_field: "workSliceId".into(),
+                fields: vec![
+                    FlightDeckSchemaField {
+                        name: "title".into(),
+                        value_type: "string".into(),
+                        required: true,
+                    },
+                    FlightDeckSchemaField {
+                        name: "status".into(),
+                        value_type: "string".into(),
+                        required: false,
+                    },
+                ],
+            }],
+            vec![FlightDeckSchemaEdgeModel {
+                name: "HAS_WORK_SLICE".into(),
+                from_model: "RoadmapItem".into(),
+                to_model: "WorkSlice".into(),
+                id_field: "hasWorkSliceId".into(),
+                fields: vec![FlightDeckSchemaField {
+                    name: "reason".into(),
+                    value_type: "string".into(),
+                    required: false,
+                }],
+            }],
+            25,
+            "runtime_schema_metadata",
+        );
+
+        assert!(projection.provenance.advisory);
+        assert_eq!(
+            projection.provenance.generated_from,
+            "runtime_schema_metadata"
+        );
+        assert_eq!(projection.node_models[0].label, "work slice");
+        assert_eq!(projection.node_models[0].glyph, "plan");
+        assert_eq!(
+            projection.node_models[0].detail_fields,
+            vec!["workSliceId", "title", "status"]
+        );
+        assert_eq!(projection.edge_models[0].label, "has work slice");
+        assert_eq!(projection.edge_models[0].direction_emphasis, "directed");
+
+        let serialized = serde_json::to_value(&projection).expect("projection serializes");
+        assert_eq!(
+            serialized["nodeModels"][0]["colorToken"],
+            projection.node_models[0].color_token
+        );
+        assert_eq!(
+            serialized["schemaLayout"]["groupBy"],
+            "node-model,edge-model,relationship-endpoints"
         );
     }
 

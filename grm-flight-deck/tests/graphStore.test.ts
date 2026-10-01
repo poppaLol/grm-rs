@@ -7,7 +7,7 @@ import {
   normalizeSnapshot,
   STORE_STORAGE_KEY
 } from "../src/graphStore";
-import type { FlightDeckSnapshot } from "../src/types";
+import type { FlightDeckSnapshot, FlightDeckVisualProjection } from "../src/types";
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -53,6 +53,66 @@ const snapshot: FlightDeckSnapshot = {
   omittedEdges: 0,
   source: "fixture"
 };
+
+const visualProjection: FlightDeckVisualProjection = {
+  workspace: "flight-deck-demo",
+  provenance: {
+    source: "generated_default",
+    generatedFrom: "runtime_schema_metadata",
+    advisory: true,
+    modelLimit: 50
+  },
+  nodeModels: [
+    {
+      model: "RoadmapItem",
+      label: "roadmap item",
+      glyph: "plan",
+      colorToken: "flight-deck-blue",
+      group: "node:RoadmapItem",
+      idField: "roadmapItemId",
+      detailFields: ["roadmapItemId", "title", "summary", "status", "rank"]
+    },
+    {
+      model: "WorkSlice",
+      label: "work slice",
+      glyph: "plan",
+      colorToken: "flight-deck-indigo",
+      group: "node:WorkSlice",
+      idField: "workSliceId",
+      detailFields: ["workSliceId", "title", "summary", "status"]
+    }
+  ],
+  edgeModels: [
+    {
+      model: "HAS_WORK_SLICE",
+      label: "has work slice",
+      styleToken: "directed",
+      directionEmphasis: "directed",
+      group: "edge:RoadmapItem->WorkSlice",
+      fromModel: "RoadmapItem",
+      toModel: "WorkSlice",
+      detailFields: ["hasWorkSliceId", "reason"]
+    }
+  ],
+  schemaLayout: {
+    layoutToken: "schema-by-endpoints",
+    groupBy: "node-model,edge-model,relationship-endpoints",
+    rankBy: "model-label"
+  },
+  dataLayout: {
+    layoutToken: "data-by-model",
+    groupBy: "model",
+    rankBy: "model-label"
+  }
+};
+
+test("starts with a production-sized default model limit and clamps large requests", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+
+  assert.equal(store.getState().settings.limit, 5000);
+  store.updateSettings({ limit: 150000 });
+  assert.equal(store.getState().settings.limit, 25000);
+});
 
 test("migrates the legacy single connection settings key into a safe profile", () => {
   const storage = new MemoryStorage();
@@ -144,6 +204,21 @@ test("can create a second selected connection profile from draft settings", () =
 
   store.selectProfile("local-workspace");
   assert.equal(store.getState().settings.workspace, "first-workspace");
+});
+
+test("keeps visual projection as non-persistent workbench state", () => {
+  const storage = new MemoryStorage();
+  const store = createFlightDeckGraphStore(storage);
+
+  store.loadVisualProjection(visualProjection);
+  store.saveCurrentProfile();
+
+  assert.equal(store.getState().visualProjection?.provenance.advisory, true);
+  assert.equal(store.getState().visualProjection?.nodeModels[0].detailFields[0], "roadmapItemId");
+  assert.equal(storage.getItem(STORE_STORAGE_KEY)?.includes("visualProjection"), false);
+
+  store.markConnectionFailed("service unavailable");
+  assert.equal(store.getState().visualProjection, null);
 });
 
 test("normalizes snapshots by stable string node and edge ids", () => {
@@ -303,6 +378,49 @@ test("records explicit query execution as a bounded local audit event", () => {
   assert.equal(queryEvent.workspace, "flight-deck-demo");
   assert.equal(queryEvent.securityContext, "fixture");
   assert.match(queryEvent.operationSummary ?? "", /text contains/);
+});
+
+test("keeps schema graph selections visible with projection labels", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadVisualProjection(visualProjection);
+  store.loadSnapshot({
+    ...snapshot,
+    schemaNodeModels: [
+      {
+        name: "RoadmapItem",
+        idField: "roadmapItemId",
+        fields: [
+          { name: "title", valueType: "string", required: true },
+          { name: "status", valueType: "string", required: false }
+        ]
+      },
+      {
+        name: "WorkSlice",
+        idField: "workSliceId",
+        fields: [
+          { name: "title", valueType: "string", required: true },
+          { name: "status", valueType: "string", required: false }
+        ]
+      }
+    ],
+    schemaEdgeModels: [
+      {
+        name: "HAS_WORK_SLICE",
+        fromModel: "RoadmapItem",
+        toModel: "WorkSlice",
+        idField: "hasWorkSliceId",
+        fields: [{ name: "reason", valueType: "string", required: false }]
+      }
+    ]
+  });
+
+  store.selectGraphItem({ kind: "node", id: "schema-node:RoadmapItem" });
+  assert.equal(store.getState().selectedItem?.label, "roadmap item");
+  assert.equal(store.getState().selectedItem?.props.idField, "roadmapItemId");
+
+  store.selectGraphItem({ kind: "edge", id: "schema-edge:HAS_WORK_SLICE:0" });
+  assert.equal(store.getState().selectedItem?.label, "has work slice");
+  assert.equal(store.getState().selectedItem?.props.fromModel, "RoadmapItem");
 });
 
 test("records schema view execution as a local schema projection", () => {

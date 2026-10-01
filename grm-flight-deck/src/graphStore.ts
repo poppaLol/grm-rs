@@ -7,6 +7,7 @@ import type {
   FlightDeckEvent,
   FlightDeckQueryResponse,
   FlightDeckSnapshot,
+  FlightDeckVisualProjection,
   GraphView,
   GraphFilter,
   GraphSelection,
@@ -24,7 +25,7 @@ export const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
   serviceBaseUrl: "",
   mode: "local-anonymous-dev",
   workspace: "flight-deck-demo",
-  limit: 50,
+  limit: 5000,
   useFixtureData: true
 };
 
@@ -52,6 +53,7 @@ export interface FlightDeckGraphStoreState {
   snapshot: FlightDeckSnapshot | null;
   normalizedSnapshot: NormalizedGraphSnapshot | null;
   visibleSnapshot: FlightDeckSnapshot | null;
+  visualProjection: FlightDeckVisualProjection | null;
   selection: GraphSelection | null;
   selectedItem: SelectedGraphItem | null;
   connectionStatus: ConnectionStatusKind;
@@ -91,6 +93,7 @@ export interface FlightDeckGraphStore {
   clearGraphFilter: () => void;
   beginSnapshotLoad: (useFixtureData: boolean) => void;
   loadSnapshot: (snapshot: FlightDeckSnapshot) => void;
+  loadVisualProjection: (projection: FlightDeckVisualProjection | null) => void;
   markConnectionFailed: (message: string) => void;
   selectGraphItem: (selection: GraphSelection | null) => void;
   selectWorkspacePanel: (panel: WorkspacePanel) => void;
@@ -121,6 +124,7 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
     snapshot: null,
     normalizedSnapshot: null,
     visibleSnapshot: null,
+    visualProjection: null,
     selection: null,
     selectedItem: null,
     connectionStatus: "idle",
@@ -244,12 +248,19 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         events: eventsForSnapshot(snapshot, state.visibleSnapshot)
       });
     },
+    loadVisualProjection: (projection) => {
+      setState({
+        ...state,
+        visualProjection: projection
+      });
+    },
     markConnectionFailed: (message) => {
       setState({
         ...state,
         snapshot: null,
         normalizedSnapshot: null,
         visibleSnapshot: null,
+        visualProjection: null,
         selection: null,
         selectedItem: null,
         connectionStatus: "failed",
@@ -406,6 +417,7 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         snapshot: null,
         normalizedSnapshot: null,
         visibleSnapshot: null,
+        visualProjection: null,
         selection: null,
         selectedItem: null,
         lastExecutedQuery: null,
@@ -453,7 +465,7 @@ export function sanitizeConnectionProfile(profile: ConnectionProfile): Connectio
 function deriveState(state: FlightDeckGraphStoreState): FlightDeckGraphStoreState {
   const visibleSnapshot = state.snapshot ? filterSnapshot(state.snapshot, state.filter) : null;
   const selection = keepSelectionIfVisible(state.selection, visibleSnapshot);
-  const selectedItem = selection ? selectedItemFromSnapshot(selection, visibleSnapshot) : null;
+  const selectedItem = selection ? selectedItemFromSnapshot(selection, visibleSnapshot, state.visualProjection) : null;
   const events = state.snapshot
     ? [
         ...eventsForSnapshot(state.snapshot, visibleSnapshot),
@@ -475,18 +487,90 @@ function deriveState(state: FlightDeckGraphStoreState): FlightDeckGraphStoreStat
 
 function selectedItemFromSnapshot(
   selection: GraphSelection,
-  snapshot: FlightDeckSnapshot | null
+  snapshot: FlightDeckSnapshot | null,
+  projection: FlightDeckVisualProjection | null
 ): SelectedGraphItem | null {
   if (!snapshot) {
     return null;
   }
   if (selection.kind === "node") {
+    const schemaModel = selection.id.startsWith("schema-node:")
+      ? selection.id.slice("schema-node:".length)
+      : null;
+    if (schemaModel) {
+      const model = schemaNodeModels(snapshot).find((item) => item.name === schemaModel);
+      const hint = projection?.nodeModels.find((item) => item.model === schemaModel);
+      return model
+        ? {
+            kind: "node",
+            id: selection.id,
+            label: hint?.label ?? model.name,
+            model: model.name,
+            props: {
+              kind: "node_model",
+              idField: model.idField,
+              fields: model.fields.map((field) => `${field.name}${field.required ? "" : "?"}: ${field.valueType}`)
+            }
+          }
+        : null;
+    }
+
     const node = snapshot.nodes.find((item) => item.id === selection.id);
     return node ? { kind: "node", id: node.id, label: node.label, model: node.model, props: node.props } : null;
   }
 
+  const schemaEdge = selection.id.startsWith("schema-edge:")
+    ? schemaEdgeFromSelection(snapshot, selection.id)
+    : null;
+  if (schemaEdge) {
+    const hint = projection?.edgeModels.find((item) => item.model === schemaEdge.model);
+    const model = schemaEdgeModels(snapshot).find(
+      (item) => item.name === schemaEdge.model && item.fromModel === schemaEdge.fromModel && item.toModel === schemaEdge.toModel
+    );
+    return {
+      kind: "edge",
+      id: selection.id,
+      label: hint?.label ?? schemaEdge.model,
+      model: schemaEdge.model,
+      props: {
+        kind: "edge_model",
+        fromModel: schemaEdge.fromModel,
+        toModel: schemaEdge.toModel,
+        fields: model?.fields.map((field) => `${field.name}${field.required ? "" : "?"}: ${field.valueType}`) ?? []
+      }
+    };
+  }
+
   const edge = snapshot.edges.find((item) => item.id === selection.id);
   return edge ? { kind: "edge", id: edge.id, label: edge.model, model: edge.model, props: edge.props } : null;
+}
+
+function schemaNodeModels(snapshot: FlightDeckSnapshot) {
+  return snapshot.schemaNodeModels ?? snapshot.nodeModels.map((name) => ({ name, idField: "id", fields: [] }));
+}
+
+function schemaEdgeModels(snapshot: FlightDeckSnapshot) {
+  return snapshot.schemaEdgeModels ?? snapshot.schemaEdges?.map((edge) => ({
+    name: edge.model,
+    fromModel: edge.fromModel,
+    toModel: edge.toModel,
+    idField: "id",
+    fields: []
+  })) ?? [];
+}
+
+function schemaEdgeFromSelection(snapshot: FlightDeckSnapshot, id: string) {
+  const [, model, index] = id.split(":");
+  const numericIndex = Number(index);
+  const schemaEdges = snapshot.schemaEdges ?? schemaEdgeModels(snapshot).map((edge) => ({
+    model: edge.name,
+    fromModel: edge.fromModel,
+    toModel: edge.toModel
+  }));
+  if (Number.isInteger(numericIndex) && schemaEdges[numericIndex]?.model === model) {
+    return schemaEdges[numericIndex];
+  }
+  return schemaEdges.find((edge) => edge.model === model) ?? null;
 }
 
 function keepSelectionIfVisible(
@@ -498,8 +582,12 @@ function keepSelectionIfVisible(
   }
   const visible =
     selection.kind === "node"
-      ? snapshot.nodes.some((node) => node.id === selection.id)
-      : snapshot.edges.some((edge) => edge.id === selection.id);
+      ? selection.id.startsWith("schema-node:")
+        ? schemaNodeModels(snapshot).some((node) => `schema-node:${node.name}` === selection.id)
+        : snapshot.nodes.some((node) => node.id === selection.id)
+      : selection.id.startsWith("schema-edge:")
+        ? schemaEdgeFromSelection(snapshot, selection.id) !== null
+        : snapshot.edges.some((edge) => edge.id === selection.id);
   return visible ? selection : null;
 }
 
@@ -724,7 +812,7 @@ function boundedLimit(limit: number): number {
   if (!Number.isFinite(limit)) {
     return DEFAULT_CONNECTION_SETTINGS.limit;
   }
-  return Math.min(1000, Math.max(1, Math.trunc(limit)));
+  return Math.min(25000, Math.max(1, Math.trunc(limit)));
 }
 
 function stableProfileId(value: string): string {
