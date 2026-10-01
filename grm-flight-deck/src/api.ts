@@ -1,13 +1,43 @@
-import { fixtureSecurityAuditStatus, fixtureSecurityStatus, fixtureSnapshot } from "./fixtures";
+import { fixtureSecurityAuditStatus, fixtureSecurityStatus, fixtureSnapshot, fixtureVisualProjection } from "./fixtures";
 import type {
   ConnectionSettings,
   FlightDeckQueryResponse,
   FlightDeckSecurityAuditStatus,
   FlightDeckSecurityStatus,
   FlightDeckSnapshot,
+  FlightDeckVisualProjection,
   GraphFilter,
   JsonValue
 } from "./types";
+
+export async function fetchVisualProjection(
+  settings: ConnectionSettings,
+  signal?: AbortSignal
+): Promise<FlightDeckVisualProjection> {
+  if (settings.useFixtureData) {
+    return {
+      ...fixtureVisualProjection,
+      workspace: settings.workspace.trim() || fixtureVisualProjection.workspace,
+      provenance: {
+        ...fixtureVisualProjection.provenance,
+        modelLimit: settings.limit
+      }
+    };
+  }
+
+  const encodedWorkspace = encodeURIComponent(settings.workspace.trim());
+  const baseUrl = settings.serviceBaseUrl.trim().replace(/\/$/, "");
+  const response = await fetch(
+    `${baseUrl}/api/workspaces/${encodedWorkspace}/visual-projection?limit=${settings.limit}`,
+    { signal }
+  );
+
+  if (!response.ok) {
+    throw new Error(`visual projection request failed: HTTP ${response.status}`);
+  }
+
+  return await response.json() as FlightDeckVisualProjection;
+}
 
 export async function fetchSnapshot(
   settings: ConnectionSettings,

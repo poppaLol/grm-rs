@@ -56,9 +56,15 @@ The gateway also exposes:
 ```bash
 curl http://127.0.0.1:3001/api/security/status
 curl http://127.0.0.1:3001/api/security/audit/status
+curl 'http://127.0.0.1:3001/api/workspaces/flight-deck-demo/visual-projection?limit=50'
 ```
 
-Those endpoints are read-only observability. Security status labels
+The visual projection endpoint returns generated default labels, color tokens,
+groups, layout hints, and detail-field ordering from runtime schema metadata. It
+is advisory UI/agent guidance over typed workspace truth, not canonical graph
+semantics or a service operation contract.
+
+Those security endpoints are read-only observability. Security status labels
 `anonymous_local`, `docker_local_insecure`, or `secured`; in secured mode it
 reports the mapped principal issuer/subject, authentication method, and policy
 version when the service accepts the gateway credentials. Audit status reports
@@ -79,6 +85,20 @@ http://localhost:3001
 
 Set `GRM_FLIGHT_DECK_ALLOWED_ORIGINS` to a comma-separated list when serving the
 UI from another trusted local origin.
+
+For a Ziti-published local UI service, keep the default loopback bind unless the
+local Ziti hosting setup requires a different interface. Publish the Vite UI
+port, normally `127.0.0.1:8081`, and the flight-deck gateway port, normally
+`127.0.0.1:3001`, to the fabric. Configure explicitly, for example:
+
+```bash
+GRM_FLIGHT_DECK_GATEWAY_BIND=127.0.0.1:3001 GRM_FLIGHT_DECK_ALLOWED_ORIGINS=http://127.0.0.1:8081,http://localhost:8081 cargo run -p grm-flight-deck-gateway
+```
+
+The browser-facing profile should still contain only the gateway URL,
+workspace, mode, fixture flag, and snapshot limit. Do not place private keys,
+raw certificates, raw credentials, policy tables, or server-local key/cert paths
+in browser storage or Ziti-published UI configuration.
 
 ## Workbench Shape
 

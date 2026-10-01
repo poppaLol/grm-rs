@@ -1,4 +1,4 @@
-import type { FlightDeckSecurityAuditStatus, FlightDeckSecurityStatus, FlightDeckSnapshot } from "./types";
+import type { FlightDeckSecurityAuditStatus, FlightDeckSecurityStatus, FlightDeckSnapshot, FlightDeckVisualProjection } from "./types";
 
 export const fixtureSnapshot: FlightDeckSnapshot = {
   workspace: "flight-deck-demo",
@@ -103,6 +103,116 @@ export const fixtureSnapshot: FlightDeckSnapshot = {
   omittedEdges: 0,
   source: "fixture",
   partialReason: "Fixture data is bundled for local UI development before a service adapter is running."
+};
+
+
+export const fixtureVisualProjection: FlightDeckVisualProjection = {
+  workspace: "flight-deck-demo",
+  provenance: {
+    source: "fixture_default",
+    generatedFrom: "local_fixture_schema_metadata",
+    advisory: true,
+    modelLimit: 50
+  },
+  nodeModels: [
+    {
+      model: "ProductContext",
+      label: "product context",
+      glyph: "node",
+      colorToken: "flight-deck-teal",
+      group: "node:ProductContext",
+      idField: "productContextId",
+      detailFields: ["productContextId", "name", "summary", "status"]
+    },
+    {
+      model: "RoadmapItem",
+      label: "roadmap item",
+      glyph: "plan",
+      colorToken: "flight-deck-blue",
+      group: "node:RoadmapItem",
+      idField: "roadmapItemId",
+      detailFields: ["roadmapItemId", "title", "summary", "status", "rank"]
+    },
+    {
+      model: "WorkSlice",
+      label: "work slice",
+      glyph: "plan",
+      colorToken: "flight-deck-indigo",
+      group: "node:WorkSlice",
+      idField: "workSliceId",
+      detailFields: ["workSliceId", "title", "summary", "status", "readiness"]
+    },
+    {
+      model: "SecurityRequirement",
+      label: "security requirement",
+      glyph: "shield",
+      colorToken: "flight-deck-violet",
+      group: "node:SecurityRequirement",
+      idField: "securityRequirementId",
+      detailFields: ["securityRequirementId", "title", "summary", "priority", "status"]
+    },
+    {
+      model: "SecurityControl",
+      label: "security control",
+      glyph: "shield",
+      colorToken: "flight-deck-rose",
+      group: "node:SecurityControl",
+      idField: "securityControlId",
+      detailFields: ["securityControlId", "title", "summary", "controlType", "layer", "status"]
+    }
+  ],
+  edgeModels: [
+    {
+      model: "HAS_ROADMAP_ITEM",
+      label: "has roadmap item",
+      styleToken: "directed",
+      directionEmphasis: "directed",
+      group: "edge:ProductContext->RoadmapItem",
+      fromModel: "ProductContext",
+      toModel: "RoadmapItem",
+      detailFields: ["hasRoadmapItemId", "reason"]
+    },
+    {
+      model: "HAS_WORK_SLICE",
+      label: "has work slice",
+      styleToken: "directed",
+      directionEmphasis: "directed",
+      group: "edge:RoadmapItem->WorkSlice",
+      fromModel: "RoadmapItem",
+      toModel: "WorkSlice",
+      detailFields: ["hasWorkSliceId", "reason"]
+    },
+    {
+      model: "SLICE_ADDRESSES_SECURITY_REQUIREMENT",
+      label: "slice addresses security requirement",
+      styleToken: "directed",
+      directionEmphasis: "directed",
+      group: "edge:WorkSlice->SecurityRequirement",
+      fromModel: "WorkSlice",
+      toModel: "SecurityRequirement",
+      detailFields: ["sliceAddressesSecurityRequirementId", "reason"]
+    },
+    {
+      model: "SLICE_TARGETS_SECURITY_CONTROL",
+      label: "slice targets security control",
+      styleToken: "directed",
+      directionEmphasis: "directed",
+      group: "edge:WorkSlice->SecurityControl",
+      fromModel: "WorkSlice",
+      toModel: "SecurityControl",
+      detailFields: ["sliceTargetsSecurityControlId", "reason"]
+    }
+  ],
+  schemaLayout: {
+    layoutToken: "schema-by-endpoints",
+    groupBy: "node-model,edge-model,relationship-endpoints",
+    rankBy: "model-label"
+  },
+  dataLayout: {
+    layoutToken: "data-by-model",
+    groupBy: "model",
+    rankBy: "model-label"
+  }
 };
 
 export const fixtureSecurityStatus: FlightDeckSecurityStatus = {

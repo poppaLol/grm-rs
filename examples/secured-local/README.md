@@ -187,3 +187,11 @@ The one-command demo runner configures the Vite `/api` proxy to the selected
 gateway port. When running the UI manually with a non-default gateway port, set
 `GRM_FLIGHT_DECK_DEV_PROXY_TARGET` before `npm run dev`, or enter the full
 gateway URL in the flight-deck connection settings.
+
+For Ziti publication, bind explicitly with `GRM_FLIGHT_DECK_GATEWAY_BIND`
+(loopback by default), publish the gateway port such as `127.0.0.1:3001` and the
+Vite UI port such as `127.0.0.1:8081` to the fabric, and keep certificate/key
+material in `gateway.env` on the local host. The published UI can use the
+read-only `/api/workspaces/<workspace>/visual-projection?limit=...` endpoint for
+generated visual hints; those hints are advisory projection data, not canonical
+workspace truth or a new remote-access security claim.
