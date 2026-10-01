@@ -8,6 +8,14 @@ import {
 } from "./graphStore";
 import { GraphCanvas } from "./GraphCanvas";
 import { colorForToken } from "./modelColors";
+import {
+  applyVisualProjectionOverlay,
+  emptyVisualProjectionOverlay,
+  overlayHasOverrides,
+  readVisualProjectionOverlay,
+  writeVisualProjectionOverlay,
+  type VisualProjectionOverlay
+} from "./projectionOverlay";
 import type {
   FlightDeckSecurityAuditStatus,
   FlightDeckSecurityStatus,
@@ -21,6 +29,17 @@ import type {
 } from "./types";
 
 const graphStore = createFlightDeckGraphStore(window.localStorage);
+
+const PROJECTION_COLOR_OPTIONS = [
+  "flight-deck-blue",
+  "flight-deck-teal",
+  "flight-deck-indigo",
+  "flight-deck-green",
+  "flight-deck-violet",
+  "flight-deck-amber",
+  "flight-deck-rose",
+  "flight-deck-sky"
+];
 
 function SchemaList({ title, models, projection }: { title: string; models: string[]; projection: FlightDeckVisualProjection | null }) {
   return (
@@ -97,6 +116,111 @@ function projectionSourceLabel(projection: FlightDeckVisualProjection): string {
     default:
       return "unknown";
   }
+}
+
+function ProjectionOverlayControls({
+  projection,
+  overlay,
+  onOverlayChange,
+  onReset
+}: {
+  projection: FlightDeckVisualProjection | null;
+  overlay: VisualProjectionOverlay;
+  onOverlayChange: (overlay: VisualProjectionOverlay) => void;
+  onReset: () => void;
+}) {
+  const [selectedModel, setSelectedModel] = useState("");
+  const nodeModels = projection?.nodeModels ?? [];
+  const activeModel = nodeModels.find((model) => model.model === selectedModel) ?? nodeModels[0] ?? null;
+  const activeOverride = activeModel ? overlay.nodeModels[activeModel.model] ?? {} : {};
+
+  useEffect(() => {
+    if (!activeModel) {
+      setSelectedModel("");
+      return;
+    }
+    if (!nodeModels.some((model) => model.model === selectedModel)) {
+      setSelectedModel(activeModel.model);
+    }
+  }, [activeModel, nodeModels, selectedModel]);
+
+  const updateActiveOverride = (patch: { label?: string; colorToken?: string; group?: string }) => {
+    if (!activeModel) {
+      return;
+    }
+    const nextNodeModels = {
+      ...overlay.nodeModels,
+      [activeModel.model]: {
+        ...activeOverride,
+        ...patch
+      }
+    };
+    const compacted = Object.fromEntries(
+      Object.entries(nextNodeModels).filter(([, value]) =>
+        Object.values(value).some((item) => typeof item === "string" && item.trim() !== "")
+      )
+    );
+    onOverlayChange({
+      ...overlay,
+      nodeModels: compacted
+    });
+  };
+
+  return (
+    <section className="projection-controls" aria-label="Local visual projection overrides">
+      <div className="projection-panel-heading">
+        <h2>Local overlays</h2>
+        <span>{overlayHasOverrides(overlay) ? "custom" : "default"}</span>
+      </div>
+      <p className="projection-note">Browser-local advisory model styling for this profile and workspace.</p>
+      <label>
+        Model
+        <select
+          value={activeModel?.model ?? ""}
+          onChange={(event) => setSelectedModel(event.target.value)}
+          disabled={!activeModel}
+        >
+          {nodeModels.map((model) => (
+            <option value={model.model} key={model.model}>{model.model}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Label
+        <input
+          value={activeOverride.label ?? ""}
+          onChange={(event) => updateActiveOverride({ label: event.target.value })}
+          placeholder={activeModel?.label ?? "generated label"}
+          disabled={!activeModel}
+        />
+      </label>
+      <label>
+        Color
+        <select
+          value={activeOverride.colorToken ?? ""}
+          onChange={(event) => updateActiveOverride({ colorToken: event.target.value })}
+          disabled={!activeModel}
+        >
+          <option value="">Generated</option>
+          {PROJECTION_COLOR_OPTIONS.map((token) => (
+            <option value={token} key={token}>{token.replace("flight-deck-", "")}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Group
+        <input
+          value={activeOverride.group ?? ""}
+          onChange={(event) => updateActiveOverride({ group: event.target.value })}
+          placeholder={activeModel?.group ?? "generated group"}
+          disabled={!activeModel}
+        />
+      </label>
+      <button type="button" onClick={onReset} disabled={!overlayHasOverrides(overlay)}>
+        Reset
+      </button>
+    </section>
+  );
 }
 
 function SelectionPanel({
@@ -646,6 +770,9 @@ export function App() {
   const [queryLoading, setQueryLoading] = useState(false);
   const [schemaPanelOpen, setSchemaPanelOpen] = useState(false);
   const [selectionPanelOpen, setSelectionPanelOpen] = useState(false);
+  const [projectionOverlay, setProjectionOverlay] = useState(() =>
+    emptyVisualProjectionOverlay(graphStore.getState().selectedProfileId, graphStore.getState().settings.workspace)
+  );
   const fixtureAutoLoaded = useRef(false);
 
   const {
@@ -685,9 +812,21 @@ export function App() {
     () => schemaFilteredSnapshot(snapshot, schemaFilter),
     [snapshot, schemaFilter]
   );
+  const effectiveVisualProjection = useMemo(
+    () => applyVisualProjectionOverlay(visualProjection, projectionOverlay),
+    [projectionOverlay, visualProjection]
+  );
   const graphSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
   const workspaceMode = activeWorkspacePanel === "audit" ? "audit" : graphView;
   const insightPanelsVisible = graphView === "data" && (explainVisible || profileVisible);
+
+  useEffect(() => {
+    setProjectionOverlay(readVisualProjectionOverlay(window.localStorage, selectedProfileId, settings.workspace));
+  }, [selectedProfileId, settings.workspace]);
+
+  useEffect(() => {
+    writeVisualProjectionOverlay(window.localStorage, projectionOverlay);
+  }, [projectionOverlay]);
 
   const selectWorkspaceMode = (mode: "data" | "schema" | "audit") => {
     if (mode === "audit") {
@@ -994,9 +1133,15 @@ export function App() {
                 &lt;
               </button>
             </div>
-            <SchemaList title="Node models" models={visibleSnapshot?.nodeModels ?? []} projection={visualProjection} />
-            <SchemaList title="Edge models" models={visibleSnapshot?.edgeModels ?? []} projection={visualProjection} />
-            <ProjectionPanel projection={visualProjection} snapshot={snapshot} graphView={graphView} />
+            <SchemaList title="Node models" models={visibleSnapshot?.nodeModels ?? []} projection={effectiveVisualProjection} />
+            <SchemaList title="Edge models" models={visibleSnapshot?.edgeModels ?? []} projection={effectiveVisualProjection} />
+            <ProjectionPanel projection={effectiveVisualProjection} snapshot={snapshot} graphView={graphView} />
+            <ProjectionOverlayControls
+              projection={visualProjection}
+              overlay={projectionOverlay}
+              onOverlayChange={setProjectionOverlay}
+              onReset={() => setProjectionOverlay(emptyVisualProjectionOverlay(selectedProfileId, settings.workspace))}
+            />
             {visibleSnapshot?.partialReason && (
               <p className="warning">{visibleSnapshot.partialReason}</p>
             )}
@@ -1116,7 +1261,7 @@ export function App() {
                   graphView={graphView}
                   onSelect={handleSelect}
                   onHover={setHovered}
-                  visualProjection={visualProjection}
+                  visualProjection={effectiveVisualProjection}
                 />
                 <QueryInsightPanels
                   explainVisible={graphView === "data" && explainVisible}
@@ -1134,7 +1279,7 @@ export function App() {
             <EventStreamPanel auditStatus={securityAuditStatus} events={events} />
           )}
         </div>
-        <SelectionPanel selected={selectedItem} projection={visualProjection} open={selectionPanelOpen} onOpenChange={setSelectionPanelOpen} />
+        <SelectionPanel selected={selectedItem} projection={effectiveVisualProjection} open={selectionPanelOpen} onOpenChange={setSelectionPanelOpen} />
       </div>
     </main>
   );

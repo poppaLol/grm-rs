@@ -517,6 +517,29 @@ button:disabled {
   background: #10171a;
 }
 
+.projection-controls {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid #3f3723;
+  border-radius: 6px;
+  padding: 0.7rem;
+  background: #14120d;
+}
+
+.projection-controls label {
+  min-width: 0;
+}
+
+.projection-controls input,
+.projection-controls select {
+  width: 100%;
+  min-width: 0;
+}
+
+.projection-controls .projection-panel-heading span {
+  color: #ffd166;
+}
+
 .projection-panel-heading {
   display: flex;
   gap: 0.5rem;
