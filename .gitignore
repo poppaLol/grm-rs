@@ -45,6 +45,8 @@ __pycache__/
 
 # Frontend local build/cache output
 grm-flight-deck/.vite/
+grm-flight-deck/playwright-report/
+grm-flight-deck/test-results/
 
 # local persistence and scratch databases
 test-dbs/
