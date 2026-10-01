@@ -10,6 +10,8 @@ interface GraphCanvasProps {
   onSelect: (item: SelectedGraphItem | null) => void;
   onHover: (label: string | null) => void;
   visualProjection: FlightDeckVisualProjection | null;
+  visualLayoutMode?: string;
+  visualLayoutStyle?: string;
 }
 
 type LayoutMode = "force" | "groups" | "hierarchy" | "circle" | "grid";
@@ -21,12 +23,22 @@ export function GraphCanvas({
   graphView,
   onSelect,
   onHover,
-  visualProjection
+  visualProjection,
+  visualLayoutMode,
+  visualLayoutStyle
 }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const reticuleRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<Core | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
+
+  useEffect(() => {
+    const preferred = layoutModeFromVisualIntent(visualLayoutMode, visualLayoutStyle);
+    if (preferred && preferred !== layoutMode) {
+      setRendering(true);
+      setLayoutMode(preferred);
+    }
+  }, [layoutMode, visualLayoutMode, visualLayoutStyle]);
   const [rendering, setRendering] = useState(false);
 
   useEffect(() => {
@@ -55,11 +67,11 @@ export function GraphCanvas({
             selector: "node",
             style: {
               label: "data(displayLabel)",
-              shape: "ellipse",
+              shape: "data(shape)" as cytoscape.Css.NodeShape,
               "background-color": "data(color)",
-              "border-color": "#d5f8ff",
-              "border-opacity": 0.32,
-              "border-width": 1,
+              "border-color": "data(roleBorderColor)",
+              "border-opacity": "data(roleBorderOpacity)" as unknown as number,
+              "border-width": "data(roleBorderWidth)",
               color: "#dce8ea",
               "font-size": "8px",
               "font-weight": 600,
@@ -78,8 +90,8 @@ export function GraphCanvas({
               "active-bg-color": "#62c6f2",
               "active-bg-opacity": 0.14,
               "active-bg-size": 24,
-              width: 16,
-              height: 16
+              width: "data(nodeWidth)",
+              height: "data(nodeHeight)"
             }
           },
           {
@@ -109,11 +121,11 @@ export function GraphCanvas({
             selector: "edge",
             style: {
               label: "data(displayLabel)",
-              width: 1,
-              "line-color": "#536675",
-              "target-arrow-color": "#536675",
+              width: "data(edgeWidth)" as unknown as number,
+              "line-color": "data(edgeColor)",
+              "target-arrow-color": "data(edgeColor)",
               "target-arrow-shape": "triangle",
-              "arrow-scale": 0.62,
+              "arrow-scale": "data(arrowScale)" as unknown as number,
               "curve-style": "bezier",
               color: "#98aaa9",
               "font-size": "7px",
@@ -122,7 +134,8 @@ export function GraphCanvas({
               "text-background-opacity": 0.78,
               "text-background-padding": "2px",
               "text-rotation": "autorotate",
-              opacity: 0.56,
+              opacity: "data(edgeOpacity)" as unknown as number,
+              "line-style": "data(edgeLineStyle)" as cytoscape.Css.LineStyle,
               "overlay-opacity": 0,
               "active-bg-opacity": 0
             }
@@ -240,7 +253,7 @@ export function GraphCanvas({
       graphRef.current?.destroy();
       graphRef.current = null;
     };
-  }, [graphView, layoutMode, snapshot, onHover, onSelect, visualProjection]);
+  }, [graphView, layoutMode, snapshot, onHover, onSelect, visualProjection, visualLayoutMode, visualLayoutStyle]);
 
   const fitToView = () => {
     graphRef.current?.fit(undefined, 72);
@@ -287,6 +300,26 @@ export function GraphCanvas({
       )}
     </section>
   );
+}
+
+function isLayoutMode(value: string | undefined): value is LayoutMode {
+  return value === "force" || value === "groups" || value === "hierarchy" || value === "circle" || value === "grid";
+}
+
+function layoutModeFromVisualIntent(
+  visualLayoutMode: string | undefined,
+  visualLayoutStyle: string | undefined
+): LayoutMode | null {
+  if (isLayoutMode(visualLayoutStyle)) {
+    return visualLayoutStyle;
+  }
+  if (visualLayoutMode === "container-map") {
+    return "groups";
+  }
+  if (visualLayoutMode === "edge-network") {
+    return "force";
+  }
+  return null;
 }
 
 function updateNodeReticule(graph: Core, reticule: HTMLDivElement | null) {
@@ -338,6 +371,12 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visua
           model: model.name,
           group: schemaNodeProjection(visualProjection, model.name)?.group ?? model.name,
           color: colorForToken(schemaNodeProjection(visualProjection, model.name)?.colorToken, model.name),
+          shape: visualNodeShape(schemaNodeProjection(visualProjection, model.name)?.shape, true),
+          roleBorderColor: visualRoleBorder(schemaNodeProjection(visualProjection, model.name)?.visualRole),
+          roleBorderOpacity: visualRoleOpacity(schemaNodeProjection(visualProjection, model.name)?.visualRole),
+          roleBorderWidth: visualRoleWidth(schemaNodeProjection(visualProjection, model.name)?.visualRole),
+          nodeWidth: schemaModelWidth(model),
+          nodeHeight: schemaModelHeight(model),
           width: schemaModelWidth(model),
           height: schemaModelHeight(model),
           textWidth: Math.max(120, schemaModelWidth(model) - 24),
@@ -368,6 +407,11 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visua
           displayLabel: schemaEdgeProjection(visualProjection, edge.model)?.label ?? edge.model,
           model: edge.model,
           group: schemaEdgeProjection(visualProjection, edge.model)?.group ?? edge.model,
+          edgeWidth: visualEdgeWidth(schemaEdgeProjection(visualProjection, edge.model)?.lineWeight, schemaEdgeProjection(visualProjection, edge.model)?.styleToken),
+          edgeLineStyle: visualEdgeLineStyle(schemaEdgeProjection(visualProjection, edge.model)?.lineStyle, schemaEdgeProjection(visualProjection, edge.model)?.styleToken),
+          edgeColor: visualEdgeColor(schemaEdgeProjection(visualProjection, edge.model)?.styleToken),
+          edgeOpacity: visualEdgeOpacity(schemaEdgeProjection(visualProjection, edge.model)?.directionEmphasis),
+          arrowScale: visualArrowScale(schemaEdgeProjection(visualProjection, edge.model)?.directionEmphasis),
           props: {
             kind: "edge_model",
             fromModel: edge.fromModel,
@@ -391,6 +435,12 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visua
         model: node.model,
         group: schemaNodeProjection(visualProjection, node.model)?.group ?? node.model,
         color: colorForToken(schemaNodeProjection(visualProjection, node.model)?.colorToken, node.model),
+        shape: visualNodeShape(schemaNodeProjection(visualProjection, node.model)?.shape, false),
+        roleBorderColor: visualRoleBorder(schemaNodeProjection(visualProjection, node.model)?.visualRole),
+        roleBorderOpacity: visualRoleOpacity(schemaNodeProjection(visualProjection, node.model)?.visualRole),
+        roleBorderWidth: visualRoleWidth(schemaNodeProjection(visualProjection, node.model)?.visualRole),
+        nodeWidth: visualNodeWidth(schemaNodeProjection(visualProjection, node.model)?.shape, schemaNodeProjection(visualProjection, node.model)?.detailDensity),
+        nodeHeight: visualNodeHeight(schemaNodeProjection(visualProjection, node.model)?.shape, schemaNodeProjection(visualProjection, node.model)?.detailDensity),
         props: node.props
       }
     });
@@ -405,9 +455,14 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visua
         source: edge.from,
         target: edge.to,
         label: schemaEdgeProjection(visualProjection, edge.model)?.label ?? edge.model,
-        displayLabel: isSelfLoop ? schemaEdgeProjection(visualProjection, edge.model)?.label ?? edge.model : "",
+        displayLabel: visualEdgeLabel(edge.model, isSelfLoop, visualProjection),
         model: edge.model,
         group: schemaEdgeProjection(visualProjection, edge.model)?.group ?? edge.model,
+        edgeWidth: visualEdgeWidth(schemaEdgeProjection(visualProjection, edge.model)?.lineWeight, schemaEdgeProjection(visualProjection, edge.model)?.styleToken),
+        edgeLineStyle: visualEdgeLineStyle(schemaEdgeProjection(visualProjection, edge.model)?.lineStyle, schemaEdgeProjection(visualProjection, edge.model)?.styleToken),
+        edgeColor: visualEdgeColor(schemaEdgeProjection(visualProjection, edge.model)?.styleToken),
+        edgeOpacity: visualEdgeOpacity(schemaEdgeProjection(visualProjection, edge.model)?.directionEmphasis),
+        arrowScale: visualArrowScale(schemaEdgeProjection(visualProjection, edge.model)?.directionEmphasis),
         props: {
           ...edge.props,
           selfLoop: isSelfLoop
@@ -506,6 +561,136 @@ function orderedGroups(
     ? projection.nodeModels.map((hint) => hint.group)
     : snapshot.nodeModels.map((model) => schemaNodeProjection(projection, model)?.group ?? model);
   return [...new Set(groups)].sort();
+}
+
+function visualNodeShape(shape: string | undefined, schemaModel: boolean): string {
+  if (schemaModel) {
+    return "round-rectangle";
+  }
+  switch (shape) {
+    case "card":
+    case "lane":
+      return "round-rectangle";
+    case "hex":
+      return "hexagon";
+    case "diamond":
+      return "diamond";
+    default:
+      return "ellipse";
+  }
+}
+
+function visualNodeWidth(shape: string | undefined, detailDensity: string | undefined): number {
+  if (shape === "card") {
+    return detailDensity === "rich" ? 46 : 36;
+  }
+  if (shape === "lane") {
+    return 58;
+  }
+  return detailDensity === "rich" ? 24 : 16;
+}
+
+function visualNodeHeight(shape: string | undefined, detailDensity: string | undefined): number {
+  if (shape === "card") {
+    return detailDensity === "rich" ? 28 : 22;
+  }
+  if (shape === "lane") {
+    return 20;
+  }
+  return detailDensity === "rich" ? 24 : 16;
+}
+
+function visualRoleBorder(role: string | undefined): string {
+  switch (role) {
+    case "anchor":
+      return "#ffd166";
+    case "risk":
+      return "#ff6a3d";
+    case "decision":
+      return "#d5f8ff";
+    case "evidence":
+      return "#89d59b";
+    case "actor":
+      return "#c6a8ff";
+    default:
+      return "#d5f8ff";
+  }
+}
+
+function visualRoleOpacity(role: string | undefined): number {
+  return role && role !== "generated" ? 0.88 : 0.32;
+}
+
+function visualRoleWidth(role: string | undefined): number {
+  return role && role !== "generated" ? 2.2 : 1;
+}
+
+function visualEdgeLabel(model: string, isSelfLoop: boolean, projection: FlightDeckVisualProjection | null): string {
+  const hint = schemaEdgeProjection(projection, model);
+  const label = hint?.label ?? model;
+  switch (hint?.labelVisibility) {
+    case "always":
+      return label;
+    case "hidden":
+      return "";
+    case "self-loops":
+      return isSelfLoop ? label : "";
+    default:
+      return isSelfLoop ? label : "";
+  }
+}
+
+function visualEdgeWidth(weight: string | undefined, styleToken: string | undefined): number {
+  if (weight === "strong" || styleToken === "warning") {
+    return 2.4;
+  }
+  if (weight === "fine") {
+    return 0.8;
+  }
+  return styleToken === "dependency" || styleToken === "evidence" ? 1.7 : 1;
+}
+
+function visualEdgeLineStyle(lineStyle: string | undefined, styleToken: string | undefined): string {
+  if (lineStyle === "dashed" || styleToken === "dependency") {
+    return "dashed";
+  }
+  if (lineStyle === "dotted" || styleToken === "evidence") {
+    return "dotted";
+  }
+  return "solid";
+}
+
+function visualEdgeColor(styleToken: string | undefined): string {
+  switch (styleToken) {
+    case "warning":
+      return "#ff6a3d";
+    case "evidence":
+      return "#89d59b";
+    case "dependency":
+      return "#ffd166";
+    default:
+      return "#536675";
+  }
+}
+
+function visualEdgeOpacity(directionEmphasis: string | undefined): number {
+  if (directionEmphasis === "strong") {
+    return 0.9;
+  }
+  if (directionEmphasis === "muted") {
+    return 0.32;
+  }
+  return 0.56;
+}
+
+function visualArrowScale(directionEmphasis: string | undefined): number {
+  if (directionEmphasis === "strong") {
+    return 0.9;
+  }
+  if (directionEmphasis === "muted") {
+    return 0.45;
+  }
+  return 0.62;
 }
 
 function compactGraphLabel(label: string): string {

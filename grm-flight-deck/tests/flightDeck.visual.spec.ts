@@ -28,7 +28,12 @@ test.describe("flight-deck visual projection fixture", () => {
     await expect(page.getByText("Generated visual guidance; workspace data remains canonical.")).toBeVisible();
     await expect(page.getByText("local_fixture_schema_metadata")).toBeVisible();
     await expect(page.getByText("schema-by-endpoints")).toBeVisible();
-    await expect(page.getByRole("region", { name: "Local visual projection overrides" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Visual Design Space" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Node Setup" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Edge Links" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Containers" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Layout Mode" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reset to generated defaults" })).toBeVisible();
     await expect(page.locator(".graph-canvas canvas").first()).toBeVisible();
 
     await page.screenshot({

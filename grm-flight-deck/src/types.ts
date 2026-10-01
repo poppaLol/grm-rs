@@ -82,6 +82,9 @@ export interface FlightDeckNodeProjection {
   group: string;
   idField: string;
   detailFields: string[];
+  shape?: string;
+  detailDensity?: string;
+  visualRole?: string;
 }
 
 export interface FlightDeckEdgeProjection {
@@ -93,6 +96,9 @@ export interface FlightDeckEdgeProjection {
   fromModel: string;
   toModel: string;
   detailFields: string[];
+  lineWeight?: string;
+  lineStyle?: string;
+  labelVisibility?: string;
 }
 
 export interface FlightDeckLayoutProjection {
