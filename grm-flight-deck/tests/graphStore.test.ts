@@ -342,6 +342,25 @@ test("derives visible graph from filter state and clears disappeared selection",
   assert.equal(state.selection, null);
 });
 
+test("clears graph selection when switching workspace view context", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadSnapshot(snapshot);
+
+  store.selectGraphItem({ kind: "node", id: "13" });
+  assert.equal(store.getState().selectedItem?.id, "13");
+
+  store.setGraphView("schema");
+  assert.equal(store.getState().selection, null);
+  assert.equal(store.getState().selectedItem, null);
+
+  store.selectGraphItem({ kind: "node", id: "schema-node:RoadmapItem" });
+  assert.equal(store.getState().selectedItem?.id, "schema-node:RoadmapItem");
+
+  store.selectWorkspacePanel("audit");
+  assert.equal(store.getState().selection, null);
+  assert.equal(store.getState().selectedItem, null);
+});
+
 test("starts in the query panel with connection details and insights hidden", () => {
   const store = createFlightDeckGraphStore(new MemoryStorage());
   const state = store.getState();
