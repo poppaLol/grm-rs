@@ -275,10 +275,10 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
       setState({ ...state, selection });
     },
     selectWorkspacePanel: (panel) => {
-      setState({ ...state, activeWorkspacePanel: panel });
+      setState({ ...state, activeWorkspacePanel: panel, selection: null });
     },
     setGraphView: (view) => {
-      setState({ ...state, graphView: view, lastExecutedQuery: null });
+      setState({ ...state, graphView: view, selection: null, lastExecutedQuery: null });
     },
     setConnectionDetailsOpen: (open) => {
       setState({ ...state, connectionDetailsOpen: open });
