@@ -37,22 +37,32 @@ async fn http_client() -> (
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
     tokio::process::Child,
 ) {
+    http_client_with_args(&[]).await
+}
+
+async fn http_client_with_args(
+    args: &[&str],
+) -> (
+    rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    tokio::process::Child,
+) {
     let probe = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral HTTP MCP port");
     let addr = probe.local_addr().expect("ephemeral HTTP MCP addr");
     drop(probe);
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_grm-mcp"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_grm-mcp"));
+    command
         .arg("--transport")
         .arg("http")
         .arg("--http-bind")
         .arg(addr.to_string())
         .arg("--http-path")
         .arg("/mcp")
-        .kill_on_drop(true)
-        .spawn()
-        .expect("spawn grm-mcp HTTP server");
+        .kill_on_drop(true);
+    command.args(args);
+    let mut child = command.spawn().expect("spawn grm-mcp HTTP server");
 
     let uri = format!("http://{addr}/mcp");
     for _ in 0..20 {
@@ -397,6 +407,41 @@ async fn streamable_http_preserves_mcp_safety_annotations() {
 
     assert_read_only_tool_annotations(&tools);
     assert_batch_tool_annotations(&tools);
+
+    client.cancel().await.unwrap();
+    server.kill().await.expect("stop HTTP MCP server");
+}
+
+#[tokio::test]
+async fn streamable_http_read_only_mode_hides_and_rejects_mutation_tools() {
+    let (client, mut server) = http_client_with_args(&["--read-only"]).await;
+    let tools = client
+        .peer()
+        .list_tools(Default::default())
+        .await
+        .expect("list read-only tools over Streamable HTTP");
+    let tool_names = tools
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+
+    assert!(tool_names.contains(&"grm_schema_list"));
+    assert!(tool_names.contains(&"grm_node_find"));
+    assert!(!tool_names.contains(&"grm_node_create"));
+    assert!(!tool_names.contains(&"grm_batch_write"));
+    assert!(!tool_names.contains(&"grm_query"));
+    assert!(!tool_names.contains(&"grm_export"));
+
+    let schema = call(&client, "grm_schema_list", json!({})).await;
+    assert_eq!(schema["backend"]["mcp_access_mode"], json!("read-only"));
+    let error = call_error(
+        &client,
+        "grm_node_create",
+        json!({ "model": "Missing", "props": {} }),
+    )
+    .await;
+    assert!(error.contains("tool not found"));
 
     client.cancel().await.unwrap();
     server.kill().await.expect("stop HTTP MCP server");

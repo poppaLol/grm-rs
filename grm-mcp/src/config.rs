@@ -6,6 +6,7 @@ use grm_rs::{DurabilityFormat, GrmError, Result as GrmResult};
 #[derive(Debug, Clone, Default)]
 pub struct StartupOptions {
     pub transport: TransportOptions,
+    pub read_only: bool,
     pub load_json: Option<PathBuf>,
     pub load_bin: Option<PathBuf>,
     pub import_json: Option<PathBuf>,
@@ -58,6 +59,7 @@ where
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--read-only" => options.read_only = true,
             "--load-json" => options.load_json = Some(next_path(&mut args, &arg)?),
             "--load-bin" => options.load_bin = Some(next_path(&mut args, &arg)?),
             "--import-json" => options.import_json = Some(next_path(&mut args, &arg)?),
@@ -180,7 +182,7 @@ where
 }
 
 pub fn usage() -> &'static str {
-    "Usage: grm-mcp [--transport stdio|http] [--http-bind <host:port>] [--http-path <path>] [--http-allowed-host <host-or-host:port>] [--load-json <path>] [--load-bin <path>] [--import-json <path>] [--export-json <path>] [--autocommit-json <path>] [--autocommit-bin <path>]"
+    "Usage: grm-mcp [--read-only] [--transport stdio|http] [--http-bind <host:port>] [--http-path <path>] [--http-allowed-host <host-or-host:port>] [--load-json <path>] [--load-bin <path>] [--import-json <path>] [--export-json <path>] [--autocommit-json <path>] [--autocommit-bin <path>]"
 }
 
 fn next_path(args: &mut impl Iterator<Item = String>, flag: &str) -> GrmResult<PathBuf> {

@@ -71,6 +71,21 @@ The HTTP MCP adapter does not add browser authentication, OAuth, bearer-token
 auth, hosted MCP security, production PKI lifecycle, multi-tenant isolation, or
 public internet exposure.
 
+For a read-only inspection endpoint, add `--read-only`:
+
+```bash
+grm-mcp \
+  --read-only \
+  --transport http \
+  --http-bind 127.0.0.1:8080 \
+  --http-path /mcp
+```
+
+Read-only mode removes mutation, raw-query, persistence, import/export, and
+schema-checkpoint tools from `tools/list`; direct calls to those routes fail
+before backend execution. It is an adapter safety boundary, not caller
+authentication, TLS, or a replacement for service-side authorization.
+
 ### gRPC Workspace Service Mode
 
 To route supported MCP tools through the GRM-owned gRPC workspace service over
@@ -228,6 +243,7 @@ not-supported errors.
 --export-json <path>
 --autocommit-json <path>
 --autocommit-bin <path>
+--read-only
 --transport stdio|http
 --http-bind <host:port>
 --http-path <path>
