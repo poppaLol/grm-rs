@@ -114,9 +114,32 @@ h3 {
 }
 
 .query-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: end;
   padding: 0.75rem 1.15rem;
   border-bottom: 1px solid #263139;
   background: #0d1315;
+}
+
+.query-controls-row,
+.query-command-buttons {
+  display: flex;
+  gap: 0.65rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.query-command-buttons {
+  flex: 1 1 23rem;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+
+.query-command-buttons button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .mode-toggle {
@@ -141,7 +164,7 @@ h3 {
 }
 
 .command-input {
-  flex: 1 1 22rem;
+  width: 100%;
 }
 
 .query-message {
@@ -1042,12 +1065,14 @@ pre {
     justify-content: flex-start;
   }
 
-  .query-bar label {
+  .query-bar label,
+  .query-controls-row label {
     min-width: min(100%, 13rem);
   }
 
-  .command-input {
+  .query-command-buttons {
     flex: 1 1 100%;
+    flex-wrap: wrap;
   }
 
   .audit-toolbar {

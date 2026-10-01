@@ -817,6 +817,7 @@ export function App() {
     [projectionOverlay, visualProjection]
   );
   const graphSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
+  const schemaSidebarSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
   const workspaceMode = activeWorkspacePanel === "audit" ? "audit" : graphView;
   const insightPanelsVisible = graphView === "data" && (explainVisible || profileVisible);
 
@@ -1133,8 +1134,8 @@ export function App() {
                 &lt;
               </button>
             </div>
-            <SchemaList title="Node models" models={visibleSnapshot?.nodeModels ?? []} projection={effectiveVisualProjection} />
-            <SchemaList title="Edge models" models={visibleSnapshot?.edgeModels ?? []} projection={effectiveVisualProjection} />
+            <SchemaList title="Node models" models={schemaSidebarSnapshot?.nodeModels ?? []} projection={effectiveVisualProjection} />
+            <SchemaList title="Edge models" models={schemaSidebarSnapshot?.edgeModels ?? []} projection={effectiveVisualProjection} />
             <ProjectionPanel projection={effectiveVisualProjection} snapshot={snapshot} graphView={graphView} />
             <ProjectionOverlayControls
               projection={visualProjection}
@@ -1142,12 +1143,12 @@ export function App() {
               onOverlayChange={setProjectionOverlay}
               onReset={() => setProjectionOverlay(emptyVisualProjectionOverlay(selectedProfileId, settings.workspace))}
             />
-            {visibleSnapshot?.partialReason && (
-              <p className="warning">{visibleSnapshot.partialReason}</p>
+            {schemaSidebarSnapshot?.partialReason && (
+              <p className="warning">{schemaSidebarSnapshot.partialReason}</p>
             )}
-            {visibleSnapshot && visibleSnapshot.omittedEdges > 0 && (
+            {schemaSidebarSnapshot && schemaSidebarSnapshot.omittedEdges > 0 && (
               <p className="warning">
-                {visibleSnapshot.omittedEdges} edges omitted outside the bounded node result.
+                {schemaSidebarSnapshot.omittedEdges} edges omitted outside the bounded node result.
               </p>
             )}
           </aside>
@@ -1169,69 +1170,73 @@ export function App() {
                         disabled={!snapshot && settings.useFixtureData}
                       />
                     </label>
-                    <label>
-                      Search
-                      <input
-                        value={filter.text}
-                        onChange={(event) => graphStore.applyGraphFilter({ ...filter, text: event.target.value })}
-                        placeholder="id, label, model, property"
-                        disabled={!snapshot}
-                      />
-                    </label>
-                    <label>
-                      Model
-                      <select
-                        value={filter.model}
-                        onChange={(event) => graphStore.applyGraphFilter({ ...filter, model: event.target.value })}
-                        disabled={!snapshot}
-                      >
-                        <option value="">Any</option>
-                        {modelOptions.map((model) => (
-                          <option value={model} key={model}>{model}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Property key
-                      <input
-                        value={filter.propertyKey}
-                        onChange={(event) =>
-                          graphStore.applyGraphFilter({ ...filter, propertyKey: event.target.value })
-                        }
-                        placeholder="status"
-                        disabled={!snapshot}
-                      />
-                    </label>
-                    <label>
-                      Property value
-                      <input
-                        value={filter.propertyValue}
-                        onChange={(event) =>
-                          graphStore.applyGraphFilter({ ...filter, propertyValue: event.target.value })
-                        }
-                        placeholder="planned"
-                        disabled={!snapshot}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => graphStore.applyGraphFilter(DEFAULT_GRAPH_FILTER)}
-                      disabled={!snapshot}
-                    >
-                      Clear
-                    </button>
-                    <button type="button" onClick={graphStore.recordQueryExecution} disabled={!snapshot}>
-                      Summarize
-                    </button>
-                    <button type="button" onClick={() => void executeQuery()} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
-                      {queryLoading || queryStatus === "running" ? "Running" : "Execute"}
-                    </button>
-                    <button type="button" onClick={() => void executeQuery("explain")} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
-                      Explain
-                    </button>
-                    <button type="button" onClick={() => void executeQuery("profile")} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
-                      Profile
-                    </button>
+                    <div className="query-controls-row">
+                      <label>
+                        Search
+                        <input
+                          value={filter.text}
+                          onChange={(event) => graphStore.applyGraphFilter({ ...filter, text: event.target.value })}
+                          placeholder="id, label, model, property"
+                          disabled={!snapshot}
+                        />
+                      </label>
+                      <label>
+                        Model
+                        <select
+                          value={filter.model}
+                          onChange={(event) => graphStore.applyGraphFilter({ ...filter, model: event.target.value })}
+                          disabled={!snapshot}
+                        >
+                          <option value="">Any</option>
+                          {modelOptions.map((model) => (
+                            <option value={model} key={model}>{model}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Property key
+                        <input
+                          value={filter.propertyKey}
+                          onChange={(event) =>
+                            graphStore.applyGraphFilter({ ...filter, propertyKey: event.target.value })
+                          }
+                          placeholder="status"
+                          disabled={!snapshot}
+                        />
+                      </label>
+                      <label>
+                        Property value
+                        <input
+                          value={filter.propertyValue}
+                          onChange={(event) =>
+                            graphStore.applyGraphFilter({ ...filter, propertyValue: event.target.value })
+                          }
+                          placeholder="planned"
+                          disabled={!snapshot}
+                        />
+                      </label>
+                      <div className="query-command-buttons">
+                        <button
+                          type="button"
+                          onClick={() => graphStore.applyGraphFilter(DEFAULT_GRAPH_FILTER)}
+                          disabled={!snapshot}
+                        >
+                          Clear
+                        </button>
+                        <button type="button" onClick={graphStore.recordQueryExecution} disabled={!snapshot}>
+                          Summarize
+                        </button>
+                        <button type="button" onClick={() => void executeQuery()} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
+                          {queryLoading || queryStatus === "running" ? "Running" : "Execute"}
+                        </button>
+                        <button type="button" onClick={() => void executeQuery("explain")} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
+                          Explain
+                        </button>
+                        <button type="button" onClick={() => void executeQuery("profile")} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
+                          Profile
+                        </button>
+                      </div>
+                    </div>
                   </>
                 ) : (
                   <>
