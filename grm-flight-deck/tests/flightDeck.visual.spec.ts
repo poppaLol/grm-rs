@@ -24,10 +24,11 @@ test.describe("flight-deck visual projection fixture", () => {
     await expect(page.getByPlaceholder("model, field, or edge direction")).toBeVisible();
     await expect(page.locator(".schema-panel").getByText("roadmap item", { exact: true })).toBeVisible();
     await expect(page.locator(".schema-panel").getByText("work slice", { exact: true })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Visual projection" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Visual projection", exact: true })).toBeVisible();
     await expect(page.getByText("Generated visual guidance; workspace data remains canonical.")).toBeVisible();
     await expect(page.getByText("local_fixture_schema_metadata")).toBeVisible();
     await expect(page.getByText("schema-by-endpoints")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Local visual projection overrides" })).toBeVisible();
     await expect(page.locator(".graph-canvas canvas").first()).toBeVisible();
 
     await page.screenshot({

@@ -7,6 +7,13 @@ import {
   normalizeSnapshot,
   STORE_STORAGE_KEY
 } from "../src/graphStore";
+import {
+  applyVisualProjectionOverlay,
+  emptyVisualProjectionOverlay,
+  readVisualProjectionOverlay,
+  VISUAL_OVERLAY_STORAGE_KEY,
+  writeVisualProjectionOverlay
+} from "../src/projectionOverlay";
 import type { FlightDeckSnapshot, FlightDeckVisualProjection } from "../src/types";
 
 class MemoryStorage {
@@ -204,6 +211,43 @@ test("can create a second selected connection profile from draft settings", () =
 
   store.selectProfile("local-workspace");
   assert.equal(store.getState().settings.workspace, "first-workspace");
+});
+
+test("applies browser-local visual projection overlays without changing generated defaults", () => {
+  const overlay = emptyVisualProjectionOverlay("local-workspace", "flight-deck-demo");
+  overlay.nodeModels.RoadmapItem = {
+    label: "PM roadmap",
+    colorToken: "flight-deck-amber",
+    group: "product planning"
+  };
+
+  const projected = applyVisualProjectionOverlay(visualProjection, overlay);
+
+  assert.equal(projected?.nodeModels[0].label, "PM roadmap");
+  assert.equal(projected?.nodeModels[0].colorToken, "flight-deck-amber");
+  assert.equal(projected?.nodeModels[0].group, "product planning");
+  assert.equal(visualProjection.nodeModels[0].label, "roadmap item");
+});
+
+test("persists local visual projection overlays by profile and workspace only", () => {
+  const storage = new MemoryStorage();
+  const overlay = emptyVisualProjectionOverlay("owner-profile", "sygnal-one-memory");
+  overlay.nodeModels.WorkSlice = {
+    label: "delivery slice",
+    colorToken: "flight-deck-green",
+    group: "roadmap"
+  };
+
+  writeVisualProjectionOverlay(storage, overlay);
+
+  const restored = readVisualProjectionOverlay(storage, "owner-profile", "sygnal-one-memory");
+  const otherWorkspace = readVisualProjectionOverlay(storage, "owner-profile", "other-workspace");
+  const persisted = storage.getItem(VISUAL_OVERLAY_STORAGE_KEY) ?? "";
+
+  assert.equal(restored.nodeModels.WorkSlice.label, "delivery slice");
+  assert.deepEqual(otherWorkspace.nodeModels, {});
+  assert.equal(persisted.includes("BEGIN CERTIFICATE"), false);
+  assert.equal(persisted.includes("privateKey"), false);
 });
 
 test("keeps visual projection as non-persistent workbench state", () => {
