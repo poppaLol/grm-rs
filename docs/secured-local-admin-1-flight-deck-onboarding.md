@@ -267,6 +267,59 @@ npm run dev
 Open `http://127.0.0.1:8081` and use the same UI settings from the one-command
 path above.
 
+
+## Ziti-Published Local UI Service
+
+For the `sygnal-one-memory` setup, keep GRM credential handling in the local
+service and gateway processes, then publish only the browser UI and local HTTP
+adapter through the Ziti fabric.
+
+One local shape is:
+
+```bash
+cd /home/laurie/source/grm-rs
+
+GRM_FLIGHT_DECK_GATEWAY_BIND=127.0.0.1:3001 \
+GRM_FLIGHT_DECK_GATEWAY_WORKSPACE_HINT=sygnal-one-memory \
+examples/secured-local/start-flight-deck-gateway.sh
+```
+
+In a separate terminal:
+
+```bash
+cd /home/laurie/source/grm-rs/grm-flight-deck
+GRM_FLIGHT_DECK_DEV_PROXY_TARGET=http://127.0.0.1:3001 npm run dev -- --host 127.0.0.1 --strictPort
+```
+
+Publish these local services to Ziti:
+
+```text
+flight-deck UI:      127.0.0.1:8081
+flight-deck gateway: 127.0.0.1:3001
+workspace hint:      sygnal-one-memory
+```
+
+The gateway exposes bounded read-only browser JSON, including:
+
+```text
+GET /api/workspaces/sygnal-one-memory/snapshot?limit=50
+GET /api/workspaces/sygnal-one-memory/visual-projection?limit=50
+GET /api/security/status
+GET /api/security/audit/status
+```
+
+The visual projection response is generated default UI/agent guidance from
+runtime schema metadata. It can influence labels, colors, grouping, layout, and
+detail ordering in the flight-deck, but it is not canonical GRM memory and does
+not change typed workspace operations.
+
+Do not publish or store Admin-1 private keys, raw certificates, raw credentials,
+policy tables, certificate fingerprints, or server-local key/cert paths in the
+browser profile or Ziti UI configuration. Ziti exposure in this slice is local
+service publication only; it is not Ziti identity lifecycle, hosted auth,
+OAuth, policy mutation, an admin plane, RBAC, hosted durability, or a new GRM
+remote-access security guarantee.
+
 ## Troubleshooting
 
 If the gateway logs this:

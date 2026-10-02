@@ -7,8 +7,11 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8081",
     "build": "tsc -b && vite build",
-    "test": "esbuild tests/graphStore.test.ts --bundle --platform=node --format=esm --outfile=/tmp/grm-flight-deck-graphStore.test.mjs && node --test /tmp/grm-flight-deck-graphStore.test.mjs",
-    "preview": "vite preview --host 127.0.0.1 --port 8081"
+    "test": "npm run test:unit",
+    "preview": "vite preview --host 127.0.0.1 --port 8081",
+    "test:unit": "esbuild tests/graphStore.test.ts --bundle --platform=node --format=esm --outfile=/tmp/grm-flight-deck-graphStore.test.mjs && node --test /tmp/grm-flight-deck-graphStore.test.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:screenshots": "playwright test --project=chromium-system"
   },
   "dependencies": {
     "cytoscape": "^3.33.1",
@@ -16,10 +19,11 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1",
+    "@playwright/test": "^1.55.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.8.0",
     "vite": "^7.0.0"
   }

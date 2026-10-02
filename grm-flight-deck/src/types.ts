@@ -57,6 +57,56 @@ export interface FlightDeckSnapshot {
   partialReason?: string;
 }
 
+
+export interface FlightDeckVisualProjection {
+  workspace: string;
+  provenance: FlightDeckVisualProjectionProvenance;
+  nodeModels: FlightDeckNodeProjection[];
+  edgeModels: FlightDeckEdgeProjection[];
+  schemaLayout: FlightDeckLayoutProjection;
+  dataLayout: FlightDeckLayoutProjection;
+}
+
+export interface FlightDeckVisualProjectionProvenance {
+  source: "generated_default" | "fixture_default" | "unknown";
+  generatedFrom: string;
+  advisory: boolean;
+  modelLimit: number;
+}
+
+export interface FlightDeckNodeProjection {
+  model: string;
+  label: string;
+  glyph: string;
+  colorToken: string;
+  group: string;
+  idField: string;
+  detailFields: string[];
+  shape?: string;
+  detailDensity?: string;
+  visualRole?: string;
+}
+
+export interface FlightDeckEdgeProjection {
+  model: string;
+  label: string;
+  styleToken: string;
+  directionEmphasis: "directed" | "self_loop" | string;
+  group: string;
+  fromModel: string;
+  toModel: string;
+  detailFields: string[];
+  lineWeight?: string;
+  lineStyle?: string;
+  labelVisibility?: string;
+}
+
+export interface FlightDeckLayoutProjection {
+  layoutToken: string;
+  groupBy: string;
+  rankBy: string;
+}
+
 export interface FlightDeckSecurityStatus {
   securityProfile: "anonymous_local" | "docker_local_insecure" | "secured" | "fixture" | "unknown";
   identityStatus:

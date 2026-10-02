@@ -1,17 +1,29 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { executeQueryCommand, fetchSecurityAuditStatus, fetchSecurityStatus, fetchSnapshot } from "./api";
+import { executeQueryCommand, fetchSecurityAuditStatus, fetchSecurityStatus, fetchSnapshot, fetchVisualProjection } from "./api";
 import {
   createFlightDeckGraphStore,
   DEFAULT_GRAPH_FILTER,
   useFlightDeckGraphStore
 } from "./graphStore";
 import { GraphCanvas } from "./GraphCanvas";
-import { colorForModel } from "./modelColors";
+import { colorForToken } from "./modelColors";
+import {
+  applyVisualProjectionOverlay,
+  emptyVisualProjectionOverlay,
+  overlayHasOverrides,
+  readVisualProjectionOverlay,
+  writeVisualProjectionOverlay,
+  type VisualProjectionContainerOverlay,
+  type VisualProjectionEdgeOverlay,
+  type VisualProjectionNodeOverlay,
+  type VisualProjectionOverlay
+} from "./projectionOverlay";
 import type {
   FlightDeckSecurityAuditStatus,
   FlightDeckSecurityStatus,
   FlightDeckSnapshot,
+  FlightDeckVisualProjection,
   GraphFilter,
   GraphView,
   QueryEvidence,
@@ -21,7 +33,30 @@ import type {
 
 const graphStore = createFlightDeckGraphStore(window.localStorage);
 
-function SchemaList({ title, models }: { title: string; models: string[] }) {
+const PROJECTION_COLOR_OPTIONS = [
+  "flight-deck-blue",
+  "flight-deck-teal",
+  "flight-deck-indigo",
+  "flight-deck-green",
+  "flight-deck-violet",
+  "flight-deck-amber",
+  "flight-deck-rose",
+  "flight-deck-sky"
+];
+
+const NODE_SHAPE_OPTIONS = ["generated", "dot", "card", "hex", "diamond", "lane"];
+const NODE_DETAIL_OPTIONS = ["generated", "compact", "standard", "rich"];
+const NODE_ROLE_OPTIONS = ["generated", "anchor", "context", "evidence", "decision", "risk", "actor", "object", "process"];
+const EDGE_STYLE_OPTIONS = ["generated", "directed", "dependency", "evidence", "warning"];
+const EDGE_DIRECTION_OPTIONS = ["generated", "normal", "strong", "muted"];
+const EDGE_WEIGHT_OPTIONS = ["generated", "fine", "normal", "strong"];
+const EDGE_LINE_OPTIONS = ["generated", "solid", "dashed", "dotted"];
+const EDGE_LABEL_OPTIONS = ["generated", "hidden", "self-loops", "always"];
+const CONTAINER_RENDER_OPTIONS = ["generated", "region", "card", "lane", "section"];
+const CONTAINER_COLLAPSE_OPTIONS = ["generated", "expanded", "collapsed"];
+const LAYOUT_STYLE_OPTIONS = ["generated", "force", "groups", "hierarchy", "grid"];
+
+function SchemaList({ title, models, projection }: { title: string; models: string[]; projection: FlightDeckVisualProjection | null }) {
   return (
     <section className="schema-list-section">
       <h3>{title}</h3>
@@ -30,9 +65,9 @@ function SchemaList({ title, models }: { title: string; models: string[] }) {
           <li key={model}>
             <span
               className="model-swatch"
-              style={{ backgroundColor: colorForModel(model) }}
+              style={{ backgroundColor: colorForToken(nodeProjection(projection, model)?.colorToken, model) }}
             />
-            <span>{model}</span>
+            <span>{nodeProjection(projection, model)?.label ?? edgeProjection(projection, model)?.label ?? model}</span>
           </li>
         ))}
       </ul>
@@ -40,21 +75,405 @@ function SchemaList({ title, models }: { title: string; models: string[] }) {
   );
 }
 
-function SelectionPanel({ selected }: { selected: SelectedGraphItem | null }) {
-  if (!selected) {
+function ProjectionPanel({
+  projection,
+  snapshot,
+  graphView
+}: {
+  projection: FlightDeckVisualProjection | null;
+  snapshot: FlightDeckSnapshot | null;
+  graphView: GraphView;
+}) {
+  const activeLayout = graphView === "schema" ? projection?.schemaLayout : projection?.dataLayout;
+
+  return (
+    <section className={`projection-panel ${projection ? "available" : "missing"}`} aria-label="Visual projection">
+      <div className="projection-panel-heading">
+        <h2>Projection</h2>
+        <span>{projection ? projectionSourceLabel(projection) : "fallback"}</span>
+      </div>
+      {projection ? (
+        <>
+          <p className="projection-note">Generated visual guidance; workspace data remains canonical.</p>
+          <dl>
+            <dt>From</dt>
+            <dd>{projection.provenance.generatedFrom}</dd>
+            <dt>Scope</dt>
+            <dd>{projection.nodeModels.length} node models / {projection.edgeModels.length} edge models</dd>
+            <dt>Layout</dt>
+            <dd>{activeLayout?.layoutToken ?? "default"}</dd>
+            <dt>Group by</dt>
+            <dd>{activeLayout?.groupBy ?? "model"}</dd>
+            <dt>Limit</dt>
+            <dd>{projection.provenance.modelLimit}</dd>
+          </dl>
+        </>
+      ) : (
+        <p className="projection-note">
+          No projection hints loaded; using snapshot labels, local colors, and default layouts.
+        </p>
+      )}
+      {snapshot && (
+        <p className="projection-footnote">
+          Current snapshot: {snapshot.source}, {snapshot.nodes.length} nodes / {snapshot.edges.length} edges.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function projectionSourceLabel(projection: FlightDeckVisualProjection): string {
+  switch (projection.provenance.source) {
+    case "generated_default":
+      return "generated";
+    case "fixture_default":
+      return "fixture";
+    default:
+      return "unknown";
+  }
+}
+
+function ProjectionOverlayControls({
+  projection,
+  overlay,
+  onOverlayChange,
+  onReset
+}: {
+  projection: FlightDeckVisualProjection | null;
+  overlay: VisualProjectionOverlay;
+  onOverlayChange: (overlay: VisualProjectionOverlay) => void;
+  onReset: () => void;
+}) {
+  const [selectedNodeModel, setSelectedNodeModel] = useState("");
+  const [selectedEdgeModel, setSelectedEdgeModel] = useState("");
+  const nodeModels = projection?.nodeModels ?? [];
+  const edgeModels = projection?.edgeModels ?? [];
+  const activeNode = nodeModels.find((model) => model.model === selectedNodeModel) ?? nodeModels[0] ?? null;
+  const activeEdge = edgeModels.find((model) => model.model === selectedEdgeModel) ?? edgeModels[0] ?? null;
+  const activeNodeOverride = activeNode ? overlay.nodeModels[activeNode.model] ?? {} : {};
+  const activeEdgeOverride = activeEdge ? overlay.edgeModels[activeEdge.model] ?? {} : {};
+  const containerKey = activeEdge ? containerKeyFor(activeEdge.model) : "default-container";
+  const activeContainer = overlay.containers[containerKey] ?? {};
+
+  useEffect(() => {
+    if (!activeNode) {
+      setSelectedNodeModel("");
+      return;
+    }
+    if (!nodeModels.some((model) => model.model === selectedNodeModel)) {
+      setSelectedNodeModel(activeNode.model);
+    }
+  }, [activeNode, nodeModels, selectedNodeModel]);
+
+  useEffect(() => {
+    if (!activeEdge) {
+      setSelectedEdgeModel("");
+      return;
+    }
+    if (!edgeModels.some((model) => model.model === selectedEdgeModel)) {
+      setSelectedEdgeModel(activeEdge.model);
+    }
+  }, [activeEdge, edgeModels, selectedEdgeModel]);
+
+  const updateNode = (patch: VisualProjectionNodeOverlay) => {
+    if (!activeNode) {
+      return;
+    }
+    onOverlayChange({
+      ...overlay,
+      nodeModels: compactRecord({
+        ...overlay.nodeModels,
+        [activeNode.model]: {
+          ...activeNodeOverride,
+          ...patch
+        }
+      })
+    });
+  };
+
+  const updateEdge = (patch: VisualProjectionEdgeOverlay) => {
+    if (!activeEdge) {
+      return;
+    }
+    onOverlayChange({
+      ...overlay,
+      edgeModels: compactRecord({
+        ...overlay.edgeModels,
+        [activeEdge.model]: {
+          ...activeEdgeOverride,
+          ...patch
+        }
+      })
+    });
+  };
+
+  const updateContainer = (patch: VisualProjectionContainerOverlay) => {
+    if (!activeEdge) {
+      return;
+    }
+    onOverlayChange({
+      ...overlay,
+      containers: compactRecord({
+        ...overlay.containers,
+        [containerKey]: {
+          parentModel: activeEdge.fromModel,
+          childModel: activeEdge.toModel,
+          viaEdgeModel: activeEdge.model,
+          ...activeContainer,
+          ...patch
+        }
+      })
+    });
+  };
+
+  return (
+    <section className="visual-design-space" aria-label="Visual Design Space">
+      <div className="projection-panel-heading">
+        <h2>Visual Design Space</h2>
+        <span>{overlayHasOverrides(overlay) ? "custom" : "default"}</span>
+      </div>
+      <p className="projection-note">Browser-local advisory design intent layered over generated projection defaults.</p>
+
+      <section className="design-space-section" aria-label="Node Setup">
+        <div className="design-section-heading">
+          <h3>Node Setup</h3>
+          <span>models as marks</span>
+        </div>
+        <label>
+          Node model
+          <select value={activeNode?.model ?? ""} onChange={(event) => setSelectedNodeModel(event.target.value)} disabled={!activeNode}>
+            {nodeModels.map((model) => (
+              <option value={model.model} key={model.model}>{model.model}</option>
+            ))}
+          </select>
+        </label>
+        <div className="design-grid two">
+          <label>
+            Display name
+            <input value={activeNodeOverride.label ?? ""} onChange={(event) => updateNode({ label: event.target.value })} placeholder={activeNode?.label ?? "generated label"} disabled={!activeNode} />
+          </label>
+          <label>
+            Colour
+            <select value={activeNodeOverride.colorToken ?? ""} onChange={(event) => updateNode({ colorToken: event.target.value })} disabled={!activeNode}>
+              <option value="">Generated</option>
+              {PROJECTION_COLOR_OPTIONS.map((token) => (
+                <option value={token} key={token}>{token.replace("flight-deck-", "")}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Glyph / shape
+            <select value={activeNodeOverride.shape ?? "generated"} onChange={(event) => updateNode({ shape: event.target.value })} disabled={!activeNode}>
+              {NODE_SHAPE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Detail density
+            <select value={activeNodeOverride.detailDensity ?? "generated"} onChange={(event) => updateNode({ detailDensity: event.target.value })} disabled={!activeNode}>
+              {NODE_DETAIL_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Visual role
+            <select value={activeNodeOverride.visualRole ?? "generated"} onChange={(event) => updateNode({ visualRole: event.target.value })} disabled={!activeNode}>
+              {NODE_ROLE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Group / lane
+            <input value={activeNodeOverride.group ?? ""} onChange={(event) => updateNode({ group: event.target.value })} placeholder={activeNode?.group ?? "generated group"} disabled={!activeNode} />
+          </label>
+        </div>
+      </section>
+
+      <section className="design-space-section" aria-label="Edge Links">
+        <div className="design-section-heading">
+          <h3>Edge Links</h3>
+          <span>relationships as strokes</span>
+        </div>
+        <label>
+          Edge model
+          <select value={activeEdge?.model ?? ""} onChange={(event) => setSelectedEdgeModel(event.target.value)} disabled={!activeEdge}>
+            {edgeModels.map((model) => (
+              <option value={model.model} key={`${model.model}:${model.fromModel}:${model.toModel}`}>{model.model}</option>
+            ))}
+          </select>
+        </label>
+        <div className="design-grid two">
+          <label>
+            Link label
+            <input value={activeEdgeOverride.label ?? ""} onChange={(event) => updateEdge({ label: event.target.value })} placeholder={activeEdge?.label ?? "generated label"} disabled={!activeEdge} />
+          </label>
+          <label>
+            Link style
+            <select value={activeEdgeOverride.styleToken ?? "generated"} onChange={(event) => updateEdge({ styleToken: event.target.value })} disabled={!activeEdge}>
+              {EDGE_STYLE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Direction emphasis
+            <select value={activeEdgeOverride.directionEmphasis ?? "generated"} onChange={(event) => updateEdge({ directionEmphasis: event.target.value })} disabled={!activeEdge}>
+              {EDGE_DIRECTION_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Line weight
+            <select value={activeEdgeOverride.lineWeight ?? "generated"} onChange={(event) => updateEdge({ lineWeight: event.target.value })} disabled={!activeEdge}>
+              {EDGE_WEIGHT_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Line style
+            <select value={activeEdgeOverride.lineStyle ?? "generated"} onChange={(event) => updateEdge({ lineStyle: event.target.value })} disabled={!activeEdge}>
+              {EDGE_LINE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Label visibility
+            <select value={activeEdgeOverride.labelVisibility ?? "generated"} onChange={(event) => updateEdge({ labelVisibility: event.target.value })} disabled={!activeEdge}>
+              {EDGE_LABEL_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section className="design-space-section" aria-label="Containers">
+        <div className="design-section-heading">
+          <h3>Containers</h3>
+          <span>visual only</span>
+        </div>
+        <p className="projection-note">Containment-like rendering is advisory and does not create canonical GRM containment.</p>
+        <div className="design-grid two">
+          <label>
+            Containment source
+            <select value={activeEdge?.model ?? ""} onChange={(event) => setSelectedEdgeModel(event.target.value)} disabled={!activeEdge}>
+              {edgeModels.map((model) => (
+                <option value={model.model} key={`container:${model.model}:${model.fromModel}:${model.toModel}`}>{model.fromModel} {"->"} {model.toModel}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Render as
+            <select value={activeContainer.renderAs ?? "generated"} onChange={(event) => updateContainer({ renderAs: event.target.value })} disabled={!activeEdge}>
+              {CONTAINER_RENDER_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Collapse affordance
+            <select value={activeContainer.collapse ?? "generated"} onChange={(event) => updateContainer({ collapse: event.target.value })} disabled={!activeEdge}>
+              {CONTAINER_COLLAPSE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+            </select>
+          </label>
+          <label>
+            Style token
+            <input value={activeContainer.styleToken ?? ""} onChange={(event) => updateContainer({ styleToken: event.target.value })} placeholder="warning-lane, roadmap-section" disabled={!activeEdge} />
+          </label>
+        </div>
+      </section>
+
+      <section className="design-space-section" aria-label="Layout Mode">
+        <div className="design-section-heading">
+          <h3>Layout Mode</h3>
+          <span>map strategy</span>
+        </div>
+        <div className="layout-choice-row" role="group" aria-label="Visual layout strategy">
+          <button type="button" className={(overlay.layout.mode ?? "edge-network") === "edge-network" ? "active" : ""} onClick={() => onOverlayChange({ ...overlay, layout: { ...overlay.layout, mode: "edge-network" } })}>
+            Edge-network
+          </button>
+          <button type="button" className={overlay.layout.mode === "container-map" ? "active" : ""} onClick={() => onOverlayChange({ ...overlay, layout: { ...overlay.layout, mode: "container-map" } })}>
+            Container/map
+          </button>
+        </div>
+        <label>
+          Layout style
+          <select value={overlay.layout.style ?? "generated"} onChange={(event) => onOverlayChange({ ...overlay, layout: { ...overlay.layout, style: event.target.value } })}>
+            {LAYOUT_STYLE_OPTIONS.map((option) => <option value={option} key={option}>{option}</option>)}
+          </select>
+        </label>
+      </section>
+
+      <button type="button" className="reset-design-button" onClick={onReset} disabled={!overlayHasOverrides(overlay)}>
+        Reset to generated defaults
+      </button>
+    </section>
+  );
+}
+
+function containerKeyFor(edgeModel: string): string {
+  return `edge:${edgeModel}`;
+}
+
+function compactRecord<T extends object>(record: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) =>
+      Object.values(value as Record<string, unknown>).some((item) => typeof item === "string" && item.trim() !== "" && item !== "generated")
+    )
+  );
+}
+
+
+function SelectionPanel({
+  selected,
+  projection,
+  open,
+  onOpenChange
+}: {
+  selected: SelectedGraphItem | null;
+  projection: FlightDeckVisualProjection | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  if (!selected || !open) {
     return (
-      <aside className="panel inspector">
-        <h2>Selection</h2>
-        <p className="muted">Select a node or edge to inspect it.</p>
+      <aside className={`panel inspector collapsed ${selected ? "has-selection" : ""}`} aria-label="Selection">
+        {selected && (
+          <button
+            type="button"
+            className="panel-rail-button"
+            onClick={() => onOpenChange(true)}
+            aria-label="Open selection details"
+          >
+            &lt;
+          </button>
+        )}
       </aside>
     );
   }
 
+  const hint = selected.kind === "node"
+    ? nodeProjection(projection, selected.model)
+    : edgeProjection(projection, selected.model);
+  const orderedProps = orderProps(selected.props, hint?.detailFields ?? []);
+  const entries = Object.entries(orderedProps);
+
   return (
-    <aside className="panel inspector">
-      <h2>{selected.label}</h2>
-      <p className="kind">{selected.kind} / {selected.model}</p>
-      <pre>{JSON.stringify(selected.props, null, 2)}</pre>
+    <aside className="panel inspector open" aria-label="Selection">
+      <div className="panel-heading-row">
+        <div>
+          <h2>{selected.label}</h2>
+          <p className="kind">{selected.kind} / {hint?.label ?? selected.model}</p>
+        </div>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => onOpenChange(false)}
+          aria-label="Collapse selection details"
+        >
+          &gt;
+        </button>
+      </div>
+      {entries.length > 0 ? (
+        <dl className="selection-fields">
+          {entries.map(([field, value]) => (
+            <div key={field}>
+              <dt>{field}</dt>
+              <dd>{displayJsonValue(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="muted">No properties are available for this item.</p>
+      )}
     </aside>
   );
 }
@@ -66,11 +485,26 @@ function EventStreamPanel({
   auditStatus: FlightDeckSecurityAuditStatus | null;
   events: ReturnType<typeof graphStore.getState>["events"];
 }) {
+  const [auditFilter, setAuditFilter] = useState("");
+  const needle = auditFilter.trim().toLowerCase();
+  const serviceEvents = (auditStatus?.recentEvents ?? []).filter((event) => auditRecordMatches(event, needle));
+  const localEvents = events.filter((event) => auditRecordMatches(event, needle));
+
   return (
     <section className="audit-panel" aria-label="Execution events">
-      <div>
-        <h2>Audit</h2>
-        <p className="muted">Service-authored audit evidence and bounded local UI observations.</p>
+      <div className="audit-toolbar">
+        <div>
+          <h2>Audit</h2>
+          <p className="muted">Service-authored audit evidence and bounded local UI observations.</p>
+        </div>
+        <label className="audit-search">
+          Audit search
+          <input
+            value={auditFilter}
+            onChange={(event) => setAuditFilter(event.target.value)}
+            placeholder="principal, workspace, outcome, operation"
+          />
+        </label>
       </div>
       {auditStatus && (
         <div className={`audit-status ${auditStatus.auditMode} ${auditStatus.sinkHealth}`}>
@@ -90,9 +524,9 @@ function EventStreamPanel({
           </dl>
         </div>
       )}
-      {auditStatus?.recentEvents.length ? (
+      {serviceEvents.length ? (
         <ol className="audit-list service-audit-list">
-          {auditStatus.recentEvents.map((event) => (
+          {serviceEvents.map((event) => (
             <li className={`audit-item ${event.decision}`} key={`${event.requestId}-${event.serviceSequence}`}>
               <div>
                 <span>{event.stage}</span>
@@ -111,10 +545,10 @@ function EventStreamPanel({
           ))}
         </ol>
       ) : (
-        <p className="muted">No service-authored audit events are available for this profile yet.</p>
+        <p className="muted">No service-authored audit events match this profile and filter.</p>
       )}
       <ol className="audit-list">
-        {events.map((event) => (
+        {localEvents.map((event) => (
           <li className={`audit-item ${event.kind}`} key={event.id}>
             <div>
               <span>{event.kind}</span>
@@ -134,6 +568,48 @@ function EventStreamPanel({
       </ol>
     </section>
   );
+}
+
+
+function auditRecordMatches(record: unknown, needle: string): boolean {
+  if (!needle) {
+    return true;
+  }
+  return String(JSON.stringify(record) ?? "").toLowerCase().includes(needle);
+}
+
+
+function nodeProjection(projection: FlightDeckVisualProjection | null, model: string) {
+  return projection?.nodeModels.find((hint) => hint.model === model) ?? null;
+}
+
+function edgeProjection(projection: FlightDeckVisualProjection | null, model: string) {
+  return projection?.edgeModels.find((hint) => hint.model === model) ?? null;
+}
+
+function orderProps(props: SelectedGraphItem["props"], detailFields: string[]) {
+  const ordered: SelectedGraphItem["props"] = {};
+  for (const field of detailFields) {
+    if (Object.prototype.hasOwnProperty.call(props, field)) {
+      ordered[field] = props[field];
+    }
+  }
+  for (const [key, value] of Object.entries(props)) {
+    if (!Object.prototype.hasOwnProperty.call(ordered, key)) {
+      ordered[key] = value;
+    }
+  }
+  return ordered;
+}
+
+function displayJsonValue(value: SelectedGraphItem["props"][string]): string {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value) || typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value);
 }
 
 function auditModeLabel(mode: FlightDeckSecurityAuditStatus["auditMode"]): string {
@@ -173,6 +649,9 @@ function QueryInsightPanels({
   if (!explainVisible && !profileVisible) {
     return null;
   }
+
+  const serviceRows = metricNumber(queryEvidence?.rowCount);
+  const elapsedMicros = metricNumber(queryEvidence?.elapsedMicros);
 
   return (
     <aside className="query-insights" aria-label="Query explain and profile">
@@ -219,16 +698,12 @@ function QueryInsightPanels({
             <dd>{sourceRowsSummary(snapshot, graphView, lastExecutedQuery)}</dd>
             <dt>Visible rows</dt>
             <dd>{resultShapeSummary(snapshot, visibleSnapshot, graphView, lastExecutedQuery)}</dd>
-            {queryEvidence?.rowCount !== undefined && (
+            {queryEvidence?.provenance === "service" && (
               <>
                 <dt>Service rows</dt>
-                <dd>{queryEvidence.rowCount}</dd>
-              </>
-            )}
-            {queryEvidence?.elapsedMicros !== undefined && (
-              <>
+                <dd>{serviceRows ?? "not reported"}</dd>
                 <dt>Elapsed</dt>
-                <dd>{queryEvidence.elapsedMicros} us</dd>
+                <dd>{elapsedMicros === null ? "not reported" : `${elapsedMicros} us`}</dd>
               </>
             )}
             <dt>Limit</dt>
@@ -242,6 +717,10 @@ function QueryInsightPanels({
       )}
     </aside>
   );
+}
+
+function metricNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function evidenceLabel(evidence: QueryEvidence | null, panel: "explain" | "profile"): string {
@@ -435,6 +914,11 @@ function schemaModelMatches(
     .includes(needle);
 }
 
+function sessionCommandFor(mode: "explain" | "profile", command: string): string {
+  const baseCommand = command.trim().replace(/^session\.(?:explain|profile)\s+/i, "");
+  return `session.${mode} ${baseCommand}`;
+}
+
 function connectionKindLabel(
   settings: ReturnType<typeof graphStore.getState>["settings"],
   status: FlightDeckSecurityStatus | null
@@ -473,6 +957,11 @@ export function App() {
   const [hovered, setHovered] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [queryLoading, setQueryLoading] = useState(false);
+  const [schemaPanelOpen, setSchemaPanelOpen] = useState(false);
+  const [selectionPanelOpen, setSelectionPanelOpen] = useState(false);
+  const [projectionOverlay, setProjectionOverlay] = useState(() =>
+    readVisualProjectionOverlay(window.localStorage, graphStore.getState().selectedProfileId, graphStore.getState().settings.workspace)
+  );
   const fixtureAutoLoaded = useRef(false);
 
   const {
@@ -498,7 +987,8 @@ export function App() {
     queryStatus,
     queryMessage,
     queryEvidence,
-    schemaFilter
+    schemaFilter,
+    visualProjection
   } = storeState;
 
   const modelOptions = useMemo(() => {
@@ -511,7 +1001,40 @@ export function App() {
     () => schemaFilteredSnapshot(snapshot, schemaFilter),
     [snapshot, schemaFilter]
   );
+  const effectiveVisualProjection = useMemo(
+    () => applyVisualProjectionOverlay(visualProjection, projectionOverlay),
+    [projectionOverlay, visualProjection]
+  );
   const graphSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
+  const schemaSidebarSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
+  const workspaceMode = activeWorkspacePanel === "audit" ? "audit" : graphView;
+  const insightPanelsVisible = graphView === "data" && (explainVisible || profileVisible);
+
+  useEffect(() => {
+    setProjectionOverlay(readVisualProjectionOverlay(window.localStorage, selectedProfileId, settings.workspace));
+  }, [selectedProfileId, settings.workspace]);
+
+  useEffect(() => {
+    writeVisualProjectionOverlay(window.localStorage, projectionOverlay);
+  }, [projectionOverlay]);
+
+  const selectWorkspaceMode = (mode: "data" | "schema" | "audit") => {
+    if (mode === "audit") {
+      graphStore.selectWorkspacePanel("audit");
+      setSchemaPanelOpen(false);
+      return;
+    }
+    graphStore.selectWorkspacePanel("query");
+    graphStore.setGraphView(mode);
+    setSchemaPanelOpen(mode === "schema");
+  };
+
+  const collapseSchemaPanel = () => {
+    setSchemaPanelOpen(false);
+    if (graphView === "schema") {
+      graphStore.setGraphView("data");
+    }
+  };
 
   const load = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -551,6 +1074,11 @@ export function App() {
           recentEvents: []
         });
       }
+      try {
+        graphStore.loadVisualProjection(await fetchVisualProjection(settings, controller.signal));
+      } catch {
+        graphStore.loadVisualProjection(null);
+      }
       const loaded = await fetchSnapshot(settings, controller.signal);
       graphStore.loadSnapshot(loaded);
     } catch (error) {
@@ -572,11 +1100,15 @@ export function App() {
     void load();
   }, [settings.useFixtureData, snapshot, loading]);
 
+  useEffect(() => {
+    setSelectionPanelOpen(Boolean(selectedItem));
+  }, [selectedItem]);
+
   const handleSelect = useCallback((item: SelectedGraphItem | null) => {
     graphStore.selectGraphItem(item ? { kind: item.kind, id: item.id } : null);
   }, []);
 
-  const executeQuery = async () => {
+  const executeQuery = async (mode: "query" | "explain" | "profile" = "query") => {
     if (graphView === "schema") {
       graphStore.recordQueryExecution();
       return;
@@ -585,14 +1117,15 @@ export function App() {
       graphStore.rejectQueryCommand("Typed query execution requires a service connection; fixture mode can use the local filter summary.");
       return;
     }
+    const command = mode === "query" ? queryCommand : sessionCommandFor(mode, queryCommand);
     setQueryLoading(true);
     graphStore.beginQueryCommand();
     const controller = new AbortController();
     try {
-      const response = await executeQueryCommand(settings, queryCommand, controller.signal);
+      const response = await executeQueryCommand(settings, command, controller.signal);
       graphStore.applyQueryResponse(response);
-      graphStore.setExplainVisible(response.kind === "explain" || explainVisible);
-      graphStore.setProfileVisible(response.kind === "profile" || profileVisible);
+      graphStore.setExplainVisible(response.kind === "explain");
+      graphStore.setProfileVisible(response.kind === "profile");
     } catch (error) {
       graphStore.failQueryCommand(error instanceof Error ? error.message : String(error));
     } finally {
@@ -628,92 +1161,118 @@ export function App() {
           </button>
         </div>
         {connectionDetailsOpen && (
-          <form className="connection-form" onSubmit={load}>
-          <label>
-            Profile
-            <select
-              value={selectedProfileId}
-              onChange={(event) => graphStore.selectProfile(event.target.value)}
+          <div className="modal-backdrop" role="presentation" onMouseDown={() => graphStore.setConnectionDetailsOpen(false)}>
+            <section
+              className="connection-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Connection settings"
+              onMouseDown={(event) => event.stopPropagation()}
             >
-              {profiles.map((profile) => (
-                <option value={profile.id} key={profile.id}>{profile.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Profile name
-            <input
-              value={draftProfileName}
-              onChange={(event) => graphStore.updateDraftProfileName(event.target.value)}
-            />
-          </label>
-          <label>
-            Gateway URL
-            <input
-              placeholder="blank uses /api proxy, or http://127.0.0.1:3001"
-              value={settings.serviceBaseUrl}
-              onChange={(event) =>
-                graphStore.updateSettings({ serviceBaseUrl: event.target.value })
-              }
-              disabled={settings.useFixtureData}
-            />
-          </label>
-          <label>
-            Workspace
-            <input
-              value={settings.workspace}
-              onChange={(event) =>
-                graphStore.updateSettings({ workspace: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Connection kind
-            <select
-              value={settings.mode}
-              onChange={(event) =>
-                graphStore.updateSettings({ mode: event.target.value as typeof settings.mode })
-              }
-              disabled={settings.useFixtureData}
-            >
-              <option value="local-anonymous-dev">Local anonymous dev</option>
-              <option value="anonymous_local">Anonymous local</option>
-              <option value="docker_local_insecure">Docker local insecure</option>
-              <option value="secured">Secured</option>
-            </select>
-          </label>
-          <label>
-            Limit
-            <input
-              type="number"
-              min="1"
-              max="1000"
-              value={settings.limit}
-              onChange={(event) =>
-                graphStore.updateSettings({ limit: Number(event.target.value) })
-              }
-            />
-          </label>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={settings.useFixtureData}
-              onChange={(event) =>
-                graphStore.updateSettings({ useFixtureData: event.target.checked })
-              }
-            />
-            Fixture
-          </label>
-          <button type="button" onClick={graphStore.saveCurrentProfile}>
-            Save profile
-          </button>
-          <button type="button" onClick={graphStore.createProfile}>
-            New profile
-          </button>
-          <button type="submit" disabled={loading || settings.workspace.trim() === ""}>
-            {loading ? "Loading" : "Connect"}
-          </button>
-          </form>
+              <div className="modal-heading-row">
+                <div>
+                  <h2>Connection</h2>
+                  <p className="muted">Safe browser-facing profile settings for the local gateway.</p>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => graphStore.setConnectionDetailsOpen(false)}
+                  aria-label="Close connection settings"
+                >
+                  X
+                </button>
+              </div>
+              <form className="connection-form modal-form" onSubmit={load}>
+                <label>
+                  Profile
+                  <select
+                    value={selectedProfileId}
+                    onChange={(event) => graphStore.selectProfile(event.target.value)}
+                  >
+                    {profiles.map((profile) => (
+                      <option value={profile.id} key={profile.id}>{profile.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Profile name
+                  <input
+                    value={draftProfileName}
+                    onChange={(event) => graphStore.updateDraftProfileName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Gateway URL
+                  <input
+                    placeholder="blank uses /api proxy, or http://127.0.0.1:3001"
+                    value={settings.serviceBaseUrl}
+                    onChange={(event) =>
+                      graphStore.updateSettings({ serviceBaseUrl: event.target.value })
+                    }
+                    disabled={settings.useFixtureData}
+                  />
+                </label>
+                <label>
+                  Workspace
+                  <input
+                    value={settings.workspace}
+                    onChange={(event) =>
+                      graphStore.updateSettings({ workspace: event.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  Connection kind
+                  <select
+                    value={settings.mode}
+                    onChange={(event) =>
+                      graphStore.updateSettings({ mode: event.target.value as typeof settings.mode })
+                    }
+                    disabled={settings.useFixtureData}
+                  >
+                    <option value="local-anonymous-dev">Local anonymous dev</option>
+                    <option value="anonymous_local">Anonymous local</option>
+                    <option value="docker_local_insecure">Docker local insecure</option>
+                    <option value="secured">Secured</option>
+                  </select>
+                </label>
+                <label>
+                  Limit
+                  <input
+                    type="number"
+                    min="1"
+                    max="25000"
+                    value={settings.limit}
+                    onChange={(event) =>
+                      graphStore.updateSettings({ limit: Number(event.target.value) })
+                    }
+                  />
+                </label>
+                <label className="check-label">
+                  <input
+                    type="checkbox"
+                    checked={settings.useFixtureData}
+                    onChange={(event) =>
+                      graphStore.updateSettings({ useFixtureData: event.target.checked })
+                    }
+                  />
+                  Fixture
+                </label>
+                <div className="modal-actions">
+                  <button type="button" onClick={graphStore.saveCurrentProfile}>
+                    Save profile
+                  </button>
+                  <button type="button" onClick={graphStore.createProfile}>
+                    New profile
+                  </button>
+                  <button type="submit" disabled={loading || settings.workspace.trim() === ""}>
+                    {loading ? "Loading" : "Connect"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
         )}
       </header>
 
@@ -726,169 +1285,183 @@ export function App() {
         {lastError && <span className="error">{lastError}</span>}
       </section>
 
-      <section className="workspace-nav" aria-label="Workspace view">
+      <section className="workspace-nav" aria-label="Workspace mode">
         <button
           type="button"
-          className={activeWorkspacePanel === "query" ? "active" : ""}
-          onClick={() => graphStore.selectWorkspacePanel("query")}
+          className={workspaceMode === "data" ? "active" : ""}
+          onClick={() => selectWorkspaceMode("data")}
         >
-          Query
+          Data
         </button>
         <button
           type="button"
-          className={activeWorkspacePanel === "audit" ? "active" : ""}
-          onClick={() => graphStore.selectWorkspacePanel("audit")}
+          className={workspaceMode === "schema" ? "active" : ""}
+          onClick={() => selectWorkspaceMode("schema")}
+        >
+          Schema
+        </button>
+        <button
+          type="button"
+          className={workspaceMode === "audit" ? "active" : ""}
+          onClick={() => selectWorkspaceMode("audit")}
         >
           Audit
         </button>
       </section>
 
-      <div className="flight-deck">
-        <aside className="panel schema-panel">
-          <h2>Schema</h2>
-          <SchemaList title="Node models" models={visibleSnapshot?.nodeModels ?? []} />
-          <SchemaList title="Edge models" models={visibleSnapshot?.edgeModels ?? []} />
-          {visibleSnapshot?.partialReason && (
-            <p className="warning">{visibleSnapshot.partialReason}</p>
-          )}
-          {visibleSnapshot && visibleSnapshot.omittedEdges > 0 && (
-            <p className="warning">
-              {visibleSnapshot.omittedEdges} edges omitted outside the bounded node result.
-            </p>
-          )}
-        </aside>
+      <div className={`flight-deck ${schemaPanelOpen ? "schema-open" : "schema-collapsed"} ${selectionPanelOpen && selectedItem ? "selection-open" : "selection-collapsed"}`}>
+        {schemaPanelOpen && (
+          <aside className="panel schema-panel open" aria-label="Schema and projection">
+            <div className="panel-heading-row">
+              <h2>Schema</h2>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={collapseSchemaPanel}
+                aria-label="Collapse schema panel"
+              >
+                &lt;
+              </button>
+            </div>
+            <SchemaList title="Node models" models={schemaSidebarSnapshot?.nodeModels ?? []} projection={effectiveVisualProjection} />
+            <SchemaList title="Edge models" models={schemaSidebarSnapshot?.edgeModels ?? []} projection={effectiveVisualProjection} />
+            <ProjectionPanel projection={effectiveVisualProjection} snapshot={snapshot} graphView={graphView} />
+            <ProjectionOverlayControls
+              projection={visualProjection}
+              overlay={projectionOverlay}
+              onOverlayChange={setProjectionOverlay}
+              onReset={() => setProjectionOverlay(emptyVisualProjectionOverlay(selectedProfileId, settings.workspace))}
+            />
+            {schemaSidebarSnapshot?.partialReason && (
+              <p className="warning">{schemaSidebarSnapshot.partialReason}</p>
+            )}
+            {schemaSidebarSnapshot && schemaSidebarSnapshot.omittedEdges > 0 && (
+              <p className="warning">
+                {schemaSidebarSnapshot.omittedEdges} edges omitted outside the bounded node result.
+              </p>
+            )}
+          </aside>
+        )}
 
         <div className="graph-column">
+
           {activeWorkspacePanel === "query" ? (
             <>
-              <section className="query-bar" aria-label="Graph filter">
-                <div className="mode-toggle" aria-label="Query mode">
-                  <button
-                    type="button"
-                    className={graphView === "data" ? "active" : ""}
-                    onClick={() => graphStore.setGraphView("data")}
-                  >
-                    Data
-                  </button>
-                  <button
-                    type="button"
-                    className={graphView === "schema" ? "active" : ""}
-                    onClick={() => graphStore.setGraphView("schema")}
-                  >
-                    Schema
-                  </button>
-                </div>
+              <section className="query-bar" aria-label={graphView === "schema" ? "Schema filter" : "Data query and filter"}>
                 {graphView === "data" ? (
-                  <label className="command-input">
-                    GRM command
-                    <input
-                      value={queryCommand}
-                      onChange={(event) => graphStore.setQueryCommand(event.target.value)}
-                      placeholder="node.find WorkSlice status=active limit=25"
-                      disabled={!snapshot && settings.useFixtureData}
-                    />
-                  </label>
+                  <>
+                    <label className="command-input">
+                      GRM command
+                      <input
+                        value={queryCommand}
+                        onChange={(event) => graphStore.setQueryCommand(event.target.value)}
+                        placeholder="node.find WorkSlice status=active limit=25"
+                        disabled={!snapshot && settings.useFixtureData}
+                      />
+                    </label>
+                    <div className="query-controls-row">
+                      <label>
+                        Search
+                        <input
+                          value={filter.text}
+                          onChange={(event) => graphStore.applyGraphFilter({ ...filter, text: event.target.value })}
+                          placeholder="id, label, model, property"
+                          disabled={!snapshot}
+                        />
+                      </label>
+                      <label>
+                        Model
+                        <select
+                          value={filter.model}
+                          onChange={(event) => graphStore.applyGraphFilter({ ...filter, model: event.target.value })}
+                          disabled={!snapshot}
+                        >
+                          <option value="">Any</option>
+                          {modelOptions.map((model) => (
+                            <option value={model} key={model}>{model}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Property key
+                        <input
+                          value={filter.propertyKey}
+                          onChange={(event) =>
+                            graphStore.applyGraphFilter({ ...filter, propertyKey: event.target.value })
+                          }
+                          placeholder="status"
+                          disabled={!snapshot}
+                        />
+                      </label>
+                      <label>
+                        Property value
+                        <input
+                          value={filter.propertyValue}
+                          onChange={(event) =>
+                            graphStore.applyGraphFilter({ ...filter, propertyValue: event.target.value })
+                          }
+                          placeholder="planned"
+                          disabled={!snapshot}
+                        />
+                      </label>
+                      <div className="query-command-buttons">
+                        <button
+                          type="button"
+                          onClick={() => graphStore.applyGraphFilter(DEFAULT_GRAPH_FILTER)}
+                          disabled={!snapshot}
+                        >
+                          Clear
+                        </button>
+                        <button type="button" onClick={graphStore.recordQueryExecution} disabled={!snapshot}>
+                          Summarize
+                        </button>
+                        <button type="button" onClick={() => void executeQuery()} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
+                          {queryLoading || queryStatus === "running" ? "Running" : "Execute"}
+                        </button>
+                        <button type="button" onClick={() => void executeQuery("explain")} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
+                          Explain
+                        </button>
+                        <button type="button" onClick={() => void executeQuery("profile")} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
+                          Profile
+                        </button>
+                      </div>
+                    </div>
+                  </>
                 ) : (
-                  <label className="command-input">
-                    Schema filter
-                    <input
-                      value={schemaFilter}
-                      onChange={(event) => graphStore.setSchemaFilter(event.target.value)}
-                      placeholder="model, field, or edge direction"
-                      disabled={!snapshot}
-                    />
-                  </label>
+                  <>
+                    <label className="command-input">
+                      Schema filter
+                      <input
+                        value={schemaFilter}
+                        onChange={(event) => graphStore.setSchemaFilter(event.target.value)}
+                        placeholder="model, field, or edge direction"
+                        disabled={!snapshot}
+                      />
+                    </label>
+                    <button type="button" onClick={graphStore.recordQueryExecution} disabled={!snapshot}>
+                      Summarize
+                    </button>
+                  </>
                 )}
-                <label>
-                  Search
-                  <input
-                    value={filter.text}
-                    onChange={(event) => graphStore.applyGraphFilter({ ...filter, text: event.target.value })}
-                    placeholder="id, label, model, property"
-                    disabled={!snapshot || graphView === "schema"}
-                  />
-                </label>
-                <label>
-                  Model
-                  <select
-                    value={filter.model}
-                    onChange={(event) => graphStore.applyGraphFilter({ ...filter, model: event.target.value })}
-                    disabled={!snapshot || graphView === "schema"}
-                  >
-                    <option value="">Any</option>
-                    {modelOptions.map((model) => (
-                      <option value={model} key={model}>{model}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Property key
-                  <input
-                    value={filter.propertyKey}
-                    onChange={(event) =>
-                      graphStore.applyGraphFilter({ ...filter, propertyKey: event.target.value })
-                    }
-                    placeholder="status"
-                    disabled={!snapshot || graphView === "schema"}
-                  />
-                </label>
-                <label>
-                  Property value
-                  <input
-                    value={filter.propertyValue}
-                    onChange={(event) =>
-                      graphStore.applyGraphFilter({ ...filter, propertyValue: event.target.value })
-                    }
-                    placeholder="planned"
-                    disabled={!snapshot || graphView === "schema"}
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => graphStore.applyGraphFilter(DEFAULT_GRAPH_FILTER)}
-                  disabled={!snapshot || graphView === "schema"}
-                >
-                  Clear
-                </button>
-                <button type="button" onClick={graphStore.recordQueryExecution} disabled={!snapshot}>
-                  Summarize
-                </button>
-                <button type="button" onClick={() => void executeQuery()} disabled={queryLoading || (!snapshot && settings.useFixtureData)}>
-                  {queryLoading || queryStatus === "running" ? "Running" : "Execute"}
-                </button>
-                <label className="check-label insight-toggle">
-                  <input
-                    type="checkbox"
-                    checked={explainVisible}
-                    onChange={(event) => graphStore.setExplainVisible(event.target.checked)}
-                  />
-                  Explain
-                </label>
-                <label className="check-label insight-toggle">
-                  <input
-                    type="checkbox"
-                    checked={profileVisible}
-                    onChange={(event) => graphStore.setProfileVisible(event.target.checked)}
-                  />
-                  Profile
-                </label>
               </section>
               {queryMessage && (
                 <section className={`query-message ${queryStatus}`} aria-live="polite">
                   {queryMessage}
                 </section>
               )}
-              <div className={`query-workbench ${explainVisible || profileVisible ? "with-insights" : ""}`}>
+              <div className={`query-workbench ${insightPanelsVisible ? "with-insights" : ""}`}>
                 <GraphCanvas
                   snapshot={graphSnapshot}
                   graphView={graphView}
-                  onGraphViewChange={graphStore.setGraphView}
                   onSelect={handleSelect}
                   onHover={setHovered}
+                  visualProjection={effectiveVisualProjection}
+                  visualLayoutMode={projectionOverlay.layout.mode}
+                  visualLayoutStyle={projectionOverlay.layout.style}
                 />
                 <QueryInsightPanels
-                  explainVisible={explainVisible}
-                  profileVisible={profileVisible}
+                  explainVisible={graphView === "data" && explainVisible}
+                  profileVisible={graphView === "data" && profileVisible}
                   snapshot={snapshot}
                   visibleSnapshot={visibleSnapshot}
                   filter={filter}
@@ -902,7 +1475,7 @@ export function App() {
             <EventStreamPanel auditStatus={securityAuditStatus} events={events} />
           )}
         </div>
-        <SelectionPanel selected={selectedItem} />
+        <SelectionPanel selected={selectedItem} projection={effectiveVisualProjection} open={selectionPanelOpen} onOpenChange={setSelectionPanelOpen} />
       </div>
     </main>
   );

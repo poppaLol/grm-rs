@@ -7,7 +7,14 @@ import {
   normalizeSnapshot,
   STORE_STORAGE_KEY
 } from "../src/graphStore";
-import type { FlightDeckSnapshot } from "../src/types";
+import {
+  applyVisualProjectionOverlay,
+  emptyVisualProjectionOverlay,
+  readVisualProjectionOverlay,
+  VISUAL_OVERLAY_STORAGE_KEY,
+  writeVisualProjectionOverlay
+} from "../src/projectionOverlay";
+import type { FlightDeckSnapshot, FlightDeckVisualProjection } from "../src/types";
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -53,6 +60,66 @@ const snapshot: FlightDeckSnapshot = {
   omittedEdges: 0,
   source: "fixture"
 };
+
+const visualProjection: FlightDeckVisualProjection = {
+  workspace: "flight-deck-demo",
+  provenance: {
+    source: "generated_default",
+    generatedFrom: "runtime_schema_metadata",
+    advisory: true,
+    modelLimit: 50
+  },
+  nodeModels: [
+    {
+      model: "RoadmapItem",
+      label: "roadmap item",
+      glyph: "plan",
+      colorToken: "flight-deck-blue",
+      group: "node:RoadmapItem",
+      idField: "roadmapItemId",
+      detailFields: ["roadmapItemId", "title", "summary", "status", "rank"]
+    },
+    {
+      model: "WorkSlice",
+      label: "work slice",
+      glyph: "plan",
+      colorToken: "flight-deck-indigo",
+      group: "node:WorkSlice",
+      idField: "workSliceId",
+      detailFields: ["workSliceId", "title", "summary", "status"]
+    }
+  ],
+  edgeModels: [
+    {
+      model: "HAS_WORK_SLICE",
+      label: "has work slice",
+      styleToken: "directed",
+      directionEmphasis: "directed",
+      group: "edge:RoadmapItem->WorkSlice",
+      fromModel: "RoadmapItem",
+      toModel: "WorkSlice",
+      detailFields: ["hasWorkSliceId", "reason"]
+    }
+  ],
+  schemaLayout: {
+    layoutToken: "schema-by-endpoints",
+    groupBy: "node-model,edge-model,relationship-endpoints",
+    rankBy: "model-label"
+  },
+  dataLayout: {
+    layoutToken: "data-by-model",
+    groupBy: "model",
+    rankBy: "model-label"
+  }
+};
+
+test("starts with a production-sized default model limit and clamps large requests", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+
+  assert.equal(store.getState().settings.limit, 5000);
+  store.updateSettings({ limit: 150000 });
+  assert.equal(store.getState().settings.limit, 25000);
+});
 
 test("migrates the legacy single connection settings key into a safe profile", () => {
   const storage = new MemoryStorage();
@@ -125,6 +192,16 @@ test("scrubs credential-bearing service URLs before browser persistence", () => 
   assert.equal(persistedUrl.includes("admin"), false);
   assert.equal(persistedUrl.includes("secret"), false);
   assert.equal(persistedUrl.includes("token"), false);
+
+  store.updateSettings({
+    serviceBaseUrl: "https://admin:secret@127.0.0.1:3001/client.key?token=abc#fingerprint"
+  });
+  store.saveCurrentProfile();
+  const secretPathUrl = JSON.parse(storage.getItem(STORE_STORAGE_KEY) ?? "{}").profiles[0].settings.serviceBaseUrl;
+
+  assert.equal(secretPathUrl, "https://127.0.0.1:3001");
+  assert.equal(secretPathUrl.includes("client.key"), false);
+  assert.equal(secretPathUrl.includes("fingerprint"), false);
 });
 
 test("can create a second selected connection profile from draft settings", () => {
@@ -144,6 +221,96 @@ test("can create a second selected connection profile from draft settings", () =
 
   store.selectProfile("local-workspace");
   assert.equal(store.getState().settings.workspace, "first-workspace");
+});
+
+test("applies browser-local visual projection overlays without changing generated defaults", () => {
+  const overlay = emptyVisualProjectionOverlay("local-workspace", "flight-deck-demo");
+  overlay.nodeModels.RoadmapItem = {
+    label: "PM roadmap",
+    colorToken: "flight-deck-amber",
+    group: "product planning",
+    shape: "card",
+    detailDensity: "rich",
+    visualRole: "anchor"
+  };
+  overlay.edgeModels.HAS_WORK_SLICE = {
+    styleToken: "dependency",
+    directionEmphasis: "strong",
+    lineWeight: "strong",
+    lineStyle: "dashed",
+    labelVisibility: "always"
+  };
+  overlay.containers["edge:HAS_WORK_SLICE"] = {
+    parentModel: "RoadmapItem",
+    childModel: "WorkSlice",
+    viaEdgeModel: "HAS_WORK_SLICE",
+    renderAs: "section",
+    collapse: "expanded"
+  };
+  overlay.layout = { mode: "container-map", style: "groups" };
+
+  const projected = applyVisualProjectionOverlay(visualProjection, overlay);
+
+  assert.equal(projected?.nodeModels[0].label, "PM roadmap");
+  assert.equal(projected?.nodeModels[0].colorToken, "flight-deck-amber");
+  assert.equal(projected?.nodeModels[0].group, "product planning");
+  assert.equal(projected?.nodeModels[0].shape, "card");
+  assert.equal(projected?.nodeModels[0].detailDensity, "rich");
+  assert.equal(projected?.nodeModels[0].visualRole, "anchor");
+  assert.equal(projected?.edgeModels[0].styleToken, "dependency");
+  assert.equal(projected?.edgeModels[0].labelVisibility, "always");
+  assert.equal(projected?.dataLayout.layoutToken, "container-map-local");
+  assert.equal(overlay.containers["edge:HAS_WORK_SLICE"].renderAs, "section");
+  assert.equal(visualProjection.nodeModels[0].label, "roadmap item");
+});
+
+test("persists local visual projection overlays by profile and workspace only", () => {
+  const storage = new MemoryStorage();
+  const overlay = emptyVisualProjectionOverlay("owner-profile", "sygnal-one-memory");
+  overlay.nodeModels.WorkSlice = {
+    label: "delivery slice",
+    colorToken: "flight-deck-green",
+    group: "roadmap",
+    visualRole: "process"
+  };
+  overlay.edgeModels.HAS_WORK_SLICE = { styleToken: "evidence", labelVisibility: "always" };
+  overlay.containers["edge:HAS_WORK_SLICE"] = {
+    parentModel: "RoadmapItem",
+    childModel: "WorkSlice",
+    viaEdgeModel: "HAS_WORK_SLICE",
+    renderAs: "lane"
+  };
+  overlay.layout = { mode: "container-map" };
+
+  writeVisualProjectionOverlay(storage, overlay);
+
+  const restored = readVisualProjectionOverlay(storage, "owner-profile", "sygnal-one-memory");
+  const otherWorkspace = readVisualProjectionOverlay(storage, "owner-profile", "other-workspace");
+  const persisted = storage.getItem(VISUAL_OVERLAY_STORAGE_KEY) ?? "";
+
+  assert.equal(restored.nodeModels.WorkSlice.label, "delivery slice");
+  assert.equal(restored.nodeModels.WorkSlice.visualRole, "process");
+  assert.equal(restored.edgeModels.HAS_WORK_SLICE.styleToken, "evidence");
+  assert.equal(restored.containers["edge:HAS_WORK_SLICE"].renderAs, "lane");
+  assert.equal(restored.layout.mode, "container-map");
+  assert.deepEqual(otherWorkspace.nodeModels, {});
+  assert.equal(persisted.includes("BEGIN CERTIFICATE"), false);
+  assert.equal(persisted.includes("privateKey"), false);
+});
+
+test("keeps visual projection as non-persistent workbench state", () => {
+  const storage = new MemoryStorage();
+  const store = createFlightDeckGraphStore(storage);
+
+  store.loadVisualProjection(visualProjection);
+  store.saveCurrentProfile();
+
+  assert.equal(store.getState().visualProjection?.provenance.advisory, true);
+  assert.equal(store.getState().visualProjection?.nodeModels[0].detailFields[0], "roadmapItemId");
+  assert.equal(storage.getItem(STORE_STORAGE_KEY)?.includes("visualProjection"), false);
+
+  store.markConnectionFailed("service unavailable");
+  assert.equal(store.getState().visualProjection, null);
 });
 
 test("normalizes snapshots by stable string node and edge ids", () => {
@@ -173,6 +340,25 @@ test("derives visible graph from filter state and clears disappeared selection",
   assert.equal(state.visibleSnapshot?.edges.length, 0);
   assert.equal(state.selectedItem, null);
   assert.equal(state.selection, null);
+});
+
+test("clears graph selection when switching workspace view context", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadSnapshot(snapshot);
+
+  store.selectGraphItem({ kind: "node", id: "13" });
+  assert.equal(store.getState().selectedItem?.id, "13");
+
+  store.setGraphView("schema");
+  assert.equal(store.getState().selection, null);
+  assert.equal(store.getState().selectedItem, null);
+
+  store.selectGraphItem({ kind: "node", id: "schema-node:RoadmapItem" });
+  assert.equal(store.getState().selectedItem?.id, "schema-node:RoadmapItem");
+
+  store.selectWorkspacePanel("audit");
+  assert.equal(store.getState().selection, null);
+  assert.equal(store.getState().selectedItem, null);
 });
 
 test("starts in the query panel with connection details and insights hidden", () => {
@@ -303,6 +489,49 @@ test("records explicit query execution as a bounded local audit event", () => {
   assert.equal(queryEvent.workspace, "flight-deck-demo");
   assert.equal(queryEvent.securityContext, "fixture");
   assert.match(queryEvent.operationSummary ?? "", /text contains/);
+});
+
+test("keeps schema graph selections visible with projection labels", () => {
+  const store = createFlightDeckGraphStore(new MemoryStorage());
+  store.loadVisualProjection(visualProjection);
+  store.loadSnapshot({
+    ...snapshot,
+    schemaNodeModels: [
+      {
+        name: "RoadmapItem",
+        idField: "roadmapItemId",
+        fields: [
+          { name: "title", valueType: "string", required: true },
+          { name: "status", valueType: "string", required: false }
+        ]
+      },
+      {
+        name: "WorkSlice",
+        idField: "workSliceId",
+        fields: [
+          { name: "title", valueType: "string", required: true },
+          { name: "status", valueType: "string", required: false }
+        ]
+      }
+    ],
+    schemaEdgeModels: [
+      {
+        name: "HAS_WORK_SLICE",
+        fromModel: "RoadmapItem",
+        toModel: "WorkSlice",
+        idField: "hasWorkSliceId",
+        fields: [{ name: "reason", valueType: "string", required: false }]
+      }
+    ]
+  });
+
+  store.selectGraphItem({ kind: "node", id: "schema-node:RoadmapItem" });
+  assert.equal(store.getState().selectedItem?.label, "roadmap item");
+  assert.equal(store.getState().selectedItem?.props.idField, "roadmapItemId");
+
+  store.selectGraphItem({ kind: "edge", id: "schema-edge:HAS_WORK_SLICE:0" });
+  assert.equal(store.getState().selectedItem?.label, "has work slice");
+  assert.equal(store.getState().selectedItem?.props.fromModel, "RoadmapItem");
 });
 
 test("records schema view execution as a local schema projection", () => {
