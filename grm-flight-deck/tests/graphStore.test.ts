@@ -15,6 +15,44 @@ import {
   writeVisualProjectionOverlay
 } from "../src/projectionOverlay";
 import type { FlightDeckSnapshot, FlightDeckVisualProjection } from "../src/types";
+import { buildVisualContainerMap } from "../src/containerMap";
+
+test("container maps use directed matching relationships and leave snapshots unchanged", () => {
+  const before = JSON.stringify(snapshot);
+  const map = buildVisualContainerMap(snapshot, {
+    work: { parentModel: "RoadmapItem", childModel: "WorkSlice", viaEdgeModel: "HAS_WORK_SLICE", renderAs: "lane", collapse: "collapsed" },
+    wrong: { parentModel: "WorkSlice", childModel: "RoadmapItem", viaEdgeModel: "HAS_WORK_SLICE" }
+  });
+  assert.equal(map.regions.length, 1);
+  assert.equal(map.regions[0].anchorId, "13");
+  assert.deepEqual(map.regions[0].memberIds, ["573"]);
+  assert.equal(map.regions[0].renderAs, "lane");
+  assert.equal(map.regions[0].collapsed, true);
+  assert.equal(map.ownerByNode.get("573"), map.ownerByNode.get("13"));
+  assert.equal(JSON.stringify(snapshot), before);
+  assert.equal(buildVisualContainerMap(snapshot, {}).regions.length, 0);
+});
+
+test("container maps handle shared children, cycles, self links, and missing endpoints deterministically", () => {
+  const graph: FlightDeckSnapshot = {
+    ...snapshot,
+    nodes: ["a", "b", "c", "visual-container:a"].map((id) => ({ id, model: "Item", label: id, props: {} })),
+    edges: [
+      { id: "1", model: "LINK", from: "b", to: "c", props: {} },
+      { id: "2", model: "LINK", from: "a", to: "c", props: {} },
+      { id: "3", model: "LINK", from: "a", to: "b", props: {} },
+      { id: "4", model: "LINK", from: "b", to: "a", props: {} },
+      { id: "5", model: "LINK", from: "c", to: "c", props: {} },
+      { id: "6", model: "LINK", from: "a", to: "missing", props: {} }
+    ]
+  };
+  const rules = { link: { parentModel: "Item", childModel: "Item", viaEdgeModel: "LINK" } };
+  const map = buildVisualContainerMap(graph, rules);
+  assert.deepEqual(map.regions.map((region) => [region.anchorId, region.memberIds]), [["a", ["c"]]]);
+  assert.equal(map.ownerByNode.has("b"), false);
+  assert.equal(map.regions[0].id, "visual-container:visual-container:a");
+  assert.deepEqual(buildVisualContainerMap({ ...graph, edges: [...graph.edges].reverse() }, rules), map);
+});
 
 class MemoryStorage {
   private values = new Map<string, string>();

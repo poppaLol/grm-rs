@@ -127,6 +127,23 @@ catalogue, including node models, edge models, legal edge directions, and model
 fields when the gateway snapshot includes them. Schema filtering is a local
 catalogue inspection control, not data traversal.
 
+In Schema mode, the Visual Design Space can select a directed relationship as
+a container source and choose region, card, lane, or section rendering. Switch
+to Container/map and then Data mode to see flat visual regions around matching
+source nodes and their targets in the current bounded snapshot. Schema mode
+continues to show model definitions rather than instance containers. Model
+grouping alone does not create a region. The map uses a deterministic tile
+layout; network layout styles apply again in Edge-network mode.
+
+Collapse hides a region's members only in the rendered projection. External
+links remain attached to the collapsed region and retain their original edge
+identity; selecting a region opens its source node. Multiple candidate parents
+use a stable first owner, while candidate source nodes stay independent region
+anchors. Cycles and other shared relationships remain links. This is a flat
+advisory view, not inferred domain containment. Rules persist in the existing
+profile/workspace browser overlay; graph data and generated defaults are not
+modified. Nested regions and spatial pinning are deferred.
+
 Explain/Profile panes remain beside Query. For `session.explain ...` and
 `session.profile ...` commands, they show service/runtime evidence returned by
 the typed workspace path. For local snapshot filtering and Schema mode
