@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import cytoscape, { Core, ElementDefinition } from "cytoscape";
 
 import { colorForModel, colorForToken } from "./modelColors";
+import { buildVisualContainerMap, type VisualContainerMap } from "./containerMap";
+import type { VisualProjectionContainerOverlay } from "./projectionOverlay";
 import type { FlightDeckSnapshot, FlightDeckVisualProjection, GraphView, JsonValue, SelectedGraphItem } from "./types";
 
 interface GraphCanvasProps {
@@ -12,6 +14,7 @@ interface GraphCanvasProps {
   visualProjection: FlightDeckVisualProjection | null;
   visualLayoutMode?: string;
   visualLayoutStyle?: string;
+  visualContainers?: Record<string, VisualProjectionContainerOverlay>;
 }
 
 type LayoutMode = "force" | "groups" | "hierarchy" | "circle" | "grid";
@@ -25,12 +28,16 @@ export function GraphCanvas({
   onHover,
   visualProjection,
   visualLayoutMode,
-  visualLayoutStyle
+  visualLayoutStyle,
+  visualContainers
 }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const reticuleRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<Core | null>(null);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
+  const containerMap = useMemo(() => snapshot && graphView === "data" && visualLayoutMode === "container-map"
+    ? buildVisualContainerMap(snapshot, visualContainers ?? {})
+    : null, [snapshot, graphView, visualLayoutMode, visualContainers]);
 
   useEffect(() => {
     const preferred = layoutModeFromVisualIntent(visualLayoutMode, visualLayoutStyle);
@@ -60,7 +67,7 @@ export function GraphCanvas({
       graphRef.current?.destroy();
       const graph = cytoscape({
         container: containerRef.current,
-        elements: graphElements(snapshot, graphView, visualProjection),
+        elements: graphElements(snapshot, graphView, visualProjection, containerMap),
         layout: { name: "preset" },
         style: [
           {
@@ -92,6 +99,45 @@ export function GraphCanvas({
               "active-bg-size": 24,
               width: "data(nodeWidth)",
               height: "data(nodeHeight)"
+            }
+          },
+          {
+            selector: "node.visual-container",
+            style: {
+              shape: "round-rectangle",
+              "background-opacity": 0.08,
+              "border-width": 1.5,
+              "border-color": "data(color)",
+              "border-opacity": 0.65,
+              padding: "30px",
+              "text-valign": "top",
+              "text-margin-y": -10,
+              "text-max-width": "240px",
+              "font-size": "10px",
+              "text-background-opacity": 0,
+              "compound-sizing-wrt-labels": "include"
+            }
+          },
+          {
+            selector: "node.visual-container.render-card",
+            style: { "background-opacity": 0.18, "border-width": 2 }
+          },
+          {
+            selector: "node.visual-container.render-lane",
+            style: { shape: "rectangle", "border-style": "dashed" }
+          },
+          {
+            selector: "node.visual-container.render-section",
+            style: { shape: "rectangle", "background-opacity": 0.03, "border-style": "dotted" }
+          },
+          {
+            selector: "node.visual-container.collapsed",
+            style: {
+              width: 210, height: 64,
+              "background-opacity": 0.2,
+              "text-valign": "center",
+              "text-margin-y": 0,
+              "text-max-width": "190px"
             }
           },
           {
@@ -197,7 +243,7 @@ export function GraphCanvas({
         const data = event.target.data();
         onSelect({
           kind: "node",
-          id: data.id,
+          id: data.anchorId ?? data.id,
           label: data.label,
           model: data.model,
           props: data.props ?? {}
@@ -242,7 +288,9 @@ export function GraphCanvas({
           }
         }, remaining);
       });
-      graph.layout(layoutOptions(layoutMode, snapshot, visualProjection, graphView)).run();
+      graph.layout(containerMap?.regions.length
+        ? containerLayoutOptions(graph, containerMap)
+        : layoutOptions(layoutMode, snapshot, visualProjection, graphView)).run();
     }, RENDER_START_DELAY_MS);
 
     return () => {
@@ -253,7 +301,7 @@ export function GraphCanvas({
       graphRef.current?.destroy();
       graphRef.current = null;
     };
-  }, [graphView, layoutMode, snapshot, onHover, onSelect, visualProjection, visualLayoutMode, visualLayoutStyle]);
+  }, [graphView, layoutMode, snapshot, onHover, onSelect, visualProjection, visualLayoutMode, visualLayoutStyle, containerMap]);
 
   const fitToView = () => {
     graphRef.current?.fit(undefined, 72);
@@ -265,13 +313,14 @@ export function GraphCanvas({
         <label className="layout-control">
           Layout
           <select
-            value={layoutMode}
+            value={containerMap?.regions.length ? "map" : layoutMode}
             onChange={(event) => {
               setRendering(true);
               setLayoutMode(event.target.value as LayoutMode);
             }}
-            disabled={!snapshot}
+            disabled={!snapshot || Boolean(containerMap?.regions.length)}
           >
+            {Boolean(containerMap?.regions.length) && <option value="map">Container map</option>}
             <option value="force">Force</option>
             <option value="groups">Groups</option>
             <option value="hierarchy">Hierarchy</option>
@@ -282,6 +331,11 @@ export function GraphCanvas({
         <button type="button" onClick={fitToView} disabled={!snapshot}>
           Fit
         </button>
+        {containerMap && (
+          <span className="container-map-summary" role="status">
+            {containerMap.regions.length} {containerMap.regions.length === 1 ? "region" : "regions"} / {containerMap.regions.filter((region) => region.collapsed).length} collapsed
+          </span>
+        )}
       </div>
       <div ref={reticuleRef} className="selection-reticule" aria-hidden="true" />
       <div ref={containerRef} className="graph-canvas" />
@@ -358,7 +412,7 @@ function hideNodeReticule(reticule: HTMLDivElement | null) {
 }
 
 
-function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visualProjection: FlightDeckVisualProjection | null): ElementDefinition[] {
+function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visualProjection: FlightDeckVisualProjection | null, containerMap: VisualContainerMap | null): ElementDefinition[] {
   if (graphView === "schema") {
     const schemaNodeModels = schemaNodes(snapshot);
     const elements: ElementDefinition[] = [];
@@ -426,10 +480,35 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visua
   }
 
   const elements: ElementDefinition[] = [];
+  const regions = new Map(containerMap?.regions.map((region) => [region.id, region]));
+  const nodeById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+  for (const region of regions.values()) {
+    const anchor = nodeById.get(region.anchorId)!;
+    elements.push({
+      data: {
+        id: region.id,
+        anchorId: anchor.id,
+        label: projectedNodeLabel(anchor, visualProjection),
+        displayLabel: `${compactGraphLabel(projectedNodeLabel(anchor, visualProjection))}\n${region.memberIds.length} ${region.memberIds.length === 1 ? "item" : "items"}`,
+        model: anchor.model,
+        color: colorForToken(region.styleToken ?? schemaNodeProjection(visualProjection, anchor.model)?.colorToken, anchor.model),
+        shape: "round-rectangle",
+        nodeWidth: 210, nodeHeight: 64,
+        roleBorderColor: "#d5f8ff", roleBorderOpacity: 0.65, roleBorderWidth: 1.5,
+        props: anchor.props
+      },
+      classes: `visual-container render-${region.renderAs}${region.collapsed ? " collapsed" : ""}`
+    });
+  }
   for (const node of snapshot.nodes) {
+    const owner = containerMap?.ownerByNode.get(node.id);
+    if (owner && regions.get(owner)?.collapsed) {
+      continue;
+    }
     elements.push({
       data: {
         id: node.id,
+        ...(owner ? { parent: owner } : {}),
         label: projectedNodeLabel(node, visualProjection),
         displayLabel: compactGraphLabel(projectedNodeLabel(node, visualProjection)),
         model: node.model,
@@ -447,13 +526,23 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visua
   }
 
   for (const edge of snapshot.edges) {
+    if (!nodeById.has(edge.from) || !nodeById.has(edge.to)) {
+      continue;
+    }
+    const fromOwner = containerMap?.ownerByNode.get(edge.from);
+    const toOwner = containerMap?.ownerByNode.get(edge.to);
+    const source = fromOwner && regions.get(fromOwner)?.collapsed ? fromOwner : edge.from;
+    const target = toOwner && regions.get(toOwner)?.collapsed ? toOwner : edge.to;
+    if (source === target && (source !== edge.from || target !== edge.to)) {
+      continue;
+    }
     const isSelfLoop = edge.from === edge.to;
     elements.push({
       data: {
         id: `e${edge.id}`,
         sourceId: edge.id,
-        source: edge.from,
-        target: edge.to,
+        source,
+        target,
         label: schemaEdgeProjection(visualProjection, edge.model)?.label ?? edge.model,
         displayLabel: visualEdgeLabel(edge.model, isSelfLoop, visualProjection),
         model: edge.model,
@@ -472,6 +561,38 @@ function graphElements(snapshot: FlightDeckSnapshot, graphView: GraphView, visua
     });
   }
   return elements;
+}
+
+function containerLayoutOptions(graph: Core, map: VisualContainerMap): cytoscape.LayoutOptions {
+  const positions: Record<string, cytoscape.Position> = {};
+  const columns = Math.max(1, Math.ceil(Math.sqrt(map.regions.length + graph.nodes().filter((node) => !node.isParent() && !node.parent().length && !node.hasClass("visual-container")).length)));
+  let index = 0;
+  let x = 0;
+  let y = 0;
+  let rowHeight = 0;
+  const place = (ids: string[], lane = false) => {
+    const innerColumns = lane ? ids.length : Math.min(3, Math.ceil(Math.sqrt(ids.length)));
+    const width = Math.max(310, innerColumns * 160 + 80);
+    const height = Math.max(150, Math.ceil(ids.length / innerColumns) * 100 + 100);
+    ids.forEach((id, member) => {
+      positions[id] = { x: x + 80 + (member % innerColumns) * 160, y: y + 80 + Math.floor(member / innerColumns) * 100 };
+    });
+    x += width + 80;
+    rowHeight = Math.max(rowHeight, height);
+    index += 1;
+    if (index % columns === 0) {
+      x = 0;
+      y += rowHeight + 80;
+      rowHeight = 0;
+    }
+  };
+  for (const region of map.regions) {
+    place(region.collapsed ? [region.id] : [region.anchorId, ...region.memberIds], region.renderAs === "lane");
+  }
+  for (const node of graph.nodes().filter((node) => !node.isParent() && !node.parent().length && !node.hasClass("visual-container"))) {
+    place([node.id()]);
+  }
+  return { name: "preset", positions, fit: true, padding: 72, animate: false };
 }
 
 function schemaNodes(snapshot: FlightDeckSnapshot) {

@@ -1458,6 +1458,7 @@ export function App() {
                   visualProjection={effectiveVisualProjection}
                   visualLayoutMode={projectionOverlay.layout.mode}
                   visualLayoutStyle={projectionOverlay.layout.style}
+                  visualContainers={projectionOverlay.containers}
                 />
                 <QueryInsightPanels
                   explainVisible={graphView === "data" && explainVisible}

@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import type { Core } from "cytoscape";
 
 const STORE_STORAGE_KEY = "grm-flight-deck.graph-store.v1";
 const VISUAL_OVERLAY_STORAGE_KEY = "grm-flight-deck.visual-overlays.v1";
@@ -127,6 +128,64 @@ test.describe("flight-deck Visual Design Space", () => {
     await expect(graphCanvas(page)).toBeVisible();
   });
 
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    test(`renders and collapses relationship regions at ${viewport.width}px`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await openSchemaMode(page);
+      const design = designSpace(page);
+      const containers = design.getByRole("region", { name: "Containers" });
+      await containers.getByLabel("Containment source").selectOption("HAS_WORK_SLICE");
+      await containers.getByLabel("Render as").selectOption("lane");
+      await containers.getByLabel("Collapse affordance").selectOption("expanded");
+      await design.getByRole("button", { name: "Container/map" }).click();
+      await page.getByLabel("Workspace mode").getByRole("button", { name: "Data" }).click();
+      await expect(page.getByText("1 region / 0 collapsed", { exact: true })).toBeVisible();
+      await expect(page.getByText("Rendering graph", { exact: true })).toHaveCount(0);
+      const expanded = await renderedGraph(page);
+      expect(expanded.nodes).toHaveLength(6);
+      expect(expanded.nodes.find((node) => node.id === "566")?.parent).toBe("visual-container:13");
+      expect(expanded.nodes.find((node) => node.id === "visual-container:13")?.classes).toContain("render-lane");
+      expect(expanded.edges).toHaveLength(4);
+      expect(expanded.paintedPixels).toBeGreaterThan(100);
+      await page.locator(".graph-shell").screenshot({ path: `test-results/container-map-expanded-${viewport.width}.png` });
+
+      await openSchemaMode(page);
+      await containers.getByLabel("Containment source").selectOption("HAS_WORK_SLICE");
+      await containers.getByLabel("Collapse affordance").selectOption("collapsed");
+      await page.getByLabel("Workspace mode").getByRole("button", { name: "Data" }).click();
+      await expect(page.getByText("1 region / 1 collapsed", { exact: true })).toBeVisible();
+      await expect(page.getByText("Rendering graph", { exact: true })).toHaveCount(0);
+      const collapsed = await renderedGraph(page);
+      expect(collapsed.nodes.map((node) => node.id)).not.toContain("566");
+      expect(collapsed.nodes.map((node) => node.id)).not.toContain("13");
+      expect(collapsed.edges.find((edge) => edge.id === "e1")?.target).toBe("visual-container:13");
+      expect(collapsed.edges.find((edge) => edge.id === "e3")?.source).toBe("visual-container:13");
+      expect(collapsed.edges.map((edge) => edge.id)).not.toContain("e2");
+      expect(collapsed.paintedPixels).toBeGreaterThan(100);
+      await page.locator(".graph-shell").screenshot({ path: `test-results/container-map-collapsed-${viewport.width}.png` });
+      const region = collapsed.nodes.find((node) => node.id === "visual-container:13")!;
+      await page.locator(".graph-canvas").click({ position: region.position });
+      const selection = page.getByRole("complementary", { name: "Selection" });
+      await expect(selection.getByRole("heading", { name: "Build the GRM flight-deck", exact: true })).toBeVisible();
+      await expect(selection.getByText("node / roadmap item", { exact: true })).toBeVisible();
+      await expect(selection.getByText("planned", { exact: true })).toBeVisible();
+
+      await page.reload();
+      await expect(page.getByText("1 region / 1 collapsed", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await openSchemaMode(page);
+      await containers.getByLabel("Containment source").selectOption("HAS_WORK_SLICE");
+      await containers.getByLabel("Collapse affordance").selectOption("expanded");
+      await design.getByRole("button", { name: "Edge-network" }).click();
+      await page.getByLabel("Workspace mode").getByRole("button", { name: "Data" }).click();
+      await expect(page.locator(".container-map-summary")).toHaveCount(0);
+      await expect(page.getByText("Rendering graph", { exact: true })).toHaveCount(0);
+      const restored = await renderedGraph(page);
+      expect(restored.nodes).toHaveLength(5);
+      expect(restored.edges).toHaveLength(4);
+      expect(restored.nodes.every((node) => !node.parent)).toBeTruthy();
+    });
+  }
+
   test("persists local overlays by profile and workspace only", async ({ page }) => {
     await openSchemaMode(page);
     await makeNodeAndContainerOverride(page, "PM roadmap");
@@ -249,6 +308,26 @@ async function openSchemaMode(page: Page) {
 
 function graphCanvas(page: Page): Locator {
   return page.locator(".graph-canvas canvas").first();
+}
+
+async function renderedGraph(page: Page) {
+  return page.locator(".graph-canvas").evaluate((element) => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    let paintedPixels = 0;
+    for (const canvas of element.querySelectorAll("canvas")) {
+      const context = canvas.getContext("2d");
+      if (!context) continue;
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let offset = 3; offset < pixels.length; offset += 4) {
+        if (pixels[offset] > 0) paintedPixels += 1;
+      }
+    }
+    return {
+      nodes: cy.nodes().map((node) => ({ id: node.id(), parent: node.data("parent") as string | undefined, classes: node.classes(), position: node.renderedPosition() })),
+      edges: cy.edges().map((edge) => ({ id: edge.id(), source: edge.source().id(), target: edge.target().id() })),
+      paintedPixels
+    };
+  });
 }
 
 function schemaPanel(page: Page): Locator {
