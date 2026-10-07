@@ -964,12 +964,34 @@ button:disabled {
   transition: opacity 90ms ease-out, transform 90ms ease-out, width 90ms ease-out, height 90ms ease-out;
 }
 
-.selection-reticule::before {
+.selection-glow {
+  position: absolute;
+  inset: var(--selection-padding, 9px);
+  filter: blur(8px) drop-shadow(0 0 8px rgb(255 90 46 / 0.3));
+}
+
+.selection-glow::before {
   content: "";
   position: absolute;
-  inset: -0.45rem;
-  background: radial-gradient(circle, rgb(255 90 46 / 0.24) 0%, rgb(255 176 0 / 0.15) 42%, transparent 72%);
-  filter: blur(6px);
+  inset: 0;
+  background: rgb(255 176 0 / 0.16);
+  box-shadow: inset 0 0 10px rgb(255 90 46 / 0.22);
+}
+
+.selection-reticule[data-shape="ellipse"] .selection-glow::before {
+  border-radius: 50%;
+}
+
+.selection-reticule[data-shape="round-rectangle"] .selection-glow::before {
+  border-radius: var(--selection-radius, 8px);
+}
+
+.selection-reticule[data-shape="diamond"] .selection-glow::before {
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+
+.selection-reticule[data-shape="hexagon"] .selection-glow::before {
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
 }
 
 .selection-reticule::after {

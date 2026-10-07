@@ -398,7 +398,7 @@ export function GraphCanvas({
           </span>
         )}
       </div>
-      <div ref={reticuleRef} className="selection-reticule" aria-hidden="true" />
+      <div ref={reticuleRef} className="selection-reticule" aria-hidden="true"><div className="selection-glow" /></div>
       <div ref={containerRef} className="graph-canvas" />
       {!snapshot && <div className="empty-state">Load a bounded workspace snapshot.</div>}
       {snapshot && graphView === "data" && snapshot.nodes.length === 0 && (
@@ -463,6 +463,9 @@ function updateNodeReticule(graph: Core, reticule: HTMLDivElement | null) {
   reticule.style.transform = `translate(${left}px, ${top}px)`;
   reticule.style.width = `${width}px`;
   reticule.style.height = `${height}px`;
+  reticule.dataset.shape = selectedNode.style("shape");
+  reticule.style.setProperty("--selection-padding", `${padding}px`);
+  reticule.style.setProperty("--selection-radius", `${Math.min(selectedNode.width() / 4, selectedNode.height() / 4, 8) * graph.zoom()}px`);
 }
 
 function hideNodeReticule(reticule: HTMLDivElement | null) {
