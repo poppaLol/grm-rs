@@ -27,6 +27,23 @@ GRM_SERVICE_ENDPOINT=http://127.0.0.1:50051 \
 cargo run -p grm-flight-deck-gateway
 ```
 
+The bundled fixture is a fictional software-delivery SOML workspace with 40
+nodes across five roadmap areas: the workbench, secure API, durable memory,
+developer integrations, and releases. Each roadmap has four work slices.
+Seven shared security requirements and seven controls connect the areas.
+Titles, summaries, readiness, priority, and planned/active/blocked/completed
+statuses make filtering and selection useful. These statuses illustrate a
+development programme; they do not report real project completion or service
+security guarantees.
+
+To explore it, enable Fixture and use Design to configure RoadmapItem ->
+WorkSlice as a container source, then choose Container/map. Five regions show
+the roadmap work, with links to shared requirements and controls. In Data,
+filter WorkSlice by status=blocked and inspect the summaries explaining why
+those slices are waiting. Schema shows the same five node models and four
+relationship models. Work-slice dependency links and execution order are not
+part of this fixture yet.
+
 Seed a small demo workspace through the public gRPC client example:
 
 ```bash
@@ -102,7 +119,10 @@ in browser storage or Ziti-published UI configuration.
 
 ## Workbench Shape
 
-The app opens in Query with Data mode selected. Data mode is the graph-instance
+The app opens on the Data tab. Data, Schema, Audit, and Design are keyboard-
+navigable tabs. Design has a dedicated editor with a live Data graph preview
+for node, edge, container, and layout controls; Schema keeps the model catalogue
+and projection provenance. Data mode is the graph-instance
 arena: it can still apply the bounded local snapshot filter, and its command bar
 accepts a narrow read-only GRM syntax subset when fixture mode is off:
 
@@ -127,9 +147,9 @@ catalogue, including node models, edge models, legal edge directions, and model
 fields when the gateway snapshot includes them. Schema filtering is a local
 catalogue inspection control, not data traversal.
 
-In Schema mode, the Visual Design Space can select a directed relationship as
-a container source and choose region, card, lane, or section rendering. Switch
-to Container/map and then Data mode to see flat visual regions around matching
+In the Design tab, select a directed relationship as a container source and
+choose region, card, lane, or section rendering. Switch to Container/map to see
+flat visual regions in the live preview and Data tab around matching
 source nodes and their targets in the current bounded snapshot. Schema mode
 continues to show model definitions rather than instance containers. Model
 grouping alone does not create a region. The map uses a deterministic tile
@@ -166,6 +186,48 @@ fields, including the non-secret profile kind such as anonymous local, Docker
 local insecure, or secured, are only shown through `Change connection`. Before
 the read-only security status call succeeds, the header treats that kind as
 configured profile metadata rather than observed service security posture.
+
+`New profile` creates a disconnected profile with blank name, gateway, and
+workspace fields and Fixture switched off. `Save profile` persists local
+settings without connecting. Both actions show a brief spinner and confirmation
+toast. `Connect` loads the selected datasource and closes the dialog on success;
+failed connections keep the dialog open with an error so they can be retried.
+`Remove profile` deletes the selected local profile and its visual preferences,
+disconnects the workspace, and closes the dialog without selecting another
+profile. It does not delete datasource records.
+
+The Schema catalogue can be collapsed and restored with the panel icons while
+remaining in the Schema tab.
+
+The header connection control shows `Disconnect` while a snapshot is connected,
+and returns to `Connect` after disconnection without removing the profile.
+Connection state is session-local, not a persistent service health guarantee.
+Data force layouts use the canvas aspect ratio; Schema starts in a label-aware
+grid. Each view retains its own layout choice while switching between tabs.
+
+Selection details collapse completely, leaving a reopen icon in the graph
+toolbar rather than an empty rail. The Design preview uses the same layout
+intent as Data, and changes from either layout selector update that intent.
+Dragging nodes marks the layout dropdown with an asterisk: automatic layout
+stops, and positions survive visual-property edits and resizing. The dropdown
+stays available; selecting a different preset or using the restore icon
+reapplies automatic layout and clears the asterisk. Manual positions are
+canvas-local and are not saved to the datasource or persisted across reloads.
+
+## Browser Regression Tests
+
+Run `npm run test:e2e` from `grm-flight-deck`. Playwright uses local fixtures,
+starts Vite if needed, and reuses an existing dev server. No live datasource
+records are modified. The system Chromium executable defaults to
+`/snap/bin/chromium`; override it with `PLAYWRIGHT_CHROMIUM_EXECUTABLE`.
+
+Coverage includes node shapes, density, roles and palette; edge styles,
+direction, weights, stroke patterns and label visibility; container presentation
+and collapse; all layout presets on desktop and mobile; layout persistence,
+manual arrangement, Fit, panel toggles, and connection/profile actions. Tests
+inspect rendered Cytoscape styles and canvas pixels, not just selected controls.
+Failures retain screenshots and traces; `npx playwright show-report` opens the
+HTML report.
 
 ## Current Proof Boundary
 

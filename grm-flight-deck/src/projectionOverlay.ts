@@ -22,7 +22,7 @@ export type VisualLabelVisibility = "generated" | "hidden" | "self-loops" | "alw
 export type VisualContainerRender = "generated" | "region" | "card" | "lane" | "section";
 export type VisualContainerCollapse = "generated" | "expanded" | "collapsed";
 export type VisualLayoutMode = "edge-network" | "container-map";
-export type VisualLayoutStyle = "generated" | "force" | "groups" | "hierarchy" | "grid";
+export type VisualLayoutStyle = "generated" | "force" | "groups" | "hierarchy" | "circle" | "grid";
 
 export interface VisualProjectionNodeOverlay {
   label?: string;
@@ -127,6 +127,21 @@ export function writeVisualProjectionOverlay(storage: StorageLike | undefined, o
   storage.setItem(VISUAL_OVERLAY_STORAGE_KEY, JSON.stringify(parsed));
 }
 
+export function removeVisualProjectionOverlays(storage: StorageLike | undefined, profileId: string) {
+  const raw = storage?.getItem(VISUAL_OVERLAY_STORAGE_KEY);
+  if (!storage || !raw) return;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const prefix = `${scopedValue(profileId)}::`;
+  storage.setItem(VISUAL_OVERLAY_STORAGE_KEY, JSON.stringify(Object.fromEntries(
+    Object.entries(parsed).filter(([key]) => !key.startsWith(prefix))
+  )));
+}
+
 export function sanitizeVisualProjectionOverlay(
   value: unknown,
   profileId: string,
@@ -220,7 +235,7 @@ function sanitizeLayoutOverlay(value: unknown): VisualProjectionLayoutOverlay {
   const overlay = value as VisualProjectionLayoutOverlay;
   return definedOverlayValues({
     mode: enumValue(overlay.mode, ["edge-network", "container-map"]),
-    style: enumValue(overlay.style, ["generated", "force", "groups", "hierarchy", "grid"])
+    style: enumValue(overlay.style, ["generated", "force", "groups", "hierarchy", "circle", "grid"])
   });
 }
 

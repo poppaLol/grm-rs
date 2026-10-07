@@ -11,11 +11,48 @@ import {
   applyVisualProjectionOverlay,
   emptyVisualProjectionOverlay,
   readVisualProjectionOverlay,
+  removeVisualProjectionOverlays,
   VISUAL_OVERLAY_STORAGE_KEY,
   writeVisualProjectionOverlay
 } from "../src/projectionOverlay";
 import type { FlightDeckSnapshot, FlightDeckVisualProjection } from "../src/types";
 import { buildVisualContainerMap } from "../src/containerMap";
+import { fixtureSnapshot, fixtureVisualProjection } from "../src/fixtures";
+
+test("software-delivery fixture has valid typed links, varied work, and shared requirements", () => {
+  const graph = fixtureSnapshot;
+  assert.equal(graph.nodes.length, 40);
+  assert.equal(new Set(graph.nodes.map((node) => node.id)).size, graph.nodes.length);
+  assert.equal(new Set(graph.edges.map((edge) => edge.id)).size, graph.edges.length);
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  for (const edge of graph.edges) {
+    const from = nodes.get(edge.from);
+    const to = nodes.get(edge.to);
+    assert.ok(from && to, `Missing endpoint on ${edge.id}`);
+    assert.ok(graph.schemaEdges?.some((model) => model.model === edge.model && model.fromModel === from.model && model.toModel === to.model), `Invalid direction on ${edge.id}`);
+  }
+  const slices = graph.nodes.filter((node) => node.model === "WorkSlice");
+  assert.equal(slices.length, 20);
+  assert.deepEqual(new Set(slices.map((node) => node.props.status)), new Set(["planned", "active", "blocked", "completed"]));
+  for (const roadmap of graph.nodes.filter((node) => node.model === "RoadmapItem")) {
+    assert.equal(graph.edges.filter((edge) => edge.model === "HAS_WORK_SLICE" && edge.from === roadmap.id).length, 4);
+  }
+  for (const requirement of graph.nodes.filter((node) => node.model === "SecurityRequirement")) {
+    const sourceRoadmaps = new Set(graph.edges.filter((edge) => edge.model === "SLICE_ADDRESSES_SECURITY_REQUIREMENT" && edge.to === requirement.id).map((edge) => graph.edges.find((link) => link.model === "HAS_WORK_SLICE" && link.to === edge.from)?.from));
+    assert.ok(sourceRoadmaps.size > 1, `Requirement ${requirement.id} should connect roadmap areas`);
+  }
+  for (const node of graph.nodes) {
+    const hint = fixtureVisualProjection.nodeModels.find((model) => model.model === node.model);
+    assert.ok(hint);
+    assert.equal(String(node.props[hint.idField]), node.id);
+    assert.ok(node.props.summary);
+    assert.ok(node.props.title || node.props.name);
+  }
+  const store = createFlightDeckGraphStore();
+  store.loadSnapshot(graph);
+  store.applyGraphFilter({ text: "", model: "WorkSlice", propertyKey: "status", propertyValue: "blocked" });
+  assert.equal(store.getState().visibleSnapshot?.nodes.length, 3);
+});
 
 test("container maps use directed matching relationships and leave snapshots unchanged", () => {
   const before = JSON.stringify(snapshot);
@@ -242,7 +279,7 @@ test("scrubs credential-bearing service URLs before browser persistence", () => 
   assert.equal(secretPathUrl.includes("fingerprint"), false);
 });
 
-test("can create a second selected connection profile from draft settings", () => {
+test("new profiles start blank and disconnect the previous workspace", () => {
   const storage = new MemoryStorage();
   const store = createFlightDeckGraphStore(storage);
 
@@ -250,15 +287,99 @@ test("can create a second selected connection profile from draft settings", () =
   store.saveCurrentProfile();
   store.updateDraftProfileName("Second profile");
   store.updateSettings({ workspace: "second-workspace", useFixtureData: false });
+  store.loadSnapshot(snapshot);
   store.createProfile();
 
   const state = store.getState();
   assert.equal(state.profiles.length, 2);
-  assert.equal(state.selectedProfileId, "second-profile");
-  assert.equal(state.settings.workspace, "second-workspace");
+  assert.equal(state.selectedProfileId, "new-profile");
+  assert.equal(state.draftProfileName, "");
+  assert.equal(state.settings.workspace, "");
+  assert.equal(state.settings.serviceBaseUrl, "");
+  assert.equal(state.settings.useFixtureData, false);
+  assert.equal(state.snapshot, null);
+  assert.equal(state.connectionStatus, "idle");
 
   store.selectProfile("local-workspace");
   assert.equal(store.getState().settings.workspace, "first-workspace");
+});
+
+test("disconnect clears loaded state but retains the selected profile and settings", () => {
+  const storage = new MemoryStorage();
+  const store = createFlightDeckGraphStore(storage);
+  store.updateSettings({ workspace: "retained-workspace" });
+  store.saveCurrentProfile();
+  store.loadSnapshot(snapshot);
+  store.loadVisualProjection(visualProjection);
+  const before = store.getState();
+  store.disconnect();
+  const after = store.getState();
+  assert.equal(after.connectionStatus, "idle");
+  assert.equal(after.snapshot, null);
+  assert.equal(after.visualProjection, null);
+  assert.equal(after.selectedProfileId, before.selectedProfileId);
+  assert.deepEqual(after.profiles, before.profiles);
+  assert.deepEqual(after.settings, before.settings);
+  store.loadSnapshot(snapshot);
+  assert.equal(store.getState().connectionStatus, "connected");
+});
+
+test("removing the current profile leaves no selected connection and keeps other profiles", () => {
+  const storage = new MemoryStorage();
+  const store = createFlightDeckGraphStore(storage);
+  store.createProfile();
+  store.updateSettings({ workspace: "second-workspace" });
+  store.saveCurrentProfile();
+  store.loadSnapshot(snapshot);
+  store.loadVisualProjection(visualProjection);
+  store.recordQueryExecution();
+  store.setConnectionDetailsOpen(true);
+  store.removeCurrentProfile();
+  const state = store.getState();
+  assert.deepEqual(state.profiles.map((profile) => profile.id), ["local-workspace"]);
+  assert.equal(state.selectedProfileId, "");
+  assert.equal(state.snapshot, null);
+  assert.equal(state.visualProjection, null);
+  assert.equal(state.lastExecutedQuery, null);
+  assert.equal(state.connectionStatus, "idle");
+  assert.equal(state.connectionDetailsOpen, false);
+  const restored = createFlightDeckGraphStore(storage);
+  assert.equal(restored.getState().selectedProfileId, "");
+  assert.equal(restored.getState().settings.useFixtureData, false);
+  restored.selectProfile("local-workspace");
+  assert.equal(restored.getState().selectedProfileId, "local-workspace");
+  assert.equal(restored.getState().snapshot, null);
+});
+
+test("deleting the last profile stays empty after reload and permits a fresh profile", () => {
+  const storage = new MemoryStorage();
+  const store = createFlightDeckGraphStore(storage);
+  store.removeCurrentProfile();
+  const restored = createFlightDeckGraphStore(storage);
+  assert.deepEqual(restored.getState().profiles, []);
+  assert.equal(restored.getState().selectedProfileId, "");
+  assert.equal(restored.getState().settings.workspace, "");
+  restored.saveCurrentProfile();
+  assert.deepEqual(restored.getState().profiles, []);
+  restored.createProfile();
+  assert.equal(restored.getState().profiles.length, 1);
+  assert.equal(restored.getState().selectedProfileId, "new-profile");
+});
+
+test("profile removal clears only that profile's visual overlays", () => {
+  const storage = new MemoryStorage();
+  const first = emptyVisualProjectionOverlay("one", "workspace-a");
+  first.nodeModels.WorkSlice = { label: "First" };
+  writeVisualProjectionOverlay(storage, first);
+  writeVisualProjectionOverlay(storage, emptyVisualProjectionOverlay("one", "workspace-b"));
+  const other = emptyVisualProjectionOverlay("one-other", "workspace-a");
+  other.nodeModels.WorkSlice = { label: "Other" };
+  writeVisualProjectionOverlay(storage, other);
+  removeVisualProjectionOverlays(storage, "one");
+  const payload = JSON.parse(storage.getItem(VISUAL_OVERLAY_STORAGE_KEY) ?? "{}");
+  assert.deepEqual(Object.keys(payload), ["one-other::workspace-a"]);
+  assert.equal(readVisualProjectionOverlay(storage, "one", "workspace-a").nodeModels.WorkSlice, undefined);
+  assert.equal(readVisualProjectionOverlay(storage, "one-other", "workspace-a").nodeModels.WorkSlice.label, "Other");
 });
 
 test("applies browser-local visual projection overlays without changing generated defaults", () => {

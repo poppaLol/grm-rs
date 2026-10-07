@@ -29,6 +29,12 @@ export const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
   useFixtureData: true
 };
 
+export const EMPTY_CONNECTION_SETTINGS: ConnectionSettings = {
+  ...DEFAULT_CONNECTION_SETTINGS,
+  workspace: "",
+  useFixtureData: false
+};
+
 export const DEFAULT_GRAPH_FILTER: GraphFilter = {
   text: "",
   model: "",
@@ -88,6 +94,8 @@ export interface FlightDeckGraphStore {
   updateDraftProfileName: (name: string) => void;
   saveCurrentProfile: () => void;
   createProfile: () => void;
+  removeCurrentProfile: () => void;
+  disconnect: () => void;
   selectProfile: (profileId: string) => void;
   applyGraphFilter: (filter: GraphFilter) => void;
   clearGraphFilter: () => void;
@@ -117,9 +125,9 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
   const initialProfile = restored.selectedProfile;
   let state: FlightDeckGraphStoreState = deriveState({
     profiles: restored.profiles,
-    selectedProfileId: initialProfile.id,
-    draftProfileName: initialProfile.name,
-    settings: initialProfile.settings,
+    selectedProfileId: initialProfile?.id ?? "",
+    draftProfileName: initialProfile?.name ?? "",
+    settings: initialProfile?.settings ?? EMPTY_CONNECTION_SETTINGS,
     filter: DEFAULT_GRAPH_FILTER,
     snapshot: null,
     normalizedSnapshot: null,
@@ -128,7 +136,7 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
     selection: null,
     selectedItem: null,
     connectionStatus: "idle",
-    status: "Ready for a local service connection.",
+    status: initialProfile ? "Ready for a local service connection." : "Not connected.",
     statusDetail: "",
     lastError: "",
     events: [idleEvent()],
@@ -175,6 +183,9 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
       setState({ ...state, draftProfileName: name });
     },
     saveCurrentProfile: () => {
+      if (!state.profiles.some((profile) => profile.id === state.selectedProfileId)) {
+        return;
+      }
       const profile = sanitizeConnectionProfile({
         id: state.selectedProfileId,
         name: state.draftProfileName.trim() || "Local workspace",
@@ -190,21 +201,39 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
       });
     },
     createProfile: () => {
-      const name = state.draftProfileName.trim() || "Local workspace";
+      const name = "New profile";
       const profile = sanitizeConnectionProfile({
         id: uniqueProfileId(name, state.profiles.map((item) => item.id)),
         name,
-        settings: state.settings
+        settings: EMPTY_CONNECTION_SETTINGS
       });
 
       setState({
         ...state,
+        ...disconnectedWorkspace(),
         profiles: [...state.profiles, profile],
         selectedProfileId: profile.id,
-        draftProfileName: profile.name,
+        draftProfileName: "",
         settings: profile.settings,
         selection: null
       });
+    },
+    removeCurrentProfile: () => {
+      if (!state.selectedProfileId) {
+        return;
+      }
+      setState({
+        ...state,
+        ...disconnectedWorkspace(),
+        profiles: state.profiles.filter((profile) => profile.id !== state.selectedProfileId),
+        selectedProfileId: "",
+        draftProfileName: "",
+        settings: EMPTY_CONNECTION_SETTINGS,
+        connectionDetailsOpen: false
+      });
+    },
+    disconnect: () => {
+      setState({ ...state, ...disconnectedWorkspace(), connectionDetailsOpen: false });
     },
     selectProfile: (profileId) => {
       const profile = state.profiles.find((item) => item.id === profileId);
@@ -213,6 +242,7 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
       }
       setState({
         ...state,
+        ...disconnectedWorkspace(),
         selectedProfileId: profile.id,
         draftProfileName: profile.name,
         settings: profile.settings,
@@ -729,13 +759,13 @@ function schemaEdgeCountForSnapshot(snapshot: FlightDeckSnapshot | null): number
 
 function restoreInitialProfiles(storage?: StorageLike): {
   profiles: ConnectionProfile[];
-  selectedProfile: ConnectionProfile;
+  selectedProfile: ConnectionProfile | null;
 } {
   const restored = readPersistedStore(storage);
   if (restored) {
-    const selectedProfile =
+    const selectedProfile = restored.selectedProfileId ?
       restored.profiles.find((profile) => profile.id === restored.selectedProfileId) ??
-      restored.profiles[0];
+      restored.profiles[0] ?? null : null;
     return { profiles: restored.profiles, selectedProfile };
   }
 
@@ -757,17 +787,41 @@ function readPersistedStore(storage?: StorageLike): PersistedStore | null {
     const profiles = Array.isArray(parsed.profiles)
       ? parsed.profiles.map(sanitizeConnectionProfile)
       : [];
-    if (!parsed.selectedProfileId || profiles.length === 0) {
+    if (parsed.version !== 1 || !Array.isArray(parsed.profiles) || typeof parsed.selectedProfileId !== "string") {
       return null;
     }
     return {
       version: 1,
-      selectedProfileId: stableProfileId(parsed.selectedProfileId),
+      selectedProfileId: parsed.selectedProfileId ? stableProfileId(parsed.selectedProfileId) : "",
       profiles
     };
   } catch {
     return null;
   }
+}
+
+function disconnectedWorkspace() {
+  return {
+    snapshot: null,
+    normalizedSnapshot: null,
+    visibleSnapshot: null,
+    visualProjection: null,
+    selection: null,
+    selectedItem: null,
+    connectionStatus: "idle" as const,
+    status: "Not connected.",
+    statusDetail: "",
+    lastError: "",
+    filter: DEFAULT_GRAPH_FILTER,
+    schemaFilter: "",
+    lastExecutedQuery: null,
+    queryStatus: "idle" as const,
+    queryMessage: "",
+    queryEvidence: null,
+    explainVisible: false,
+    profileVisible: false,
+    events: [idleEvent()]
+  };
 }
 
 function readLegacySettings(storage?: StorageLike): ConnectionSettings {
