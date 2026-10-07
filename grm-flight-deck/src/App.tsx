@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, LoaderCircle, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plug, Plus, Save, Trash2, Unplug, X } from "lucide-react";
 
 import { executeQueryCommand, fetchSecurityAuditStatus, fetchSecurityStatus, fetchSnapshot, fetchVisualProjection } from "./api";
 import {
@@ -13,6 +14,7 @@ import {
   emptyVisualProjectionOverlay,
   overlayHasOverrides,
   readVisualProjectionOverlay,
+  removeVisualProjectionOverlays,
   writeVisualProjectionOverlay,
   type VisualProjectionContainerOverlay,
   type VisualProjectionEdgeOverlay,
@@ -54,7 +56,7 @@ const EDGE_LINE_OPTIONS = ["generated", "solid", "dashed", "dotted"];
 const EDGE_LABEL_OPTIONS = ["generated", "hidden", "self-loops", "always"];
 const CONTAINER_RENDER_OPTIONS = ["generated", "region", "card", "lane", "section"];
 const CONTAINER_COLLAPSE_OPTIONS = ["generated", "expanded", "collapsed"];
-const LAYOUT_STYLE_OPTIONS = ["generated", "force", "groups", "hierarchy", "grid"];
+const LAYOUT_STYLE_OPTIONS = ["generated", "force", "groups", "hierarchy", "circle", "grid"];
 
 function SchemaList({ title, models, projection }: { title: string; models: string[]; projection: FlightDeckVisualProjection | null }) {
   return (
@@ -229,7 +231,7 @@ function ProjectionOverlayControls({
   return (
     <section className="visual-design-space" aria-label="Visual Design Space">
       <div className="projection-panel-heading">
-        <h2>Visual Design Space</h2>
+        <h2>Design</h2>
         <span>{overlayHasOverrides(overlay) ? "custom" : "default"}</span>
       </div>
       <p className="projection-note">Browser-local advisory design intent layered over generated projection defaults.</p>
@@ -424,20 +426,7 @@ function SelectionPanel({
   onOpenChange: (open: boolean) => void;
 }) {
   if (!selected || !open) {
-    return (
-      <aside className={`panel inspector collapsed ${selected ? "has-selection" : ""}`} aria-label="Selection">
-        {selected && (
-          <button
-            type="button"
-            className="panel-rail-button"
-            onClick={() => onOpenChange(true)}
-            aria-label="Open selection details"
-          >
-            &lt;
-          </button>
-        )}
-      </aside>
-    );
+    return null;
   }
 
   const hint = selected.kind === "node"
@@ -447,7 +436,7 @@ function SelectionPanel({
   const entries = Object.entries(orderedProps);
 
   return (
-    <aside className="panel inspector open" aria-label="Selection">
+    <aside id="selection-details" className="panel inspector open" aria-label="Selection">
       <div className="panel-heading-row">
         <div>
           <h2>{selected.label}</h2>
@@ -458,8 +447,11 @@ function SelectionPanel({
           className="icon-button"
           onClick={() => onOpenChange(false)}
           aria-label="Collapse selection details"
+          title="Collapse selection details"
+          aria-expanded={true}
+          aria-controls="selection-details"
         >
-          &gt;
+          <PanelRightClose size={18} aria-hidden="true" />
         </button>
       </div>
       {entries.length > 0 ? (
@@ -957,6 +949,10 @@ export function App() {
   const [hovered, setHovered] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [queryLoading, setQueryLoading] = useState(false);
+  const [profileAction, setProfileAction] = useState<"save" | "create" | "remove" | null>(null);
+  const [toast, setToast] = useState<{ message: string; error?: boolean } | null>(null);
+  const loadControllerRef = useRef<AbortController | null>(null);
+  const queryControllerRef = useRef<AbortController | null>(null);
   const [schemaPanelOpen, setSchemaPanelOpen] = useState(false);
   const [selectionPanelOpen, setSelectionPanelOpen] = useState(false);
   const [projectionOverlay, setProjectionOverlay] = useState(() =>
@@ -974,6 +970,7 @@ export function App() {
     visibleSnapshot,
     selectedItem,
     status,
+    connectionStatus,
     statusDetail,
     lastError,
     events,
@@ -1007,7 +1004,7 @@ export function App() {
   );
   const graphSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
   const schemaSidebarSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
-  const workspaceMode = activeWorkspacePanel === "audit" ? "audit" : graphView;
+  const workspaceMode = activeWorkspacePanel === "query" ? graphView : activeWorkspacePanel;
   const insightPanelsVisible = graphView === "data" && (explainVisible || profileVisible);
 
   useEffect(() => {
@@ -1015,12 +1012,70 @@ export function App() {
   }, [selectedProfileId, settings.workspace]);
 
   useEffect(() => {
-    writeVisualProjectionOverlay(window.localStorage, projectionOverlay);
-  }, [projectionOverlay]);
+    if (selectedProfileId && projectionOverlay.profileId === selectedProfileId && projectionOverlay.workspace === settings.workspace) {
+      writeVisualProjectionOverlay(window.localStorage, projectionOverlay);
+    }
+  }, [projectionOverlay, selectedProfileId, settings.workspace]);
 
-  const selectWorkspaceMode = (mode: "data" | "schema" | "audit") => {
-    if (mode === "audit") {
-      graphStore.selectWorkspacePanel("audit");
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => () => {
+    loadControllerRef.current?.abort();
+    queryControllerRef.current?.abort();
+    fixtureAutoLoaded.current = false;
+  }, []);
+
+  const clearConnection = () => {
+    loadControllerRef.current?.abort();
+    loadControllerRef.current = null;
+    setLoading(false);
+    queryControllerRef.current?.abort();
+    queryControllerRef.current = null;
+    setQueryLoading(false);
+    setSecurityStatus(null);
+    setSecurityAuditStatus(null);
+    setHovered(null);
+  };
+
+  const disconnect = () => {
+    fixtureAutoLoaded.current = true;
+    clearConnection();
+    graphStore.disconnect();
+    setToast({ message: "Disconnected" });
+  };
+
+  const runProfileAction = async (action: "save" | "create" | "remove") => {
+    if (loading || profileAction) return;
+    setProfileAction(action);
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      if (action === "save") {
+        graphStore.saveCurrentProfile();
+        setToast({ message: "Profile saved" });
+      } else if (action === "create") {
+        clearConnection();
+        graphStore.createProfile();
+        setToast({ message: "New profile created" });
+      } else {
+        removeVisualProjectionOverlays(window.localStorage, selectedProfileId);
+        clearConnection();
+        graphStore.removeCurrentProfile();
+        setToast({ message: "Profile removed" });
+      }
+    } catch {
+      setToast({ message: "Could not update the profile", error: true });
+    } finally {
+      setProfileAction(null);
+    }
+  };
+
+  const selectWorkspaceMode = (mode: "data" | "schema" | "audit" | "design") => {
+    if (mode === "audit" || mode === "design") {
+      graphStore.selectWorkspacePanel(mode);
       setSchemaPanelOpen(false);
       return;
     }
@@ -1031,35 +1086,35 @@ export function App() {
 
   const collapseSchemaPanel = () => {
     setSchemaPanelOpen(false);
-    if (graphView === "schema") {
-      graphStore.setGraphView("data");
-    }
   };
 
-  const load = async (event?: FormEvent) => {
+  const load = async (event?: FormEvent, closeDialog = false) => {
     event?.preventDefault();
+    if (!selectedProfileId || !settings.workspace.trim()) return;
+    loadControllerRef.current?.abort();
     setLoading(true);
     graphStore.beginSnapshotLoad(settings.useFixtureData);
 
     const controller = new AbortController();
+    loadControllerRef.current = controller;
     try {
-      try {
-        const loadedSecurityStatus = await fetchSecurityStatus(settings, controller.signal);
-        setSecurityStatus(loadedSecurityStatus);
-      } catch {
-        setSecurityStatus({
+      const [security, audit, projection, loaded] = await Promise.allSettled([
+        fetchSecurityStatus(settings, controller.signal),
+        fetchSecurityAuditStatus(settings, controller.signal),
+        fetchVisualProjection(settings, controller.signal),
+        fetchSnapshot(settings, controller.signal),
+        new Promise((resolve) => window.setTimeout(resolve, 200))
+      ]);
+      if (controller.signal.aborted || loadControllerRef.current !== controller) return;
+      if (loaded.status === "rejected") throw loaded.reason;
+      setSecurityStatus(security.status === "fulfilled" ? security.value : {
           securityProfile: "unknown",
           identityStatus: "unknown",
           principal: null,
           authenticationMethod: null,
           policyVersion: null
-        });
-      }
-      try {
-        const loadedAuditStatus = await fetchSecurityAuditStatus(settings, controller.signal);
-        setSecurityAuditStatus(loadedAuditStatus);
-      } catch {
-        setSecurityAuditStatus({
+      });
+      setSecurityAuditStatus(audit.status === "fulfilled" ? audit.value : {
           securityProfile: settings.useFixtureData ? "fixture" : "unknown",
           auditMode: "unavailable",
           sinkHealth: "unavailable",
@@ -1072,33 +1127,35 @@ export function App() {
           futureDatedRecordCount: 0,
           lastRecoveryStatusCode: "gateway_or_service_unavailable",
           recentEvents: []
-        });
+      });
+      graphStore.loadVisualProjection(projection.status === "fulfilled" ? projection.value : null);
+      graphStore.loadSnapshot(loaded.value);
+      if (closeDialog) {
+        graphStore.setConnectionDetailsOpen(false);
+        setToast({ message: "Connected" });
       }
-      try {
-        graphStore.loadVisualProjection(await fetchVisualProjection(settings, controller.signal));
-      } catch {
-        graphStore.loadVisualProjection(null);
-      }
-      const loaded = await fetchSnapshot(settings, controller.signal);
-      graphStore.loadSnapshot(loaded);
     } catch (error) {
+      if (controller.signal.aborted || loadControllerRef.current !== controller) return;
       const message = error instanceof Error ? error.message : String(error);
       setSecurityStatus(null);
       setSecurityAuditStatus(null);
       graphStore.markConnectionFailed(message);
     } finally {
-      setLoading(false);
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null;
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    if (fixtureAutoLoaded.current || !settings.useFixtureData || snapshot || loading) {
+    if (fixtureAutoLoaded.current || !selectedProfileId || !settings.useFixtureData || snapshot || loading) {
       return;
     }
 
     fixtureAutoLoaded.current = true;
     void load();
-  }, [settings.useFixtureData, snapshot, loading]);
+  }, [selectedProfileId, settings.useFixtureData, snapshot, loading]);
 
   useEffect(() => {
     setSelectionPanelOpen(Boolean(selectedItem));
@@ -1109,6 +1166,10 @@ export function App() {
   }, []);
 
   const executeQuery = async (mode: "query" | "explain" | "profile" = "query") => {
+    if (!selectedProfileId || !snapshot) {
+      graphStore.rejectQueryCommand("Connect to a workspace before executing a query.");
+      return;
+    }
     if (graphView === "schema") {
       graphStore.recordQueryExecution();
       return;
@@ -1121,15 +1182,22 @@ export function App() {
     setQueryLoading(true);
     graphStore.beginQueryCommand();
     const controller = new AbortController();
+    queryControllerRef.current?.abort();
+    queryControllerRef.current = controller;
     try {
       const response = await executeQueryCommand(settings, command, controller.signal);
+      if (controller.signal.aborted || queryControllerRef.current !== controller) return;
       graphStore.applyQueryResponse(response);
       graphStore.setExplainVisible(response.kind === "explain");
       graphStore.setProfileVisible(response.kind === "profile");
     } catch (error) {
+      if (controller.signal.aborted || queryControllerRef.current !== controller) return;
       graphStore.failQueryCommand(error instanceof Error ? error.message : String(error));
     } finally {
-      setQueryLoading(false);
+      if (queryControllerRef.current === controller) {
+        queryControllerRef.current = null;
+        setQueryLoading(false);
+      }
     }
   };
 
@@ -1142,10 +1210,8 @@ export function App() {
         </div>
         <div className="connection-summary">
           <span className="connection-summary-text">
-            <strong>{profiles.find((profile) => profile.id === selectedProfileId)?.name ?? "Local workspace"}</strong>
-            {connectionKindLabel(settings, securityStatus)}
-            {" / "}
-            {settings.workspace}
+            <strong>{profiles.find((profile) => profile.id === selectedProfileId)?.name ?? "No connection"}</strong>
+            {selectedProfileId && <>{connectionKindLabel(settings, securityStatus)} / {settings.workspace || "Not configured"}</>}
           </span>
           <SecurityStatusPanel status={securityStatus} />
           <button
@@ -1153,15 +1219,17 @@ export function App() {
             className="secondary-button"
             onClick={() => graphStore.setConnectionDetailsOpen(!connectionDetailsOpen)}
             aria-expanded={connectionDetailsOpen}
+            disabled={loading || Boolean(profileAction)}
           >
             {connectionDetailsOpen ? "Hide connection" : "Change connection"}
           </button>
-          <button type="button" onClick={() => void load()} disabled={loading || settings.workspace.trim() === ""}>
-            {loading ? "Loading" : "Connect"}
+          <button type="button" className={`action-button ${connectionStatus === "connected" ? "connected-button" : ""}`} onClick={() => connectionStatus === "connected" ? disconnect() : void load(undefined, true)} aria-pressed={connectionStatus === "connected"} disabled={loading || Boolean(profileAction) || !selectedProfileId || (connectionStatus !== "connected" && settings.workspace.trim() === "")}>
+            {loading ? <LoaderCircle size={16} className="icon-spin" aria-hidden="true" /> : connectionStatus === "connected" ? <Unplug size={16} aria-hidden="true" /> : <Plug size={16} aria-hidden="true" />}
+            {loading ? "Connecting" : connectionStatus === "connected" ? "Disconnect" : "Connect"}
           </button>
         </div>
         {connectionDetailsOpen && (
-          <div className="modal-backdrop" role="presentation" onMouseDown={() => graphStore.setConnectionDetailsOpen(false)}>
+          <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!loading && !profileAction) graphStore.setConnectionDetailsOpen(false); }}>
             <section
               className="connection-modal"
               role="dialog"
@@ -1179,17 +1247,22 @@ export function App() {
                   className="icon-button"
                   onClick={() => graphStore.setConnectionDetailsOpen(false)}
                   aria-label="Close connection settings"
+                  title="Close connection settings"
+                  disabled={loading || Boolean(profileAction)}
                 >
-                  X
+                  <X size={18} aria-hidden="true" />
                 </button>
               </div>
-              <form className="connection-form modal-form" onSubmit={load}>
+              <form onSubmit={(event) => void load(event, true)}>
+              <fieldset className="connection-form modal-form" disabled={loading || Boolean(profileAction)}>
                 <label>
                   Profile
                   <select
+                    aria-label="Profile"
                     value={selectedProfileId}
-                    onChange={(event) => graphStore.selectProfile(event.target.value)}
+                    onChange={(event) => { clearConnection(); graphStore.selectProfile(event.target.value); }}
                   >
+                    {!selectedProfileId && <option value="" disabled>{profiles.length ? "Select a profile" : "No profiles"}</option>}
                     {profiles.map((profile) => (
                       <option value={profile.id} key={profile.id}>{profile.name}</option>
                     ))}
@@ -1199,6 +1272,7 @@ export function App() {
                   Profile name
                   <input
                     value={draftProfileName}
+                    placeholder="Profile name"
                     onChange={(event) => graphStore.updateDraftProfileName(event.target.value)}
                   />
                 </label>
@@ -1217,6 +1291,7 @@ export function App() {
                   Workspace
                   <input
                     value={settings.workspace}
+                    placeholder="Workspace name"
                     onChange={(event) =>
                       graphStore.updateSettings({ workspace: event.target.value })
                     }
@@ -1249,7 +1324,7 @@ export function App() {
                     }
                   />
                 </label>
-                <label className="check-label">
+                <label className={`fixture-toggle ${settings.useFixtureData ? "checked" : ""}`}>
                   <input
                     type="checkbox"
                     checked={settings.useFixtureData}
@@ -1257,19 +1332,28 @@ export function App() {
                       graphStore.updateSettings({ useFixtureData: event.target.checked })
                     }
                   />
-                  Fixture
+                  <span>Fixture</span>
                 </label>
+                {lastError && <p className="connection-error" role="alert">{lastError}</p>}
                 <div className="modal-actions">
-                  <button type="button" onClick={graphStore.saveCurrentProfile}>
-                    Save profile
+                  <button type="button" className="action-button secondary-button" onClick={() => void runProfileAction("save")} disabled={!selectedProfileId}>
+                    {profileAction === "save" ? <LoaderCircle size={16} className="icon-spin" aria-hidden="true" /> : <Save size={16} aria-hidden="true" />}
+                    {profileAction === "save" ? "Saving" : "Save profile"}
                   </button>
-                  <button type="button" onClick={graphStore.createProfile}>
-                    New profile
+                  <button type="button" className="action-button secondary-button" onClick={() => void runProfileAction("create")}>
+                    {profileAction === "create" ? <LoaderCircle size={16} className="icon-spin" aria-hidden="true" /> : <Plus size={16} aria-hidden="true" />}
+                    {profileAction === "create" ? "Creating" : "New profile"}
                   </button>
-                  <button type="submit" disabled={loading || settings.workspace.trim() === ""}>
-                    {loading ? "Loading" : "Connect"}
+                  <button type="button" className="action-button remove-profile-button" onClick={() => void runProfileAction("remove")} disabled={!selectedProfileId}>
+                    {profileAction === "remove" ? <LoaderCircle size={16} className="icon-spin" aria-hidden="true" /> : <Trash2 size={16} aria-hidden="true" />}
+                    {profileAction === "remove" ? "Removing" : "Remove profile"}
+                  </button>
+                  <button type="submit" className="action-button" disabled={!selectedProfileId || settings.workspace.trim() === ""}>
+                    {loading ? <LoaderCircle size={16} className="icon-spin" aria-hidden="true" /> : <Plug size={16} aria-hidden="true" />}
+                    {loading ? "Connecting" : "Connect"}
                   </button>
                 </div>
+              </fieldset>
               </form>
             </section>
           </div>
@@ -1285,33 +1369,62 @@ export function App() {
         {lastError && <span className="error">{lastError}</span>}
       </section>
 
-      <section className="workspace-nav" aria-label="Workspace mode">
-        <button
-          type="button"
-          className={workspaceMode === "data" ? "active" : ""}
-          onClick={() => selectWorkspaceMode("data")}
-        >
-          Data
-        </button>
-        <button
-          type="button"
-          className={workspaceMode === "schema" ? "active" : ""}
-          onClick={() => selectWorkspaceMode("schema")}
-        >
-          Schema
-        </button>
-        <button
-          type="button"
-          className={workspaceMode === "audit" ? "active" : ""}
-          onClick={() => selectWorkspaceMode("audit")}
-        >
-          Audit
-        </button>
+      <section className="workspace-nav" role="tablist" aria-label="Workspace mode">
+        {(["data", "schema", "audit", "design"] as const).map((mode, index, modes) => (
+          <button
+            key={mode}
+            type="button"
+            role="tab"
+            id={`workspace-tab-${mode}`}
+            aria-controls={`workspace-panel-${mode}`}
+            aria-selected={workspaceMode === mode}
+            tabIndex={workspaceMode === mode ? 0 : -1}
+            className={workspaceMode === mode ? "active" : ""}
+            onClick={() => selectWorkspaceMode(mode)}
+            onKeyDown={(event) => {
+              const nextIndex = event.key === "ArrowRight" ? (index + 1) % modes.length
+                : event.key === "ArrowLeft" ? (index + modes.length - 1) % modes.length
+                : event.key === "Home" ? 0 : event.key === "End" ? modes.length - 1 : null;
+              if (nextIndex === null) return;
+              event.preventDefault();
+              selectWorkspaceMode(modes[nextIndex]);
+              document.getElementById(`workspace-tab-${modes[nextIndex]}`)?.focus();
+            }}
+          >
+            {mode[0].toUpperCase() + mode.slice(1)}
+          </button>
+        ))}
       </section>
 
-      <div className={`flight-deck ${schemaPanelOpen ? "schema-open" : "schema-collapsed"} ${selectionPanelOpen && selectedItem ? "selection-open" : "selection-collapsed"}`}>
+      {workspaceMode === "design" ? (
+        <div className="design-workspace" role="tabpanel" id="workspace-panel-design" aria-labelledby="workspace-tab-design" tabIndex={0}>
+          <ProjectionOverlayControls
+            projection={visualProjection}
+            overlay={projectionOverlay}
+            onOverlayChange={setProjectionOverlay}
+            onReset={() => setProjectionOverlay(emptyVisualProjectionOverlay(selectedProfileId, settings.workspace))}
+          />
+          <div className={`design-preview ${selectionPanelOpen && selectedItem ? "selection-open" : ""}`}>
+            <div className="design-preview-heading"><h2>Preview</h2><span>{settings.workspace}</span></div>
+            <GraphCanvas
+              snapshot={visibleSnapshot}
+              graphView="data"
+              onSelect={handleSelect}
+              onHover={setHovered}
+              visualProjection={effectiveVisualProjection}
+              visualLayoutMode={projectionOverlay.layout.mode}
+              visualLayoutStyle={projectionOverlay.layout.style}
+              onLayoutStyleChange={(style) => setProjectionOverlay((overlay) => ({ ...overlay, layout: { ...overlay.layout, style } }))}
+              onOpenDetails={selectedItem && !selectionPanelOpen ? () => setSelectionPanelOpen(true) : undefined}
+              visualContainers={projectionOverlay.containers}
+            />
+            {selectedItem && <SelectionPanel selected={selectedItem} projection={effectiveVisualProjection} open={selectionPanelOpen} onOpenChange={setSelectionPanelOpen} />}
+          </div>
+        </div>
+      ) : (
+      <div role="tabpanel" id={`workspace-panel-${workspaceMode}`} aria-labelledby={`workspace-tab-${workspaceMode}`} tabIndex={0} className={`flight-deck ${schemaPanelOpen ? "schema-open" : "schema-collapsed"} ${selectionPanelOpen && selectedItem ? "selection-open" : "selection-collapsed"}`}>
         {schemaPanelOpen && (
-          <aside className="panel schema-panel open" aria-label="Schema and projection">
+          <aside id="schema-catalogue" className="panel schema-panel open" aria-label="Schema and projection">
             <div className="panel-heading-row">
               <h2>Schema</h2>
               <button
@@ -1319,19 +1432,16 @@ export function App() {
                 className="icon-button"
                 onClick={collapseSchemaPanel}
                 aria-label="Collapse schema panel"
+                title="Collapse schema panel"
+                aria-expanded={true}
+                aria-controls="schema-catalogue"
               >
-                &lt;
+                <PanelLeftClose size={18} aria-hidden="true" />
               </button>
             </div>
             <SchemaList title="Node models" models={schemaSidebarSnapshot?.nodeModels ?? []} projection={effectiveVisualProjection} />
             <SchemaList title="Edge models" models={schemaSidebarSnapshot?.edgeModels ?? []} projection={effectiveVisualProjection} />
             <ProjectionPanel projection={effectiveVisualProjection} snapshot={snapshot} graphView={graphView} />
-            <ProjectionOverlayControls
-              projection={visualProjection}
-              overlay={projectionOverlay}
-              onOverlayChange={setProjectionOverlay}
-              onReset={() => setProjectionOverlay(emptyVisualProjectionOverlay(selectedProfileId, settings.workspace))}
-            />
             {schemaSidebarSnapshot?.partialReason && (
               <p className="warning">{schemaSidebarSnapshot.partialReason}</p>
             )}
@@ -1348,6 +1458,11 @@ export function App() {
           {activeWorkspacePanel === "query" ? (
             <>
               <section className="query-bar" aria-label={graphView === "schema" ? "Schema filter" : "Data query and filter"}>
+                {graphView === "schema" && !schemaPanelOpen && (
+                  <button type="button" className="icon-button" onClick={() => setSchemaPanelOpen(true)} aria-label="Expand schema panel" title="Expand schema panel" aria-expanded={false}>
+                    <PanelLeftOpen size={18} aria-hidden="true" />
+                  </button>
+                )}
                 {graphView === "data" ? (
                   <>
                     <label className="command-input">
@@ -1458,6 +1573,8 @@ export function App() {
                   visualProjection={effectiveVisualProjection}
                   visualLayoutMode={projectionOverlay.layout.mode}
                   visualLayoutStyle={projectionOverlay.layout.style}
+                  onLayoutStyleChange={(style) => setProjectionOverlay((overlay) => ({ ...overlay, layout: { ...overlay.layout, style } }))}
+                  onOpenDetails={selectedItem && !selectionPanelOpen ? () => setSelectionPanelOpen(true) : undefined}
                   visualContainers={projectionOverlay.containers}
                 />
                 <QueryInsightPanels
@@ -1478,6 +1595,14 @@ export function App() {
         </div>
         <SelectionPanel selected={selectedItem} projection={effectiveVisualProjection} open={selectionPanelOpen} onOpenChange={setSelectionPanelOpen} />
       </div>
+      )}
+      {toast && (
+        <div className={`notification-toast ${toast.error ? "error" : ""}`} role="status" aria-live="polite" aria-atomic="true">
+          {!toast.error && <Check size={18} aria-hidden="true" />}
+          <span>{toast.message}</span>
+          <button type="button" className="icon-button" aria-label="Dismiss notification" title="Dismiss notification" onClick={() => setToast(null)}><X size={16} aria-hidden="true" /></button>
+        </div>
+      )}
     </main>
   );
 }

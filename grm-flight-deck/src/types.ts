@@ -224,7 +224,7 @@ export interface NormalizedGraphSnapshot {
   partialReason?: string;
 }
 
-export type WorkspacePanel = "query" | "audit";
+export type WorkspacePanel = "query" | "audit" | "design";
 export type GraphView = "data" | "schema";
 export type QueryExecutionKind = "query" | "explain" | "profile";
 export type QueryEvidenceProvenance = "service" | "local_summary" | "unsupported";

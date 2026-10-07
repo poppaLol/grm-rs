@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import cytoscape, { Core, ElementDefinition } from "cytoscape";
+import { Maximize, PanelRightOpen, RotateCcw } from "lucide-react";
 
 import { colorForModel, colorForToken } from "./modelColors";
 import { buildVisualContainerMap, type VisualContainerMap } from "./containerMap";
@@ -15,6 +16,8 @@ interface GraphCanvasProps {
   visualLayoutMode?: string;
   visualLayoutStyle?: string;
   visualContainers?: Record<string, VisualProjectionContainerOverlay>;
+  onLayoutStyleChange?: (style: string) => void;
+  onOpenDetails?: () => void;
 }
 
 type LayoutMode = "force" | "groups" | "hierarchy" | "circle" | "grid";
@@ -29,23 +32,34 @@ export function GraphCanvas({
   visualProjection,
   visualLayoutMode,
   visualLayoutStyle,
-  visualContainers
+  visualContainers,
+  onLayoutStyleChange,
+  onOpenDetails
 }: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const reticuleRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<Core | null>(null);
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
+  const manualPositionsRef = useRef<{ snapshot: FlightDeckSnapshot; graphView: GraphView; positions: Record<string, cytoscape.Position> } | null>(null);
+  const [manuallyArranged, setManuallyArranged] = useState(false);
+  const [layoutRevision, setLayoutRevision] = useState(0);
+  const [layoutModes, setLayoutModes] = useState<Record<GraphView, LayoutMode>>({ data: "force", schema: "grid" });
+  const layoutMode = layoutModes[graphView];
+  const setLayoutMode = (mode: LayoutMode) => setLayoutModes((modes) => ({ ...modes, [graphView]: mode }));
   const containerMap = useMemo(() => snapshot && graphView === "data" && visualLayoutMode === "container-map"
     ? buildVisualContainerMap(snapshot, visualContainers ?? {})
     : null, [snapshot, graphView, visualLayoutMode, visualContainers]);
 
   useEffect(() => {
-    const preferred = layoutModeFromVisualIntent(visualLayoutMode, visualLayoutStyle);
-    if (preferred && preferred !== layoutMode) {
+    if (graphView !== "data") return;
+    const preferred = layoutModeFromVisualIntent(visualLayoutMode, visualLayoutStyle) ?? "force";
+    if (preferred) {
+      manualPositionsRef.current = null;
+      setManuallyArranged(false);
       setRendering(true);
       setLayoutMode(preferred);
+      setLayoutRevision((revision) => revision + 1);
     }
-  }, [layoutMode, visualLayoutMode, visualLayoutStyle]);
+  }, [graphView, visualLayoutMode, visualLayoutStyle]);
   const [rendering, setRendering] = useState(false);
 
   useEffect(() => {
@@ -56,6 +70,7 @@ export function GraphCanvas({
     let cancelled = false;
     let startTimer = 0;
     let clearTimer = 0;
+    let resizeObserver: ResizeObserver | undefined;
     setRendering(true);
     const renderStartedAt = window.performance.now();
 
@@ -152,7 +167,8 @@ export function GraphCanvas({
               "border-width": 1.5,
               color: "#eef7f8",
               "font-family": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-              "font-size": "7px",
+              "font-size": "11px",
+              "min-zoomed-font-size": 0,
               "font-weight": 500,
               "text-background-opacity": 0,
               "text-halign": "center",
@@ -234,6 +250,13 @@ export function GraphCanvas({
 
       graphRef.current = graph;
 
+      graph.on("dragfree", "node", () => {
+        const positions: Record<string, cytoscape.Position> = {};
+        graph.nodes().forEach((node) => { positions[node.id()] = { ...node.position() }; });
+        manualPositionsRef.current = { snapshot, graphView, positions };
+        setManuallyArranged(true);
+      });
+
       const updateReticule = () => updateNodeReticule(graph, reticuleRef.current);
 
       graph.on("select unselect position render pan zoom", "node", updateReticule);
@@ -288,20 +311,43 @@ export function GraphCanvas({
           }
         }, remaining);
       });
-      graph.layout(containerMap?.regions.length
+      const runLayout = () => graph.layout(containerMap?.regions.length
         ? containerLayoutOptions(graph, containerMap)
-        : layoutOptions(layoutMode, snapshot, visualProjection, graphView)).run();
+        : layoutOptions(layoutMode, snapshot, visualProjection, graphView, graph)).run();
+      const manual = manualPositionsRef.current;
+      if (manual?.snapshot === snapshot && manual.graphView === graphView) {
+        graph.layout({ name: "preset", positions: manual.positions, fit: true, padding: 72 }).run();
+      } else {
+        manualPositionsRef.current = null;
+        setManuallyArranged(false);
+        runLayout();
+      }
+      let canvasWidth = graph.width();
+      let canvasHeight = graph.height();
+      resizeObserver = new ResizeObserver(() => {
+        if (!cancelled) {
+          graph.resize();
+          if (graph.width() !== canvasWidth || graph.height() !== canvasHeight) {
+            canvasWidth = graph.width();
+            canvasHeight = graph.height();
+            if (!manualPositionsRef.current) runLayout();
+          }
+          if (!manualPositionsRef.current) graph.fit(undefined, 72);
+        }
+      });
+      resizeObserver.observe(containerRef.current);
     }, RENDER_START_DELAY_MS);
 
     return () => {
       cancelled = true;
       window.clearTimeout(startTimer);
       window.clearTimeout(clearTimer);
+      resizeObserver?.disconnect();
       hideNodeReticule(reticuleRef.current);
       graphRef.current?.destroy();
       graphRef.current = null;
     };
-  }, [graphView, layoutMode, snapshot, onHover, onSelect, visualProjection, visualLayoutMode, visualLayoutStyle, containerMap]);
+  }, [graphView, layoutMode, layoutRevision, snapshot, onHover, onSelect, visualProjection, visualLayoutMode, visualLayoutStyle, containerMap]);
 
   const fitToView = () => {
     graphRef.current?.fit(undefined, 72);
@@ -312,11 +358,17 @@ export function GraphCanvas({
       <div className="graph-toolbar">
         <label className="layout-control">
           Layout
+          <span className="layout-select-row">
           <select
+            aria-label="Layout"
             value={containerMap?.regions.length ? "map" : layoutMode}
             onChange={(event) => {
+              manualPositionsRef.current = null;
+              setManuallyArranged(false);
               setRendering(true);
               setLayoutMode(event.target.value as LayoutMode);
+              setLayoutRevision((revision) => revision + 1);
+              if (graphView === "data") onLayoutStyleChange?.(event.target.value);
             }}
             disabled={!snapshot || Boolean(containerMap?.regions.length)}
           >
@@ -327,10 +379,19 @@ export function GraphCanvas({
             <option value="circle">Circle</option>
             <option value="grid">Grid</option>
           </select>
+          {manuallyArranged && <span className="layout-modified" title="Nodes moved from the automatic layout" aria-label="Arrangement moved">*</span>}
+          </span>
         </label>
-        <button type="button" onClick={fitToView} disabled={!snapshot}>
-          Fit
+        {manuallyArranged && <button type="button" className="icon-button" title="Restore automatic layout" aria-label="Restore automatic layout" onClick={() => {
+          manualPositionsRef.current = null;
+          setManuallyArranged(false);
+          setRendering(true);
+          setLayoutRevision((revision) => revision + 1);
+        }}><RotateCcw size={18} aria-hidden="true" /></button>}
+        <button type="button" className="icon-button" title="Fit graph to view" aria-label="Fit" onClick={fitToView} disabled={!snapshot}>
+          <Maximize size={18} aria-hidden="true" />
         </button>
+        {onOpenDetails && <button type="button" className="icon-button" title="Open selection details" aria-label="Open selection details" aria-expanded={false} onClick={onOpenDetails}><PanelRightOpen size={18} aria-hidden="true" /></button>}
         {containerMap && (
           <span className="container-map-summary" role="status">
             {containerMap.regions.length} {containerMap.regions.length === 1 ? "region" : "regions"} / {containerMap.regions.filter((region) => region.collapsed).length} collapsed
@@ -842,12 +903,12 @@ function schemaModelWidth(model: ReturnType<typeof schemaNodes>[number]): number
   const longestLine = schemaModelLabel(model, null)
     .split("\n")
     .reduce((longest, line) => Math.max(longest, line.length), 0);
-  return clamp(longestLine * 5.6 + 24, 120, 224);
+  return clamp(longestLine * 6.8 + 24, 140, 260);
 }
 
 function schemaModelHeight(model: ReturnType<typeof schemaNodes>[number]): number {
   const lineCount = schemaModelLabel(model, null).split("\n").length;
-  return clamp(lineCount * 10.4 + 18, 56, 136);
+  return clamp(lineCount * 14.4 + 18, 64, 180);
 }
 
 function inferNodeModelFields(snapshot: FlightDeckSnapshot, modelName: string) {
@@ -886,7 +947,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function layoutOptions(layoutMode: LayoutMode, snapshot: FlightDeckSnapshot, visualProjection: FlightDeckVisualProjection | null, graphView: GraphView): cytoscape.LayoutOptions {
+function layoutOptions(layoutMode: LayoutMode, snapshot: FlightDeckSnapshot, visualProjection: FlightDeckVisualProjection | null, graphView: GraphView, graph: Core): cytoscape.LayoutOptions {
   const base = {
     animate: false,
     fit: true,
@@ -937,6 +998,7 @@ function layoutOptions(layoutMode: LayoutMode, snapshot: FlightDeckSnapshot, vis
         ...base,
         name: "grid",
         avoidOverlap: true,
+        nodeDimensionsIncludeLabels: true,
         avoidOverlapPadding: 24,
         condense: false
       };
@@ -945,6 +1007,7 @@ function layoutOptions(layoutMode: LayoutMode, snapshot: FlightDeckSnapshot, vis
       return {
         ...base,
         name: "cose",
+        boundingBox: { x1: 0, y1: 0, w: Math.max(1, graph.width() - 144) * 2, h: Math.max(1, graph.height() - 144) * 2 },
         nodeRepulsion: 36000,
         nodeOverlap: 22,
         idealEdgeLength: 210,
