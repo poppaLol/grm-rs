@@ -852,7 +852,88 @@ test.describe("flight-deck Visual Design Space", () => {
     expect(framed.bounds.x2).toBeLessThanOrEqual(framed.width);
     expect(framed.bounds.y2).toBeLessThanOrEqual(framed.height);
   });
+
+  test("selection glow follows every node glyph without clipping its blur", async ({ page }) => {
+    await openDesignMode(page);
+    const controls = designSpace(page).getByRole("region", { name: "Node Setup" });
+    await controls.getByLabel("Node model").selectOption("RoadmapItem");
+    for (const [glyph, shape] of [
+      ["dot", "ellipse"], ["card", "round-rectangle"], ["hex", "hexagon"],
+      ["diamond", "diamond"], ["lane", "round-rectangle"], ["generated", "ellipse"]
+    ]) {
+      await test.step(glyph, async () => {
+        await controls.getByLabel("Glyph / shape").selectOption(glyph);
+        await renderedGraph(page);
+        await selectForGlow(page, "13");
+        const appearance = await selectionGlow(page);
+        expect(appearance.shape).toBe(shape);
+        expect(appearance.blur).toContain("blur(8px)");
+        expect(appearance.outerClip).toBe("none");
+        if (shape === "ellipse") expect(appearance.radius).toBe("50%");
+        if (shape === "round-rectangle") expect(Number.parseFloat(appearance.radius)).toBeGreaterThan(0);
+        if (shape === "diamond" || shape === "hexagon") expect(appearance.innerClip).toContain("polygon");
+        await page.screenshot({ path: `test-results/selection-glow-${glyph}.png`, fullPage: true });
+      });
+    }
+  });
+
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+    test(`wide container selection glow follows rounded corners at ${viewport.width}px`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await openDesignMode(page);
+      const containers = designSpace(page).getByRole("region", { name: "Containers" });
+      await containers.getByLabel("Containment source").selectOption("HAS_WORK_SLICE");
+      await containers.getByLabel("Render as").selectOption("card");
+      await containers.getByLabel("Collapse affordance").selectOption("expanded");
+      await designSpace(page).getByRole("region", { name: "Layout Mode" }).getByRole("button", { name: "Container/map" }).click();
+      await page.getByRole("tab", { name: "Data", exact: true }).click();
+      await renderedGraph(page);
+      await selectForGlow(page, "visual-container:13");
+      const appearance = await selectionGlow(page);
+      expect(appearance.shape).toBe("round-rectangle");
+      expect(appearance.width).toBeGreaterThan(appearance.height);
+      expect(Number.parseFloat(appearance.radius)).toBeGreaterThan(0);
+      expect(appearance.outerClip).toBe("none");
+      await page.locator(".graph-shell").screenshot({ path: `test-results/selection-glow-container-${viewport.width}.png` });
+    });
+  }
+
+  test("Schema selection glow follows model-card corners and clears on deselection", async ({ page }) => {
+    await openSchemaMode(page);
+    await renderedGraph(page);
+    await selectForGlow(page, "schema-node:RoadmapItem");
+    const appearance = await selectionGlow(page);
+    expect(appearance.shape).toBe("round-rectangle");
+    expect(Number.parseFloat(appearance.radius)).toBeGreaterThan(0);
+    await page.locator(".graph-canvas").evaluate((element) => {
+      (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy.nodes().unselect();
+    });
+    await expect(page.locator(".selection-reticule")).toHaveCSS("opacity", "0");
+  });
 });
+
+async function selectForGlow(page: Page, id: string) {
+  await page.locator(".graph-canvas").evaluate((element, nodeId) => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    cy.nodes().unselect();
+    const node = cy.getElementById(nodeId);
+    node.select();
+    cy.zoom(node.isParent() ? 0.65 : 2);
+    cy.center(node);
+  }, id);
+  await expect(page.locator(".selection-reticule")).toHaveCSS("opacity", "1");
+}
+
+async function selectionGlow(page: Page) {
+  return page.locator(".selection-reticule").evaluate((element) => {
+    const glow = element.querySelector(".selection-glow")!;
+    const outer = getComputedStyle(glow);
+    const inner = getComputedStyle(glow, "::before");
+    const box = glow.getBoundingClientRect();
+    return { shape: (element as HTMLElement).dataset.shape, radius: inner.borderRadius,
+      innerClip: inner.clipPath, outerClip: outer.clipPath, blur: outer.filter, width: box.width, height: box.height };
+  });
+}
 
 function collectUnexpectedBrowserErrors(page: Page) {
   const errors: string[] = [];
