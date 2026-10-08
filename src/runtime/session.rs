@@ -28,10 +28,10 @@ use crate::runtime::{
     NodeFindRequest, NodeRequest, NodeResponse, NodeUpdateRequest, OrderDirection, PredicateOp,
     ProfileRequest, PropertyPredicate, QueryRequest, RuntimeBatchResponse, RuntimeDelete,
     RuntimeDispatchOutcome, RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
-    RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome, RuntimeOperationOutcome,
-    RuntimeRequest, RuntimeResponse, RuntimeSchemaListResponse, SchemaRequest, SchemaResponse,
-    TraversalDirection, TraversalReturn, compare_typed_value_order, compare_typed_values,
-    validate_value_for_kind,
+    RuntimeModelCount, RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeOutcome,
+    RuntimeOperationOutcome, RuntimeRequest, RuntimeResponse, RuntimeSchemaListResponse,
+    RuntimeSummaryResponse, SchemaRequest, SchemaResponse, TraversalDirection, TraversalReturn,
+    compare_typed_value_order, compare_typed_values, validate_value_for_kind,
 };
 use crate::runtime::{KeyValueArg, QueryTerm, SessionCommand, parse_command_line};
 use crate::runtime::{parse_required_flag, validate_field_name, validate_model_name};
@@ -397,8 +397,12 @@ impl SessionState {
                 durable_ops: Vec::new(),
             }),
             RuntimeRequest::Batch(request) => self.execute_batch_request(request).await,
+            RuntimeRequest::Admin(AdminRequest::Summary) => Ok(RuntimeDispatchOutcome {
+                response: RuntimeResponse::Summary(self.runtime_summary()),
+                durable_ops: Vec::new(),
+            }),
             RuntimeRequest::Admin(_) => Err(crate::GrmError::NotSupported(
-                "runtime dispatcher does not support admin requests",
+                "runtime dispatcher only supports session summary admin requests",
             )),
         }
     }
@@ -784,6 +788,39 @@ impl SessionState {
                 "by_model": edges_by_model,
             },
         })
+    }
+
+    pub fn runtime_summary(&self) -> RuntimeSummaryResponse {
+        let (node_count, edge_count, nodes_by_label, edges_by_type) =
+            self.client.backend().summary_counts_by_storage_type();
+        let node_counts = self
+            .catalog
+            .list_node_models()
+            .into_iter()
+            .map(|model| RuntimeModelCount {
+                model: model.name.clone(),
+                count: nodes_by_label.get(&model.label).copied().unwrap_or(0) as u64,
+            })
+            .collect::<Vec<_>>();
+        let edge_counts = self
+            .catalog
+            .list_rel_models()
+            .into_iter()
+            .map(|model| RuntimeModelCount {
+                model: model.name.clone(),
+                count: edges_by_type.get(&model.rel_type).copied().unwrap_or(0) as u64,
+            })
+            .collect::<Vec<_>>();
+
+        RuntimeSummaryResponse {
+            node_count: node_count as u64,
+            edge_count: edge_count as u64,
+            node_model_count: node_counts.len() as u64,
+            edge_model_count: edge_counts.len() as u64,
+            backend: "in-memory".to_string(),
+            node_counts,
+            edge_counts,
+        }
     }
 
     pub fn import_from_json(&mut self, path: impl AsRef<Path>) -> Result<()> {

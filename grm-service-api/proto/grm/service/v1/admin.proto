@@ -72,10 +72,17 @@ message SystemIndex {
 
 message SummaryRequest {}
 
+message ModelCount {
+  string model = 1;
+  uint64 count = 2;
+}
+
 message SummaryResponse {
   uint64 node_count = 1;
   uint64 edge_count = 2;
   uint64 node_model_count = 3;
   uint64 edge_model_count = 4;
   string backend = 5;
+  repeated ModelCount node_counts = 6;
+  repeated ModelCount edge_counts = 7;
 }

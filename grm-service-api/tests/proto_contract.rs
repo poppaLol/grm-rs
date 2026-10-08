@@ -1276,6 +1276,28 @@ async fn ergonomic_workspace_client_routes_supported_operations_through_execute_
         .await
         .unwrap_err();
     assert!(node_only_edge_return.to_string().contains("find_nodes"));
+
+    let summary = client.summary().await.unwrap();
+    assert_eq!(summary.node_count, 2);
+    assert_eq!(summary.edge_count, 1);
+    assert_eq!(summary.node_model_count, 2);
+    assert_eq!(summary.edge_model_count, 1);
+    assert_eq!(
+        summary
+            .node_counts
+            .iter()
+            .map(|count| (count.model.as_str(), count.count))
+            .collect::<Vec<_>>(),
+        vec![("Post", 1), ("User", 1)]
+    );
+    assert_eq!(
+        summary
+            .edge_counts
+            .iter()
+            .map(|count| (count.model.as_str(), count.count))
+            .collect::<Vec<_>>(),
+        vec![("Authored", 1)]
+    );
     assert!(temp.path().join("ergonomic-client-smoke.bin").exists());
 
     client.close().await.unwrap();
@@ -1390,6 +1412,10 @@ async fn generated_grpc_client_reopens_binary_autocommitted_workspace_without_ma
         })
         .await
         .unwrap_err();
+    assert_eq!(direct.code(), tonic::Code::Unimplemented);
+    assert!(direct.message().contains("ExecuteWorkspace"));
+
+    let direct = client.summary(proto::SummaryRequest {}).await.unwrap_err();
     assert_eq!(direct.code(), tonic::Code::Unimplemented);
     assert!(direct.message().contains("ExecuteWorkspace"));
 

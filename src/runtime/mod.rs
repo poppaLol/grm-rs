@@ -33,11 +33,11 @@ pub use ops::{
     LoadRequest, NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeRequest, NodeResponse,
     NodeUpdateRequest, OrderDirection, OrderSpec, PredicateOp, ProfileRequest, PropertyPredicate,
     QueryRequest, RuntimeBatchResponse, RuntimeDelete, RuntimeDispatchOutcome,
-    RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome,
+    RuntimeEdgeDeleteOutcome, RuntimeEdgeFindResponse, RuntimeEdgeOutcome, RuntimeModelCount,
     RuntimeNodeDeleteOutcome, RuntimeNodeFindResponse, RuntimeNodeFindResultResponse,
     RuntimeNodeOutcome, RuntimeOperationOutcome, RuntimeRequest, RuntimeResponse,
-    RuntimeSchemaListResponse, SaveRequest, SchemaRequest, SchemaResponse, TraversalDirection,
-    TraversalRequest, TraversalReturn, TraversalStepRequest,
+    RuntimeSchemaListResponse, RuntimeSummaryResponse, SaveRequest, SchemaRequest, SchemaResponse,
+    TraversalDirection, TraversalRequest, TraversalReturn, TraversalStepRequest,
 };
 pub use parser::{
     KeyValueArg, QueryTerm, SessionCommand, parse_command_line, parse_query_terms_from_strs,

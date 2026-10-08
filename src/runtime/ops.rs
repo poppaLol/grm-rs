@@ -32,6 +32,7 @@ pub enum RuntimeResponse {
     Explain(Value),
     Profile(Value),
     Batch(RuntimeBatchResponse),
+    Summary(RuntimeSummaryResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +46,23 @@ pub struct RuntimeDispatchOutcome {
 pub struct RuntimeBatchResponse {
     pub value: Value,
     pub should_persist: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeModelCount {
+    pub model: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSummaryResponse {
+    pub node_count: u64,
+    pub edge_count: u64,
+    pub node_model_count: u64,
+    pub edge_model_count: u64,
+    pub backend: String,
+    pub node_counts: Vec<RuntimeModelCount>,
+    pub edge_counts: Vec<RuntimeModelCount>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

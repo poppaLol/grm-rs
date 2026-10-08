@@ -338,6 +338,17 @@ impl InMemoryBackend {
         self.store.lock().unwrap().clone_store()
     }
 
+    pub fn summary_counts_by_storage_type(
+        &self,
+    ) -> (
+        usize,
+        usize,
+        std::collections::BTreeMap<String, usize>,
+        std::collections::BTreeMap<String, usize>,
+    ) {
+        self.store.lock().unwrap().summary_counts_by_storage_type()
+    }
+
     pub fn replace_store(&self, store: GraphStore) {
         let mut current = self.store.lock().unwrap();
         *current = store;
