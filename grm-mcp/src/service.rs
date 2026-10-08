@@ -22,11 +22,16 @@ use crate::schema::{
 pub(crate) struct ServiceMcpBackend {
     endpoint: String,
     workspace: proto::WorkspaceRef,
-    handle: proto::WorkspaceHandle,
     format: ServiceWorkspaceFormat,
     tls_enabled: bool,
     client_certificate_configured: bool,
-    client: Arc<Mutex<proto::grm_service_client::GrmServiceClient<Channel>>>,
+    connection: Arc<Mutex<ServiceConnection>>,
+}
+
+struct ServiceConnection {
+    client: proto::grm_service_client::GrmServiceClient<Channel>,
+    handle: proto::WorkspaceHandle,
+    connected: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,22 +123,35 @@ impl ServiceMcpBackend {
         Ok(Self {
             endpoint,
             workspace,
-            handle,
             format,
             tls_enabled,
             client_certificate_configured,
-            client: Arc::new(Mutex::new(client)),
+            connection: Arc::new(Mutex::new(ServiceConnection {
+                client,
+                handle,
+                connected: true,
+            })),
         })
     }
 
-    pub(crate) fn status_value(&self) -> Value {
+    pub(crate) async fn status_value(&self) -> Value {
+        let _ = self
+            .execute(proto::runtime_request::Request::SchemaList(
+                proto::SchemaListRequest {},
+            ))
+            .await;
+        self.status_snapshot().await
+    }
+
+    async fn status_snapshot(&self) -> Value {
+        let connection = self.connection.lock().await;
         json!({
             "backend": {
                 "mode": "grpc",
-                "connected": true,
+                "connected": connection.connected,
                 "endpoint": self.endpoint,
                 "workspace_ref": self.workspace.id,
-                "workspace_handle": self.handle.id,
+                "workspace_handle": connection.handle.id,
                 "workspace_format": self.format.as_str(),
                 "transport": if self.client_certificate_configured {
                     "tls-with-client-certificate"
@@ -193,7 +211,7 @@ impl ServiceMcpBackend {
         };
         Ok(schema_list_value(
             schema,
-            Some(self.status_value()["backend"].clone()),
+            Some(self.status_snapshot().await["backend"].clone()),
         ))
     }
 
@@ -417,15 +435,34 @@ impl ServiceMcpBackend {
         &self,
         request: proto::runtime_request::Request,
     ) -> GrmResult<proto::WorkspaceRuntimeResponse> {
-        let mut client = self.client.lock().await;
-        client
-            .execute_workspace(proto::WorkspaceRuntimeRequest {
-                handle: Some(self.handle.clone()),
-                request: Some(proto::RuntimeRequest {
-                    request: Some(request),
-                }),
-            })
-            .await
+        let mut connection = self.connection.lock().await;
+        let mut message = proto::WorkspaceRuntimeRequest {
+            handle: Some(connection.handle.clone()),
+            request: Some(proto::RuntimeRequest {
+                request: Some(request),
+            }),
+        };
+        let mut result = connection.client.execute_workspace(message.clone()).await;
+        // An unknown handle is rejected before runtime dispatch, so even a write
+        // can be retried here. Transport failures have an ambiguous outcome.
+        if result.as_ref().is_err_and(|status| {
+            status.code() == tonic::Code::NotFound
+                && status.message()
+                    == format!("unknown workspace handle '{}'", connection.handle.id)
+        }) {
+            connection.connected = false;
+            let handle = open_workspace(
+                &mut connection.client,
+                self.workspace.clone(),
+                self.format.as_proto_code(),
+            )
+            .await?;
+            connection.handle = handle;
+            message.handle = Some(connection.handle.clone());
+            result = connection.client.execute_workspace(message).await;
+        }
+        connection.connected = result.is_ok();
+        result
             .map_err(service_status_error)
             .map(|response| response.into_inner())
     }

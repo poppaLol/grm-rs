@@ -134,6 +134,161 @@ async fn grpc_mcp_client(
     grpc_mcp_client_with_format(endpoint, workspace_ref, mode, None).await
 }
 
+async fn restartable_grpc_service(
+    root: PathBuf,
+    address: &str,
+) -> (String, tokio::sync::oneshot::Sender<()>, JoinHandle<()>) {
+    let listener = TcpListener::bind(address)
+        .await
+        .expect("bind restartable service");
+    let address = listener.local_addr().unwrap();
+    let service = GrpcWorkspaceService::with_local_workspace_root(
+        root,
+        grm_service_api::ServiceSecurityConfig::anonymous_local(),
+    )
+    .into_server();
+    let (shutdown, stopped) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = stopped.await;
+            })
+            .await
+            .expect("serve restartable gRPC service");
+    });
+    (format!("http://{address}"), shutdown, task)
+}
+
+#[tokio::test]
+async fn grpc_mcp_recovers_after_service_restart_without_replaying_transport_failures() {
+    let temp = tempdir().unwrap();
+    let (endpoint, shutdown, task) =
+        restartable_grpc_service(temp.path().into(), "127.0.0.1:0").await;
+    let client = grpc_mcp_client(&endpoint, "restart-memory", "create").await;
+    call(
+        &client,
+        "grm_schema_define_node",
+        json!({
+            "name": "RecoveryRecord", "id_field": "recordId",
+            "fields": [{"name": "name", "type": "string", "required": true}]
+        }),
+    )
+    .await;
+    call(
+        &client,
+        "grm_node_create",
+        json!({"model": "RecoveryRecord", "props": {"name": "before"}}),
+    )
+    .await;
+    let original = call(&client, "grm_schema_list", json!({})).await;
+
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("stop service")
+        .unwrap();
+    let error = call_error(
+        &client,
+        "grm_node_create",
+        json!({
+            "model": "RecoveryRecord", "props": {"name": "must-not-replay"}
+        }),
+    )
+    .await;
+    assert!(error.contains("gRPC service error"), "{error}");
+    let status = client
+        .read_resource(ReadResourceRequestParams::new("grm://backend/status"))
+        .await
+        .unwrap();
+    let ResourceContents::TextResourceContents { text, .. } = &status.contents[0] else {
+        panic!("text status");
+    };
+    assert_eq!(
+        serde_json::from_str::<Value>(text).unwrap()["backend"]["connected"],
+        false
+    );
+
+    let (_, shutdown, task) = restartable_grpc_service(
+        temp.path().into(),
+        endpoint.strip_prefix("http://").unwrap(),
+    )
+    .await;
+    // Allocate another workspace first: stale handles must never alias its data.
+    let mut other = grm_service_api::GrpcWorkspaceClient::connect(
+        &endpoint,
+        "other-memory",
+        grm_service_api::GrpcWorkspaceMode::Create,
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        other.handle().id,
+        original["backend"]["workspace_handle"].as_str().unwrap()
+    );
+    call(
+        &client,
+        "grm_node_create",
+        json!({"model": "RecoveryRecord", "props": {"name": "after"}}),
+    )
+    .await;
+    let found = call(&client, "grm_node_find", json!({"model": "RecoveryRecord"})).await;
+    assert_eq!(found["nodes"].as_array().unwrap().len(), 2);
+    let names: Vec<_> = found["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| node["props"]["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"before") && names.contains(&"after"));
+    let schema = call(&client, "grm_schema_list", json!({})).await;
+    assert_ne!(
+        schema["backend"]["workspace_handle"],
+        original["backend"]["workspace_handle"]
+    );
+    assert_eq!(schema["backend"]["connected"], true);
+    assert!(other.schema_list().await.unwrap().node_models.is_empty());
+    client.cancel().await.unwrap();
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn grpc_mcp_recovery_never_recreates_a_missing_workspace() {
+    let temp = tempdir().unwrap();
+    let (endpoint, shutdown, task) =
+        restartable_grpc_service(temp.path().into(), "127.0.0.1:0").await;
+    let client = grpc_mcp_client(&endpoint, "missing-memory", "create-or-open").await;
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap();
+    // Move only this disposable fixture's persisted artifacts out of the root.
+    let retained = tempdir().unwrap();
+    for entry in std::fs::read_dir(temp.path()).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::rename(entry.path(), retained.path().join(entry.file_name())).unwrap();
+    }
+    let (_, shutdown, task) = restartable_grpc_service(
+        temp.path().into(),
+        endpoint.strip_prefix("http://").unwrap(),
+    )
+    .await;
+    let error = call_error(&client, "grm_schema_list", json!({})).await;
+    assert!(error.contains("gRPC service error"), "{error}");
+    assert!(!temp.path().join("missing-memory.bin").exists());
+    client.cancel().await.unwrap();
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 async fn grpc_mcp_client_with_format(
     endpoint: &str,
     workspace_ref: &str,
