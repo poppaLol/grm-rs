@@ -23,6 +23,25 @@ fn proto_files_are_packaged() {
 }
 
 #[test]
+fn workspace_handles_do_not_alias_across_service_instances() {
+    let request = svc::WorkspaceCreateRequest {
+        mode: svc::WorkspaceCreateMode::InMemory,
+        workspace: None,
+        format: svc::DurabilityFormat::Binary,
+    };
+    let mut original = svc::InProcessWorkspaceService::new();
+    let old_handle = original.create_workspace(request.clone()).unwrap().handle;
+    let mut restarted = svc::InProcessWorkspaceService::new();
+    let new_handle = restarted.create_workspace(request).unwrap().handle;
+    assert_ne!(old_handle, new_handle);
+    assert!(matches!(
+        restarted.workspace(&old_handle),
+        Err(svc::WorkspaceServiceError::UnknownWorkspaceHandle { .. })
+    ));
+    assert!(restarted.workspace(&new_handle).is_ok());
+}
+
+#[test]
 fn service_surface_covers_runtime_request_families() {
     let service = read_proto("grm/service/v1/service.proto");
 

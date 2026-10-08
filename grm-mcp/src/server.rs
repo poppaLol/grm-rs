@@ -286,7 +286,7 @@ impl GrmMcpServer {
 
     pub async fn backend_status_json(&self) -> Value {
         if let Some(service) = &self.service {
-            let mut value = service.status_value();
+            let mut value = service.status_value().await;
             self.annotate_access_mode(&mut value);
             return value;
         }

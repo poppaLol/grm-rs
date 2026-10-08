@@ -880,7 +880,6 @@ pub struct LocalWorkspaceSnapshotRequest {
 
 #[derive(Default)]
 pub struct InProcessWorkspaceService {
-    next_workspace_id: u64,
     next_workspace_ref_id: u64,
     next_snapshot_id: u64,
     workspaces: BTreeMap<String, grm_rs::Workspace>,
@@ -917,7 +916,7 @@ impl InProcessWorkspaceService {
     ) -> WorkspaceServiceResult<WorkspaceCreateResponse> {
         match request.mode {
             WorkspaceCreateMode::InMemory => {
-                let handle = self.next_workspace_handle();
+                let handle = self.next_workspace_handle()?;
                 self.workspaces
                     .insert(handle.id.clone(), grm_rs::Workspace::new());
                 self.workspace_refs.insert(handle.id.clone(), None);
@@ -942,7 +941,7 @@ impl InProcessWorkspaceService {
                 let path = self.local_workspace_path(&workspace_ref, request.format)?;
                 let mut workspace = grm_rs::Workspace::new();
                 workspace.enable_autocommit(request.format.into(), path)?;
-                let handle = self.next_workspace_handle();
+                let handle = self.next_workspace_handle()?;
                 self.workspaces.insert(handle.id.clone(), workspace);
                 self.workspace_refs
                     .insert(handle.id.clone(), Some(workspace_ref.clone()));
@@ -1002,7 +1001,7 @@ impl InProcessWorkspaceService {
                 ));
             }
         };
-        let handle = self.next_workspace_handle();
+        let handle = self.next_workspace_handle()?;
         self.workspaces.insert(handle.id.clone(), workspace);
         self.workspace_refs
             .insert(handle.id.clone(), workspace_ref.clone());
@@ -1116,11 +1115,23 @@ impl InProcessWorkspaceService {
             .unwrap_or_else(|| handle.id.clone())
     }
 
-    fn next_workspace_handle(&mut self) -> WorkspaceHandle {
-        self.next_workspace_id += 1;
-        WorkspaceHandle {
-            id: format!("workspace-{}", self.next_workspace_id),
-        }
+    fn next_workspace_handle(&mut self) -> WorkspaceServiceResult<WorkspaceHandle> {
+        use ring::rand::{SecureRandom, SystemRandom};
+        let mut bytes = [0u8; 16];
+        SystemRandom::new().fill(&mut bytes).map_err(|_| {
+            WorkspaceServiceError::Runtime(grm_rs::GrmError::Backend(
+                "could not allocate workspace handle".into(),
+            ))
+        })?;
+        Ok(WorkspaceHandle {
+            id: format!(
+                "workspace-{}",
+                bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ),
+        })
     }
 
     fn next_workspace_ref(&mut self) -> WorkspaceRef {
