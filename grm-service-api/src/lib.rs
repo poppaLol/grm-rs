@@ -760,6 +760,16 @@ impl GrpcWorkspaceClient {
         Ok(response)
     }
 
+    pub async fn summary(&mut self) -> GrpcWorkspaceClientResult<grm_rs::RuntimeSummaryResponse> {
+        let response = self
+            .execute_service_request(ServiceRequest::Summary(SummaryRequest {}))
+            .await?;
+        let Some(proto::runtime_response::Response::Summary(response)) = response.response else {
+            return Err(GrpcWorkspaceClientError::UnexpectedResponse("Summary"));
+        };
+        runtime_summary_from_proto(response)
+    }
+
     pub async fn apply_batch(
         &mut self,
         request: grm_rs::SessionBatchParams,
@@ -4186,6 +4196,14 @@ impl WorkspaceOperationSummary {
                 edges_deleted: batch_operation_count(&batch.value, "edge_delete"),
                 ..Self::default()
             },
+            grm_rs::RuntimeResponse::Summary(summary) => Self {
+                operation: "summary",
+                models_read: summary.node_model_count as usize,
+                links_read: summary.edge_model_count as usize,
+                nodes_read: summary.node_count as usize,
+                edges_read: summary.edge_count as usize,
+                ..Self::default()
+            },
         }
     }
 
@@ -7343,15 +7361,15 @@ fn proto_runtime_request_from_service_request(
         ServiceRequest::Explain(request) => ProtoRequest::Explain(request.try_into()?),
         ServiceRequest::Profile(request) => ProtoRequest::Profile(request.try_into()?),
         ServiceRequest::ApplyBatch(request) => ProtoRequest::ApplyBatch(request.try_into()?),
+        ServiceRequest::Summary(_) => ProtoRequest::Summary(proto::SummaryRequest {}),
         ServiceRequest::Query(_)
         | ServiceRequest::Save(_)
         | ServiceRequest::Load(_)
         | ServiceRequest::Export(_)
         | ServiceRequest::Import(_)
-        | ServiceRequest::IndexList(_)
-        | ServiceRequest::Summary(_) => {
+        | ServiceRequest::IndexList(_) => {
             return Err(grm_rs::GrmError::NotSupported(
-                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/find/explain/profile/batch through ExecuteWorkspace",
+                "GrpcWorkspaceClient ergonomic helpers currently support schema/CRUD/find/explain/profile/batch/summary through ExecuteWorkspace",
             ));
         }
     })
@@ -7460,6 +7478,9 @@ fn proto_runtime_response(
         }
         grm_rs::RuntimeResponse::Batch(batch) => {
             ProtoResponse::ApplyBatch(proto_batch_response(batch, durable_ops)?)
+        }
+        grm_rs::RuntimeResponse::Summary(summary) => {
+            ProtoResponse::Summary(proto_summary_response(summary)?)
         }
     };
 
@@ -7614,6 +7635,35 @@ fn proto_delete_result(deleted: grm_rs::RuntimeDelete) -> proto::DeleteResult {
     proto::DeleteResult {
         model: deleted.model,
         id: deleted.id,
+    }
+}
+
+fn proto_summary_response(
+    summary: grm_rs::RuntimeSummaryResponse,
+) -> grm_rs::Result<proto::SummaryResponse> {
+    Ok(proto::SummaryResponse {
+        node_count: summary.node_count,
+        edge_count: summary.edge_count,
+        node_model_count: summary.node_model_count,
+        edge_model_count: summary.edge_model_count,
+        backend: summary.backend,
+        node_counts: summary
+            .node_counts
+            .into_iter()
+            .map(proto_model_count)
+            .collect(),
+        edge_counts: summary
+            .edge_counts
+            .into_iter()
+            .map(proto_model_count)
+            .collect(),
+    })
+}
+
+fn proto_model_count(count: grm_rs::RuntimeModelCount) -> proto::ModelCount {
+    proto::ModelCount {
+        model: count.model,
+        count: count.count,
     }
 }
 
@@ -8052,6 +8102,49 @@ fn runtime_field_from_proto(
         value_type: runtime_value_type_from_proto(field.value_type)?,
         required: field.required,
     })
+}
+
+fn runtime_summary_from_proto(
+    response: proto::SummaryResponse,
+) -> GrpcWorkspaceClientResult<grm_rs::RuntimeSummaryResponse> {
+    if response.node_model_count != response.node_counts.len() as u64 {
+        return Err(GrpcWorkspaceClientError::Runtime(
+            grm_rs::GrmError::Constraint(
+                "summary response omitted node model count metadata".into(),
+            ),
+        ));
+    }
+    if response.edge_model_count != response.edge_counts.len() as u64 {
+        return Err(GrpcWorkspaceClientError::Runtime(
+            grm_rs::GrmError::Constraint(
+                "summary response omitted edge model count metadata".into(),
+            ),
+        ));
+    }
+    Ok(grm_rs::RuntimeSummaryResponse {
+        node_count: response.node_count,
+        edge_count: response.edge_count,
+        node_model_count: response.node_model_count,
+        edge_model_count: response.edge_model_count,
+        backend: response.backend,
+        node_counts: response
+            .node_counts
+            .into_iter()
+            .map(runtime_model_count_from_proto)
+            .collect(),
+        edge_counts: response
+            .edge_counts
+            .into_iter()
+            .map(runtime_model_count_from_proto)
+            .collect(),
+    })
+}
+
+fn runtime_model_count_from_proto(count: proto::ModelCount) -> grm_rs::RuntimeModelCount {
+    grm_rs::RuntimeModelCount {
+        model: count.model,
+        count: count.count,
+    }
 }
 
 fn backend_id_type_from_proto(value: i32) -> GrpcWorkspaceClientResult<grm_rs::BackendIdType> {

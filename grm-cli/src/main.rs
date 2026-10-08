@@ -760,50 +760,61 @@ impl<'a> ServiceCliSession<'a> {
             }
         }
 
+        let summary = self.client.summary().await.map_err(service_error)?;
+        if summary.node_model_count != schema.node_models.len() as u64
+            || summary.edge_model_count != schema.edge_models.len() as u64
+        {
+            return Err(grm_rs::GrmError::Constraint(
+                "service summary model metadata did not match schema".into(),
+            ));
+        }
+
+        let node_counts = summary
+            .node_counts
+            .iter()
+            .map(|count| (count.model.as_str(), count.count))
+            .collect::<BTreeMap<_, _>>();
+        let edge_counts = summary
+            .edge_counts
+            .iter()
+            .map(|count| (count.model.as_str(), count.count))
+            .collect::<BTreeMap<_, _>>();
         let mut rows = Vec::new();
-        let mut node_total = 0usize;
         for model in &schema.node_models {
-            let found = self
-                .client
-                .find_nodes(NodeFindRequest {
-                    model: model.name.clone(),
-                    ..Default::default()
-                })
-                .await
-                .map_err(service_error)?;
-            node_total += found.nodes.len();
-            if !found.nodes.is_empty() {
+            let count = *node_counts.get(model.name.as_str()).ok_or_else(|| {
+                grm_rs::GrmError::Constraint(format!(
+                    "service summary omitted node model '{}'",
+                    model.name
+                ))
+            })?;
+            if count > 0 {
                 rows.push(vec![
                     "node".to_string(),
                     self.colors.type_name(&model.name),
-                    found.nodes.len().to_string(),
+                    count.to_string(),
                 ]);
             }
         }
-
-        let mut edge_total = 0usize;
         for model in &schema.edge_models {
-            let found = self
-                .client
-                .find_edges(EdgeFindRequest {
-                    model: model.name.clone(),
-                    ..Default::default()
-                })
-                .await
-                .map_err(service_error)?;
-            edge_total += found.edges.len();
-            if !found.edges.is_empty() {
+            let count = *edge_counts.get(model.name.as_str()).ok_or_else(|| {
+                grm_rs::GrmError::Constraint(format!(
+                    "service summary omitted edge model '{}'",
+                    model.name
+                ))
+            })?;
+            if count > 0 {
                 rows.push(vec![
                     "edge".to_string(),
                     self.colors.type_name(&model.name),
-                    found.edges.len().to_string(),
+                    count.to_string(),
                 ]);
             }
         }
 
         writeln!(
             writer,
-            "Stored rows: {node_total} nodes, {edge_total} edges"
+            "Stored rows: {} nodes, {} edges",
+            summary.node_count, summary.edge_count
         )?;
         writeln!(writer, "By type:")?;
         if rows.is_empty() {

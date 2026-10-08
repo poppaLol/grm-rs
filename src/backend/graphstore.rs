@@ -80,6 +80,27 @@ impl Default for GraphStore {
 }
 
 impl GraphStore {
+    pub fn summary_counts_by_storage_type(
+        &self,
+    ) -> (
+        usize,
+        usize,
+        BTreeMap<String, usize>,
+        BTreeMap<String, usize>,
+    ) {
+        let node_counts = self
+            .nodes_by_label
+            .iter()
+            .map(|(label, ids)| (label.clone(), ids.len()))
+            .collect();
+        let rel_counts = self
+            .rels_by_type
+            .iter()
+            .map(|(rel_type, ids)| (rel_type.clone(), ids.len()))
+            .collect();
+        (self.nodes.len(), self.rels.len(), node_counts, rel_counts)
+    }
+
     pub fn clone_store(&self) -> Self {
         Self {
             next_node_id: self.next_node_id,

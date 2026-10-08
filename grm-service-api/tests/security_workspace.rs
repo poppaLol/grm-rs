@@ -1007,6 +1007,58 @@ async fn permission_table_save_load_export_import_use_distinct_permissions() {
 }
 
 #[tokio::test]
+async fn permission_table_summary_uses_workspace_inspect_permission() {
+    let principal = principal("summary");
+    let denied_security = secured_with_table(
+        principal.clone(),
+        vec![service_create_assignment(principal.clone())],
+    );
+    let (mut client, shutdown, server) = start_service(denied_security).await;
+    let handle = create_workspace(&mut client).await;
+    let denied = execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::Summary(proto::SummaryRequest {}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denied.code(), Code::PermissionDenied);
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+
+    let allowed_security = secured_with_table(
+        principal.clone(),
+        vec![
+            service_create_assignment(principal.clone()),
+            assignment(
+                principal,
+                PermissionScope::DeploymentLocalAllWorkspaces,
+                vec![permission(
+                    SecurityAction::WorkspaceInspect,
+                    ResourceSelector::Workspace,
+                )],
+            ),
+        ],
+    );
+    let (mut client, shutdown, server) = start_service(allowed_security).await;
+    let handle = create_workspace(&mut client).await;
+    let allowed = execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::Summary(proto::SummaryRequest {}),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        allowed.response.and_then(|response| response.response),
+        Some(proto::runtime_response::Response::Summary(response))
+            if response.node_count == 0 && response.edge_count == 0
+    ));
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn permission_table_load_failure_and_evaluation_failure_fail_closed_before_effects() {
     let security = ServiceSecurityConfig::secured()
         .with_authenticator(Arc::new(FixedAuthenticator))
