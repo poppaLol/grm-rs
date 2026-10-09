@@ -8,7 +8,8 @@ backend capability details between versions.
 
 - Distribution name: `grm-rs`
 - Import name: `grm_rs`
-- Current Python version: `0.2.0`
+- Python release candidate: `0.3.0` (not published by merging the release PR)
+- Previously published Python version: `0.2.0`
 
 Pip uses `==` for versions:
 
@@ -34,7 +35,7 @@ maturin build --manifest-path grm-python/Cargo.toml --release --out dist
 Then install the wheel into a virtualenv:
 
 ```bash
-python -m pip install ./dist/grm_rs-0.2.0-*.whl
+python -m pip install ./dist/grm_rs-0.3.0-*.whl
 ```
 
 ## Alternative Distribution
@@ -52,19 +53,19 @@ Use the manual `Python Wheels` GitHub Actions workflow to build wheels. It can
 either upload build artifacts only, or create/update a draft release such as:
 
 ```text
-grm-python-v0.2.0
+grm-python-v0.3.0
 ```
 
 Users can install a downloaded wheel file:
 
 ```bash
-python -m pip install ./grm_rs-0.2.0-*.whl
+python -m pip install ./grm_rs-0.3.0-*.whl
 ```
 
 Or install directly from a release asset URL:
 
 ```bash
-python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.2.0/<wheel-file>.whl"
+python -m pip install "https://github.com/<owner>/<repo>/releases/download/grm-python-v0.3.0/<wheel-file>.whl"
 ```
 
 ## PyPI Release Checks
@@ -92,3 +93,24 @@ Configure the PyPI trusted publisher with:
 
 The workflow requests GitHub's OIDC identity only in the publish job and uses
 the `pypa/gh-action-pypi-publish` action to upload the distributions.
+
+## Release 0.3.0 Candidate
+
+This candidate includes typed primitive properties, including `datetime`.
+Declare the field type as `datetime` and provide a tagged value with an RFC3339
+timestamp containing an explicit timezone:
+
+```python
+{"$grm_type": "datetime", "value": "2026-10-09T14:30:00Z"}
+```
+
+Native Python `datetime.datetime` objects are not converted automatically.
+The wheel smoke test verifies datetime readback after reopening a persisted
+embedded workspace; this does not assert identical support for every backend.
+
+Merge the candidate PR first, then run `Python Wheels` from `main` with publishing
+disabled to inspect the artifacts. Each platform installs its candidate wheel
+and runs `tests/python_bindings_smoke.py` before artifacts can be published.
+When ready, run from `main` with `publish_pypi=true` and, optionally,
+`publish_release=true` using `release_tag=grm-python-v0.3.0`.
+The GitHub release is a draft; PyPI publishing is a separate explicit action.

@@ -14,7 +14,8 @@ Install the latest published release from PyPI:
 python -m pip install grm-rs
 ```
 
-Pin a specific release when reproducibility matters:
+Pin a published release when reproducibility matters (the 0.3.0 candidate is not
+on PyPI until the release workflow publishes it):
 
 ```bash
 python -m pip install grm-rs==0.2.0
