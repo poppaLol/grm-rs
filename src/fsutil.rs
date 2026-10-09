@@ -32,6 +32,7 @@ pub(crate) fn write_file_atomically_with_backup(
     Ok(())
 }
 
+#[cfg(unix)]
 pub(crate) fn sync_parent_dir(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
     let parent = path
@@ -39,6 +40,13 @@ pub(crate) fn sync_parent_dir(path: impl AsRef<Path>) -> io::Result<()> {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     OpenOptions::new().read(true).open(parent)?.sync_all()
+}
+
+// Windows cannot open a directory as a regular file handle, and NTFS
+// persists the rename's metadata without an explicit directory sync.
+#[cfg(not(unix))]
+pub(crate) fn sync_parent_dir(_path: impl AsRef<Path>) -> io::Result<()> {
+    Ok(())
 }
 
 pub(crate) fn backup_path(path: impl AsRef<Path>) -> PathBuf {
