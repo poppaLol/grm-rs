@@ -219,6 +219,12 @@ def main() -> None:
         assert reopened_primitives.node_find(
             "PrimitiveEvidence", {"event_id": event_id}
         )[0]["props"]["amount"]["value"] == "13.25"
+        assert reopened_primitives.node_find(
+            "PrimitiveEvidence", {"event_id": event_id}
+        )[0]["props"]["observed_at"] == {
+            "$grm_type": "datetime",
+            "value": "2026-09-21T09:30:00Z",
+        }
 
         export_path = Path(tmpdir) / "interchange.json"
         session.export_json(str(export_path))
