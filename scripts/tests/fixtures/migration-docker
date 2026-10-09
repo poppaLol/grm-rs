@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$MOCK_ROOT/docker.log"
+case "$1" in
+  inspect)
+    case "$3" in
+      '{{.Id}}') printf '%s-id\n' "$4" ;;
+      '{{.State.Running}} {{.State.Paused}}') echo 'true false' ;;
+      '{{.Image}}') echo 'sha256:fictional-image' ;;
+      *) echo volume ;;
+    esac ;;
+  exec|stop|start) exit 0 ;;
+  run)
+    [[ "${MOCK_FAIL_ARCHIVE:-0}" != 1 ]] || exit 1
+    tar -czf - -C "$MOCK_ROOT/payload" . ;;
+  *) echo 'Unexpected mock Docker operation' >&2; exit 1 ;;
+esac
