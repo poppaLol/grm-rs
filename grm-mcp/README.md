@@ -134,6 +134,13 @@ import/export, free-form query parity, RBAC, production certificate
 lifecycle, hosted durability, and multi-writer coordination are not provided by
 this MCP service path.
 
+`grm://graph/summary` reads aggregate workspace totals and per-model counts in
+one typed Summary request through `ExecuteWorkspace`, without downloading
+entity records or properties. The JSON contains `nodes.total`, `nodes.by_model`,
+`edges.total`, `edges.by_model`, and gRPC backend/workspace identity. Declared
+empty models have zero counts. Service errors and incomplete count metadata
+are returned as errors; older services are not emulated with per-model finds.
+
 ### Neo4j MCP Mode
 
 To let agents write directly into a live Neo4j graph, run `grm-mcp` with:

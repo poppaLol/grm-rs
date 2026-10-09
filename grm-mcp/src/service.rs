@@ -161,6 +161,7 @@ impl ServiceMcpBackend {
                     "insecure-local-grpc"
                 },
                 "workspace_scope": "ExecuteWorkspace",
+                "supported_orientation_resources": ["grm://schema", "grm://backend/status", "grm://graph/summary"],
                 "note": "MCP is using the GRM gRPC workspace service as the persisted operational-memory layer for the proven schema/CRUD/node.find traversal/find/batch subset.",
                 "supported_tools": [
                     "grm_schema_list",
@@ -190,7 +191,7 @@ impl ServiceMcpBackend {
             "recommended_startup_flow": [
                 "Start the gRPC workspace service with a configured local workspace root.",
                 "Start grm-mcp with GRM_BACKEND=grpc, GRM_SERVICE_ENDPOINT, GRM_WORKSPACE_REF, and GRM_SERVICE_WORKSPACE_MODE=create, create-or-open, or open. GRM_SERVICE_WORKSPACE_FORMAT defaults to binary; set it to json only when you need explicit JSON workspace files. Set GRM_SERVICE_TLS_CA_CERT and GRM_SERVICE_TLS_DOMAIN_NAME to trust a local TLS service. Set GRM_SERVICE_TLS_CLIENT_CERT and GRM_SERVICE_TLS_CLIENT_KEY when the service requires mutual TLS.",
-                "Call grm_schema_list to verify the workspace schema before writing.",
+                "Call grm_schema_list to verify the workspace schema before writing, then read grm://graph/summary for aggregate workspace counts.",
                 "Use grm_batch_write for ordinary create/update batches, grm_batch_destructive with allow_deletes=true for delete-bearing batches, compatibility grm_batch, or the schema/node/edge CRUD tools; MCP sends these through ExecuteWorkspace. grm_node_find also accepts via, end_filters, edge_filters, return, order, limit, and offset for traversal-shaped node or edge results. grm_explain and grm_profile support typed node.find and edge.find commands through ExecuteWorkspace."
             ]
         })
@@ -213,6 +214,24 @@ impl ServiceMcpBackend {
             schema,
             Some(self.status_snapshot().await["backend"].clone()),
         ))
+    }
+
+    pub(crate) async fn summary_json(&self) -> GrmResult<Value> {
+        let response = self
+            .execute(proto::runtime_request::Request::Summary(
+                proto::SummaryRequest {},
+            ))
+            .await?;
+        let Some(proto::runtime_response::Response::Summary(summary)) =
+            response.response.and_then(|runtime| runtime.response)
+        else {
+            return Err(GrmError::Backend(
+                "gRPC service returned unexpected summary response".into(),
+            ));
+        };
+        let mut value = summary_value(summary)?;
+        value["backend"] = self.status_snapshot().await["backend"].clone();
+        Ok(value)
     }
 
     pub(crate) async fn define_node(&self, params: DefineNodeParams) -> GrmResult<Value> {
@@ -565,10 +584,44 @@ fn runtime_response_value(response: proto::runtime_response::Response) -> GrmRes
         Response::Query(_) => Err(GrmError::NotSupported(
             "gRPC MCP mode does not support free-form query parity yet",
         )),
-        Response::IndexList(_) | Response::Summary(_) => Err(GrmError::NotSupported(
-            "gRPC MCP mode does not support index/summary responses yet",
+        Response::Summary(summary) => summary_value(summary),
+        Response::IndexList(_) => Err(GrmError::NotSupported(
+            "gRPC MCP mode does not support index responses yet",
         )),
     }
+}
+
+fn summary_value(summary: proto::SummaryResponse) -> GrmResult<Value> {
+    Ok(json!({
+        "nodes": {
+            "total": summary.node_count,
+            "by_model": summary_model_counts(summary.node_counts, summary.node_model_count)?,
+        },
+        "edges": {
+            "total": summary.edge_count,
+            "by_model": summary_model_counts(summary.edge_counts, summary.edge_model_count)?,
+        },
+    }))
+}
+
+fn summary_model_counts(
+    counts: Vec<proto::ModelCount>,
+    expected: u64,
+) -> GrmResult<BTreeMap<String, u64>> {
+    if counts.len() as u64 != expected {
+        return Err(GrmError::Backend(
+            "gRPC summary omitted model count metadata".into(),
+        ));
+    }
+    let mut by_model = BTreeMap::new();
+    for count in counts {
+        if count.model.is_empty() || by_model.insert(count.model, count.count).is_some() {
+            return Err(GrmError::Backend(
+                "gRPC summary contains invalid model count metadata".into(),
+            ));
+        }
+    }
+    Ok(by_model)
 }
 
 fn batch_response_value(response: proto::BatchResponse) -> GrmResult<Value> {
@@ -1172,4 +1225,48 @@ fn workspace_connect_status_error(status: tonic::Status) -> WorkspaceConnectErro
 
 fn service_client_error(error: grm_service_api::GrpcWorkspaceClientError) -> GrmError {
     GrmError::Backend(format!("gRPC service connection failed: {error}"))
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_missing_duplicate_or_unnamed_model_counts() {
+        assert!(summary_model_counts(vec![], 1).is_err());
+        let count = proto::ModelCount {
+            model: "Record".into(),
+            count: 0,
+        };
+        assert!(summary_model_counts(vec![count.clone(), count], 2).is_err());
+        assert!(
+            summary_model_counts(
+                vec![proto::ModelCount {
+                    model: String::new(),
+                    count: 0
+                }],
+                1
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn preserves_u64_counts_without_truncation() {
+        let summary = summary_value(proto::SummaryResponse {
+            node_count: u64::MAX,
+            node_model_count: 1,
+            node_counts: vec![proto::ModelCount {
+                model: "Record".into(),
+                count: u64::MAX,
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(summary["nodes"]["total"].as_u64(), Some(u64::MAX));
+        assert_eq!(
+            summary["nodes"]["by_model"]["Record"].as_u64(),
+            Some(u64::MAX)
+        );
+    }
 }

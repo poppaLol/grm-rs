@@ -1102,7 +1102,7 @@ impl ServerHandler for GrmMcpServer {
         let instructions = if self.read_only {
             "Use this GRM MCP server for read-only inspection. Mutation, raw query, persistence, import/export, and schema-checkpoint tools are disabled at the MCP router before backend execution. Start with grm_schema_list and grm://backend/status, then use structured node/edge find and supported explain/profile tools."
         } else if self.is_service() {
-            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status. gRPC MCP mode supports schema define/list, grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node or edge results, edge_find, grm_explain, and grm_profile through ExecuteWorkspace. Direct service RPC families, import/export, and free-form query parity are not supported yet."
+            "Use GRM tools against the configured gRPC workspace service. On startup call grm_schema_list, then inspect grm://backend/status and grm://graph/summary. gRPC MCP mode supports schema define/list, grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, traversal-capable node_find for node or edge results, edge_find, grm_explain, and grm_profile through ExecuteWorkspace. The graph summary resource uses one typed workspace Summary request and returns aggregate counts without entity properties. Direct service RPC families, import/export, and free-form query parity are not supported yet."
         } else if self.is_neo4j() {
             "Use GRM tools to inspect session-local runtime schema and write supported schema-aware operations directly to Neo4j. On startup call grm_schema_list, then inspect grm://backend/status and grm://graph/summary; if schema_template_loaded is true, verify the recovered models before writing. If schema_template_persistence_enabled is true and schema_template_loaded is false, this server started with fresh local schema memory. If runtime schema is empty, ask whether to define or reconstruct schema before grm_batch_write writes. Neo4j mode supports schema define/list/checkpoint, grm_batch_write for schema/node/edge creates and updates, grm_batch_destructive for delete-bearing batches with allow_deletes=true, compatibility grm_batch for schema/node/edge create/update/delete, node_create, node_update, node_delete, edge_create, edge_update, edge_delete, simple node/edge find, and graph summary counts for the current session-local runtime schema."
         } else {
@@ -1162,9 +1162,6 @@ impl ServerHandler for GrmMcpServer {
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?
             }
             "grm://graph/summary" => {
-                if let Some(err) = self.unsupported_in_service("grm://graph/summary") {
-                    return Err(err);
-                }
                 serde_json::to_string_pretty(&self.summary_json().await.map_err(to_mcp_error)?)
                     .map_err(|err| McpError::internal_error(err.to_string(), None))?
             }
