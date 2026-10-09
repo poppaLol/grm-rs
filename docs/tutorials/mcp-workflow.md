@@ -74,6 +74,11 @@ Binary persistence is the default. The agent still sees GRM's structured MCP
 tools; gRPC is the workspace storage mode behind the adapter, not an additional
 agent-facing tool surface.
 
+Read `grm://graph/summary` for workspace totals and per-model counts, including
+declared empty models. It uses one typed Summary request through
+`ExecuteWorkspace`; entity records and properties are not downloaded to count
+them. Backend identity reports the service workspace being inspected.
+
 TLS and mutual TLS use `GRM_SERVICE_TLS_CA_CERT`,
 `GRM_SERVICE_TLS_DOMAIN_NAME`, `GRM_SERVICE_TLS_CLIENT_CERT`, and
 `GRM_SERVICE_TLS_CLIENT_KEY`. See the

@@ -319,6 +319,9 @@ impl GrmMcpServer {
     }
 
     pub async fn summary_json(&self) -> GrmResult<Value> {
+        if let Some(service) = &self.service {
+            return service.summary_json().await;
+        }
         if self.is_neo4j() {
             return self.neo4j_summary_json().await;
         }

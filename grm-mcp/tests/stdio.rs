@@ -106,6 +106,23 @@ async fn neo4j_client() -> Option<rmcp::service::RunningService<rmcp::RoleClient
 }
 
 async fn grpc_service(root: PathBuf) -> (String, JoinHandle<()>) {
+    let (endpoint, handle, _) = counted_grpc_service(root).await;
+    (endpoint, handle)
+}
+
+async fn counted_grpc_service(
+    root: PathBuf,
+) -> (
+    String,
+    JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind local gRPC service");
@@ -114,8 +131,14 @@ async fn grpc_service(root: PathBuf) -> (String, JoinHandle<()>) {
     let service = GrpcWorkspaceService::with_local_workspace_root(
         root,
         grm_service_api::ServiceSecurityConfig::anonymous_local(),
-    )
-    .into_server();
+    );
+    let service = grm_service_api::proto::grm_service_server::GrmServiceServer::with_interceptor(
+        service,
+        move |request: tonic::Request<()>| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(request)
+        },
+    );
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(service)
@@ -123,7 +146,18 @@ async fn grpc_service(root: PathBuf) -> (String, JoinHandle<()>) {
             .await
             .expect("serve local gRPC workspace service");
     });
-    (format!("http://{addr}"), handle)
+    (format!("http://{addr}"), handle, requests)
+}
+
+async fn read_summary(client: &rmcp::service::RunningService<rmcp::RoleClient, ()>) -> Value {
+    let result = client
+        .read_resource(ReadResourceRequestParams::new("grm://graph/summary"))
+        .await
+        .expect("read graph summary");
+    let [ResourceContents::TextResourceContents { text, .. }] = result.contents.as_slice() else {
+        panic!("expected a single summary text resource");
+    };
+    serde_json::from_str(text).expect("summary JSON")
 }
 
 async fn grpc_mcp_client(
@@ -208,6 +242,12 @@ async fn grpc_mcp_recovers_after_service_restart_without_replaying_transport_fai
         serde_json::from_str::<Value>(text).unwrap()["backend"]["connected"],
         false
     );
+    assert!(
+        client
+            .read_resource(ReadResourceRequestParams::new("grm://graph/summary"))
+            .await
+            .is_err()
+    );
 
     let (_, shutdown, task) = restartable_grpc_service(
         temp.path().into(),
@@ -225,6 +265,16 @@ async fn grpc_mcp_recovers_after_service_restart_without_replaying_transport_fai
     assert_ne!(
         other.handle().id,
         original["backend"]["workspace_handle"].as_str().unwrap()
+    );
+    let recovered_summary = read_summary(&client).await;
+    assert_eq!(recovered_summary["nodes"]["total"], 1);
+    assert_eq!(
+        recovered_summary["backend"]["workspace_ref"],
+        "restart-memory"
+    );
+    assert_ne!(
+        recovered_summary["backend"]["workspace_handle"],
+        original["backend"]["workspace_handle"]
     );
     call(
         &client,
@@ -603,6 +653,61 @@ async fn streamable_http_read_only_mode_hides_and_rejects_mutation_tools() {
 }
 
 #[tokio::test]
+async fn grpc_summary_resource_is_aggregate_only_and_uses_one_request() {
+    use std::sync::atomic::Ordering;
+    let temp = tempdir().unwrap();
+    let (endpoint, service, requests) = counted_grpc_service(temp.path().into()).await;
+    let client = grpc_mcp_client(&endpoint, "summary-memory", "create").await;
+    let before = requests.load(Ordering::SeqCst);
+    let empty = read_summary(&client).await;
+    assert_eq!(requests.load(Ordering::SeqCst) - before, 1);
+    assert_eq!(empty["nodes"], json!({"total": 0, "by_model": {}}));
+    assert_eq!(empty["edges"], json!({"total": 0, "by_model": {}}));
+    for index in 0..20 {
+        call(
+            &client,
+            "grm_schema_define_node",
+            json!({
+                "name": format!("Record{index}"), "id_field": "recordId",
+                "fields": [{"name": "name", "type": "string", "required": true}]
+            }),
+        )
+        .await;
+    }
+    call(&client, "grm_batch_write", json!({"ops": [
+        {"op": "schema_define_edge", "args": {"name": "Related", "from_model": "Record0", "to_model": "Record0", "id_field": "relatedId", "fields": []}},
+        {"op": "node_create", "args": {"ref": "first", "model": "Record0", "props": {"name": "private-property-sentinel"}}},
+        {"op": "node_create", "args": {"ref": "second", "model": "Record0", "props": {"name": "another-private-value"}}},
+        {"op": "edge_create", "args": {"model": "Related", "from": "first", "to": "second", "props": {}}}
+    ]})).await;
+    let before = requests.load(Ordering::SeqCst);
+    let summary = read_summary(&client).await;
+    assert_eq!(requests.load(Ordering::SeqCst) - before, 1);
+    assert_eq!(summary["nodes"]["total"], 2);
+    assert_eq!(summary["nodes"]["by_model"].as_object().unwrap().len(), 20);
+    assert_eq!(summary["nodes"]["by_model"]["Record0"], 2);
+    assert_eq!(summary["nodes"]["by_model"]["Record19"], 0);
+    assert_eq!(
+        summary["edges"],
+        json!({"total": 1, "by_model": {"Related": 1}})
+    );
+    assert_eq!(summary["backend"]["mode"], "grpc");
+    assert_eq!(summary["backend"]["workspace_scope"], "ExecuteWorkspace");
+    assert!(!summary.to_string().contains("private-property-sentinel"));
+    assert_eq!(summary.as_object().unwrap().len(), 3);
+    client.cancel().await.unwrap();
+    let other = grpc_mcp_client(&endpoint, "other-summary-memory", "create").await;
+    assert_eq!(read_summary(&other).await["nodes"]["total"], 0);
+    other.cancel().await.unwrap();
+    let reopened = grpc_mcp_client(&endpoint, "summary-memory", "open").await;
+    let persisted = read_summary(&reopened).await;
+    assert_eq!(persisted["nodes"], summary["nodes"]);
+    assert_eq!(persisted["edges"], summary["edges"]);
+    reopened.cancel().await.unwrap();
+    service.abort();
+}
+
+#[tokio::test]
 async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     let temp = tempdir().unwrap();
     let (endpoint, service) = grpc_service(temp.path().to_path_buf()).await;
@@ -833,6 +938,11 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     .await;
     assert!(unsupported_query.contains("gRPC MCP mode"));
 
+    let summary = read_summary(&client).await;
+    assert_eq!(summary["nodes"]["total"], 2);
+    assert_eq!(summary["edges"]["total"], 1);
+    assert_eq!(summary["nodes"]["by_model"]["GrpcMcpUser"], 1);
+
     client.cancel().await.unwrap();
 
     let reopened = grpc_mcp_client(&endpoint, &workspace_ref, "open").await;
@@ -859,6 +969,7 @@ async fn grpc_service_mode_exercises_workspace_crud_and_reopen() {
     )
     .await;
     assert_eq!(reopened_nodes["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(read_summary(&reopened).await["nodes"], summary["nodes"]);
 
     reopened.cancel().await.unwrap();
     service.abort();
