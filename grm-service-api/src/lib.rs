@@ -4680,6 +4680,11 @@ fn security_operations(request: &ServiceRequest, workspace: &str) -> Vec<Securit
                 let operation = batch_security_operation(batch_operation, workspace);
                 if !operations.contains(&operation) {
                     operations.push(operation);
+                    // Audit admission rejects this request before authorization.
+                    // Bound deduplication even for oversized raw batches.
+                    if operations.len() > SECURITY_AUDIT_MAX_OPERATIONS {
+                        break;
+                    }
                 }
             }
             operations
@@ -8500,6 +8505,35 @@ fn proto_id_type(id_type: grm_rs::BackendIdType) -> grm_rs::Result<i32> {
 mod workspace_operation_log_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn batch_classification_stops_at_audit_overflow() {
+        let request = ServiceRequest::ApplyBatch(BatchRequest {
+            atomic: true,
+            allow_deletes: false,
+            response_mode: BatchResponseMode::Detailed,
+            ops: (0..60_000)
+                .map(|index| {
+                    BatchOperation::SchemaDefineNode(DefineNodeRequest {
+                        name: format!("Model{index}"),
+                        id_field: "id".into(),
+                        fields: vec![],
+                    })
+                })
+                .collect(),
+        });
+        let operations = security_operations(&request, "workspace");
+        assert_eq!(operations.len(), SECURITY_AUDIT_MAX_OPERATIONS + 1);
+        assert_eq!(operations[0].action, SecurityAction::BatchApply);
+        assert_eq!(
+            operations.last().unwrap().resource.model.as_deref(),
+            Some("Model63")
+        );
+        assert!(matches!(
+            audit_operations(&operations),
+            Err(SecurityEnforcementError::AuditClassificationOverflow)
+        ));
+    }
 
     #[test]
     fn operation_log_separates_schema_node_and_edge_counts() {
