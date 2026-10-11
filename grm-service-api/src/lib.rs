@@ -3073,6 +3073,9 @@ impl GrpcWorkspaceService {
                     .store(false, Ordering::Release);
                 Ok(())
             }
+            Err(SecurityAuditSinkError::EventTooLarge) => {
+                Err(SecurityEnforcementError::AuditEventTooLarge)
+            }
             Err(_) => Err(SecurityEnforcementError::AuditSinkUnavailable),
         }
     }
@@ -3275,7 +3278,8 @@ fn audit_security_error(
         SecurityEnforcementError::PolicyEvaluationFailed => {
             SecurityAuditReason::PolicyEvaluationFailed
         }
-        SecurityEnforcementError::AuditClassificationOverflow => {
+        SecurityEnforcementError::AuditClassificationOverflow
+        | SecurityEnforcementError::AuditEventTooLarge => {
             SecurityAuditReason::ClassificationOverflow
         }
         SecurityEnforcementError::AuditSinkUnavailable => SecurityAuditReason::SinkUnavailable,
@@ -4493,6 +4497,7 @@ enum SecurityEnforcementError {
     PolicyEvaluationFailed,
     Denied,
     AuditClassificationOverflow,
+    AuditEventTooLarge,
     AuditSinkUnavailable,
 }
 
@@ -4514,9 +4519,12 @@ fn security_status(error: SecurityEnforcementError) -> Status {
             Status::unavailable("authorization policy evaluation failed")
         }
         SecurityEnforcementError::Denied => Status::permission_denied("authorization denied"),
-        SecurityEnforcementError::AuditClassificationOverflow => {
-            Status::invalid_argument("audit classification exceeds bounded security audit limits")
-        }
+        SecurityEnforcementError::AuditClassificationOverflow => Status::invalid_argument(
+            "request is too large for the security audit record: classification exceeds bounded limits",
+        ),
+        SecurityEnforcementError::AuditEventTooLarge => Status::resource_exhausted(
+            "request is too large for the security audit record: event exceeds byte limit",
+        ),
         SecurityEnforcementError::AuditSinkUnavailable => {
             Status::unavailable("authoritative security audit sink unavailable")
         }
@@ -4665,12 +4673,15 @@ fn security_operations(request: &ServiceRequest, workspace: &str) -> Vec<Securit
                 SecurityResourceKind::OperationFamily,
                 None,
             )];
-            operations.extend(
-                batch
-                    .ops
-                    .iter()
-                    .map(|batch_operation| batch_security_operation(batch_operation, workspace)),
-            );
+            // Authorization requires each distinct action/resource, not one
+            // repeated check and audit entry for every mutation of that model.
+            // Preserve first-seen order and include the full resource identity.
+            for batch_operation in &batch.ops {
+                let operation = batch_security_operation(batch_operation, workspace);
+                if !operations.contains(&operation) {
+                    operations.push(operation);
+                }
+            }
             operations
         }
         ServiceRequest::IndexList(_) => vec![operation(
