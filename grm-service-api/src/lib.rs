@@ -893,6 +893,10 @@ pub struct InProcessWorkspaceService {
     next_workspace_ref_id: u64,
     next_snapshot_id: u64,
     workspaces: BTreeMap<String, grm_rs::Workspace>,
+    // Independent client handles resolve to one service-owned workspace.
+    // A live named workspace stays loaded until its final handle closes.
+    workspace_handles: BTreeMap<String, String>,
+    live_workspace_paths: BTreeMap<PathBuf, String>,
     workspace_refs: BTreeMap<String, Option<WorkspaceRef>>,
     local_snapshots: BTreeMap<String, LocalWorkspaceSnapshot>,
     local_workspace_root: Option<PathBuf>,
@@ -929,6 +933,8 @@ impl InProcessWorkspaceService {
                 let handle = self.next_workspace_handle()?;
                 self.workspaces
                     .insert(handle.id.clone(), grm_rs::Workspace::new());
+                self.workspace_handles
+                    .insert(handle.id.clone(), handle.id.clone());
                 self.workspace_refs.insert(handle.id.clone(), None);
                 Ok(WorkspaceCreateResponse {
                     handle,
@@ -950,9 +956,12 @@ impl InProcessWorkspaceService {
                 };
                 let path = self.local_workspace_path(&workspace_ref, request.format)?;
                 let mut workspace = grm_rs::Workspace::new();
-                workspace.enable_autocommit(request.format.into(), path)?;
+                workspace.enable_autocommit(request.format.into(), &path)?;
                 let handle = self.next_workspace_handle()?;
                 self.workspaces.insert(handle.id.clone(), workspace);
+                self.workspace_handles
+                    .insert(handle.id.clone(), handle.id.clone());
+                self.live_workspace_paths.insert(path, handle.id.clone());
                 self.workspace_refs
                     .insert(handle.id.clone(), Some(workspace_ref.clone()));
                 Ok(WorkspaceCreateResponse {
@@ -978,6 +987,17 @@ impl InProcessWorkspaceService {
             }
             (Some(workspace_ref), None) => {
                 let path = self.local_workspace_path(&workspace_ref, request.format)?;
+                if let Some(workspace_id) = self.live_workspace_paths.get(&path).cloned() {
+                    let handle = self.next_workspace_handle()?;
+                    self.workspace_handles
+                        .insert(handle.id.clone(), workspace_id);
+                    self.workspace_refs
+                        .insert(handle.id.clone(), Some(workspace_ref.clone()));
+                    return Ok(WorkspaceOpenResponse {
+                        handle,
+                        workspace: Some(workspace_ref),
+                    });
+                }
                 (
                     grm_rs::Workspace::open_autocommit(request.format.into(), path)?,
                     Some(workspace_ref),
@@ -1012,7 +1032,13 @@ impl InProcessWorkspaceService {
             }
         };
         let handle = self.next_workspace_handle()?;
+        if let Some(workspace_ref) = &workspace_ref {
+            let path = self.local_workspace_path(workspace_ref, request.format)?;
+            self.live_workspace_paths.insert(path, handle.id.clone());
+        }
         self.workspaces.insert(handle.id.clone(), workspace);
+        self.workspace_handles
+            .insert(handle.id.clone(), handle.id.clone());
         self.workspace_refs
             .insert(handle.id.clone(), workspace_ref.clone());
         Ok(WorkspaceOpenResponse {
@@ -1041,17 +1067,25 @@ impl InProcessWorkspaceService {
         &mut self,
         request: WorkspaceCloseRequest,
     ) -> WorkspaceServiceResult<WorkspaceCloseResponse> {
-        self.workspaces
+        let workspace_id = self
+            .workspace_handles
             .remove(&request.handle.id)
-            .map(|_| {
-                self.workspace_refs.remove(&request.handle.id);
-                WorkspaceCloseResponse {
-                    handle: request.handle.clone(),
-                }
-            })
-            .ok_or(WorkspaceServiceError::UnknownWorkspaceHandle {
-                handle: request.handle,
-            })
+            .ok_or_else(|| WorkspaceServiceError::UnknownWorkspaceHandle {
+                handle: request.handle.clone(),
+            })?;
+        self.workspace_refs.remove(&request.handle.id);
+        if !self
+            .workspace_handles
+            .values()
+            .any(|id| id == &workspace_id)
+        {
+            self.workspaces.remove(&workspace_id);
+            self.live_workspace_paths
+                .retain(|_, id| id != &workspace_id);
+        }
+        Ok(WorkspaceCloseResponse {
+            handle: request.handle,
+        })
     }
 
     pub fn unsupported_workspace_operation(
@@ -1099,22 +1133,24 @@ impl InProcessWorkspaceService {
         &self,
         handle: &WorkspaceHandle,
     ) -> WorkspaceServiceResult<&grm_rs::Workspace> {
-        self.workspaces.get(&handle.id).ok_or_else(|| {
-            WorkspaceServiceError::UnknownWorkspaceHandle {
+        self.workspace_handles
+            .get(&handle.id)
+            .and_then(|id| self.workspaces.get(id))
+            .ok_or_else(|| WorkspaceServiceError::UnknownWorkspaceHandle {
                 handle: handle.clone(),
-            }
-        })
+            })
     }
 
     pub fn workspace_mut(
         &mut self,
         handle: &WorkspaceHandle,
     ) -> WorkspaceServiceResult<&mut grm_rs::Workspace> {
-        self.workspaces.get_mut(&handle.id).ok_or_else(|| {
-            WorkspaceServiceError::UnknownWorkspaceHandle {
+        self.workspace_handles
+            .get(&handle.id)
+            .and_then(|id| self.workspaces.get_mut(id))
+            .ok_or_else(|| WorkspaceServiceError::UnknownWorkspaceHandle {
                 handle: handle.clone(),
-            }
-        })
+            })
     }
 
     fn workspace_log_name(&self, handle: &WorkspaceHandle) -> String {

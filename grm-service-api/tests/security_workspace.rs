@@ -1410,6 +1410,189 @@ async fn batch_authorization_uses_contained_operations_not_client_delete_label()
 }
 
 #[tokio::test]
+async fn secured_connections_share_live_workspace_and_preserve_all_writes() {
+    for format in [
+        proto::DurabilityFormat::Json,
+        proto::DurabilityFormat::Binary,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let service = GrpcWorkspaceService::with_local_workspace_root(
+            root.path(),
+            secured_with_policy(Arc::new(AllowPolicy)),
+        )
+        .into_server();
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(service)
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let mut first = proto::grm_service_client::GrmServiceClient::connect(endpoint.clone())
+            .await
+            .unwrap();
+        let mut second = proto::grm_service_client::GrmServiceClient::connect(endpoint)
+            .await
+            .unwrap();
+        let workspace = proto::WorkspaceRef {
+            id: "shared-workspace".into(),
+        };
+        let first_handle = first
+            .create_workspace(proto::WorkspaceCreateRequest {
+                mode: proto::WorkspaceCreateMode::LocalAutocommit as i32,
+                workspace: Some(workspace.clone()),
+                format: format as i32,
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .handle
+            .unwrap();
+        let open = proto::WorkspaceOpenRequest {
+            workspace: Some(workspace.clone()),
+            snapshot: None,
+            format: format as i32,
+        };
+        let second_handle = second
+            .open_workspace(open.clone())
+            .await
+            .unwrap()
+            .into_inner()
+            .handle
+            .unwrap();
+        assert_ne!(first_handle.id, second_handle.id);
+        // Schema changes after both handles open must also be visible.
+        execute(
+            &mut first,
+            &first_handle,
+            proto::runtime_request::Request::DefineNode(user_model()),
+        )
+        .await
+        .unwrap();
+        let create_a = execute(
+            &mut first,
+            &first_handle,
+            proto::runtime_request::Request::CreateNode(user_create("A")),
+        );
+        let create_b = execute(
+            &mut second,
+            &second_handle,
+            proto::runtime_request::Request::CreateNode(user_create("B")),
+        );
+        let (a, b) = tokio::join!(create_a, create_b);
+        let node_id = |response: proto::WorkspaceRuntimeResponse| {
+            let proto::runtime_response::Response::CreateNode(node) =
+                response.response.unwrap().response.unwrap()
+            else {
+                panic!("expected created node")
+            };
+            node.node.unwrap().id
+        };
+        let a_id = node_id(a.unwrap());
+        let b_id = node_id(b.unwrap());
+        assert_ne!(a_id, b_id);
+        for (client, handle) in [(&mut first, &first_handle), (&mut second, &second_handle)] {
+            assert_eq!(find_users(client, handle, None).await.nodes.len(), 2);
+        }
+        // A long-open handle can update a node created by the other handle.
+        execute(
+            &mut first,
+            &first_handle,
+            proto::runtime_request::Request::ApplyBatch(proto::BatchRequest {
+                atomic: true,
+                allow_deletes: false,
+                response_mode: proto::BatchResponseMode::Detailed as i32,
+                ops: vec![proto::BatchOperation {
+                    op: Some(proto::batch_operation::Op::NodeUpdate(
+                        proto::NodeUpdateRequest {
+                            model: "User".into(),
+                            id: b_id,
+                            props: Some(properties("name", "B updated")),
+                        },
+                    )),
+                }],
+            }),
+        )
+        .await
+        .unwrap();
+        first
+            .close_workspace(proto::WorkspaceCloseRequest {
+                handle: Some(first_handle.clone()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            find_users(&mut second, &second_handle, None)
+                .await
+                .nodes
+                .len(),
+            2
+        );
+        execute(
+            &mut second,
+            &second_handle,
+            proto::runtime_request::Request::CreateNode(user_create("C")),
+        )
+        .await
+        .unwrap();
+        let stale = execute(
+            &mut first,
+            &first_handle,
+            proto::runtime_request::Request::FindNodes(node_find_with_traversal(
+                "User", "Authored", "Post",
+            )),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(stale.code(), Code::NotFound);
+        second
+            .close_workspace(proto::WorkspaceCloseRequest {
+                handle: Some(second_handle),
+            })
+            .await
+            .unwrap();
+        // After the final close the next handle must recover every write from disk.
+        let third_handle = first
+            .open_workspace(open.clone())
+            .await
+            .unwrap()
+            .into_inner()
+            .handle
+            .unwrap();
+        assert_eq!(
+            find_users(&mut first, &third_handle, None)
+                .await
+                .nodes
+                .len(),
+            3
+        );
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        let (mut restarted, shutdown, server) =
+            start_local_service(root.path(), secured_with_policy(Arc::new(AllowPolicy))).await;
+        let recovered = restarted
+            .open_workspace(open)
+            .await
+            .unwrap()
+            .into_inner()
+            .handle
+            .unwrap();
+        let users = find_users(&mut restarted, &recovered, None).await.nodes;
+        assert_eq!(users.len(), 3);
+        assert_eq!(
+            users.iter().find(|node| node.id == b_id).unwrap().props,
+            Some(properties("name", "B updated")),
+        );
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
 async fn secured_large_batch_audits_distinct_permissions_and_preserves_denials() {
     for deny_edges in [false, true] {
         let audit_root = tempfile::tempdir().unwrap();
