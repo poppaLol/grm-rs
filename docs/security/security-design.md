@@ -620,6 +620,18 @@ resolve scope, and authorize before lifecycle or runtime effects.
 `ExecuteWorkspace` also applies the current batch limit before invoking the
 existing runtime path.
 
+Batch authorization and audit classification retain `batch.apply` plus each
+distinct action/resource combination, including workspace, resource kind, and
+model. Repeated mutations of the same model do not produce repeated permission
+checks or audit entries; these entries describe required permissions rather
+than mutation counts. The separate secured batch operation limit defaults to
+128 and can be changed with `ServiceSecurityConfig::with_max_batch_operations`.
+Audit classification bounds still reject excessive distinct permissions with
+`InvalidArgument`; audit events that exceed the sink's byte budget return
+`ResourceExhausted` with a size-limit message. Oversized authorization or
+admission records prevent runtime execution.
+Actual audit sink outages continue to return `Unavailable`.
+
 The explicit `anonymous-local` profile preserves local development behavior.
 Service constructors require a `ServiceSecurityConfig`; there is no permissive
 default or zero-argument constructor. Local adapters and tests must visibly

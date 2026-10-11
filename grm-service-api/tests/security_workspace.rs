@@ -1410,6 +1410,204 @@ async fn batch_authorization_uses_contained_operations_not_client_delete_label()
 }
 
 #[tokio::test]
+async fn secured_large_batch_audits_distinct_permissions_and_preserves_denials() {
+    for deny_edges in [false, true] {
+        let audit_root = tempfile::tempdir().unwrap();
+        let audit = Arc::new(DurableSecurityAuditStore::open_default(audit_root.path()).unwrap());
+        let policy: Arc<dyn AuthorizationPolicy> = if deny_edges {
+            Arc::new(DenyActionPolicy(SecurityAction::EdgeCreate))
+        } else {
+            Arc::new(AllowPolicy)
+        };
+        let (mut client, shutdown, server) = start_service(
+            secured_with_policy(policy)
+                .with_max_batch_operations(200)
+                .with_audit_sink(audit.clone()),
+        )
+        .await;
+        let handle = create_workspace(&mut client).await;
+        for request in [
+            proto::runtime_request::Request::DefineNode(user_model()),
+            proto::runtime_request::Request::DefineNode(post_model()),
+            proto::runtime_request::Request::DefineEdge(proto::DefineEdgeRequest {
+                name: "Authored".into(),
+                from_model: "User".into(),
+                to_model: "Post".into(),
+                id_field: "authoredId".into(),
+                fields: vec![],
+            }),
+        ] {
+            execute(&mut client, &handle, request).await.unwrap();
+        }
+        let mut ops = Vec::new();
+        for index in 0..100 {
+            let (model, field) = if index % 2 == 0 {
+                ("User", "name")
+            } else {
+                ("Post", "title")
+            };
+            ops.push(proto::BatchOperation {
+                op: Some(proto::batch_operation::Op::NodeCreate(
+                    proto::BatchNodeCreate {
+                        model: model.into(),
+                        props: Some(properties(field, &format!("item-{index}"))),
+                        local_ref: Some(format!("item-{index}")),
+                    },
+                )),
+            });
+        }
+        for _ in 0..100 {
+            ops.push(proto::BatchOperation {
+                op: Some(proto::batch_operation::Op::EdgeCreate(
+                    proto::BatchEdgeCreate {
+                        model: "Authored".into(),
+                        from: Some(proto::BatchEndpoint {
+                            endpoint: Some(proto::batch_endpoint::Endpoint::LocalRef(
+                                "item-0".into(),
+                            )),
+                        }),
+                        to: Some(proto::BatchEndpoint {
+                            endpoint: Some(proto::batch_endpoint::Endpoint::LocalRef(
+                                "item-1".into(),
+                            )),
+                        }),
+                        props: None,
+                    },
+                )),
+            });
+        }
+        let result = execute(
+            &mut client,
+            &handle,
+            proto::runtime_request::Request::ApplyBatch(proto::BatchRequest {
+                atomic: true,
+                allow_deletes: false,
+                response_mode: proto::BatchResponseMode::Detailed as i32,
+                ops,
+            }),
+        )
+        .await;
+        if deny_edges {
+            assert_eq!(result.unwrap_err().code(), Code::PermissionDenied);
+        } else {
+            let response = result.unwrap().response.unwrap().response.unwrap();
+            let proto::runtime_response::Response::ApplyBatch(batch) = response else {
+                panic!("expected batch response")
+            };
+            assert!(batch.applied);
+            assert!(batch.errors.is_empty());
+            assert_eq!(batch.operation_count, 200);
+            assert_eq!(batch.ids.len(), 200);
+        }
+        let batch_events: Vec<_> = audit
+            .retained_events()
+            .into_iter()
+            .filter(|event| {
+                event
+                    .operations
+                    .iter()
+                    .any(|operation| operation.action == SecurityAction::BatchApply)
+            })
+            .collect();
+        assert!(!batch_events.is_empty());
+        for event in &batch_events {
+            assert_eq!(event.operations.len(), 4);
+            assert_eq!(
+                event
+                    .operations
+                    .iter()
+                    .filter(|operation| operation.action == SecurityAction::NodeCreate)
+                    .count(),
+                2
+            );
+        }
+        assert_eq!(
+            find_users(&mut client, &handle, None).await.nodes.len(),
+            if deny_edges { 0 } else { 50 }
+        );
+        assert_eq!(audit.health(), SecurityAuditSinkHealth::Healthy);
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn secured_oversized_batch_audit_reports_limits_before_writes() {
+    let audit_root = tempfile::tempdir().unwrap();
+    let audit = Arc::new(DurableSecurityAuditStore::open_default(audit_root.path()).unwrap());
+    let (mut client, shutdown, server) =
+        start_service(secured_with_policy(Arc::new(AllowPolicy)).with_audit_sink(audit.clone()))
+            .await;
+    let handle = create_workspace(&mut client).await;
+    // Forty distinct model grants exceed the serialized event byte budget;
+    // sixty-five exceed the classification count budget as well.
+    for (count, expected_code, expected_detail) in [
+        (40, Code::ResourceExhausted, "event exceeds byte limit"),
+        (
+            65,
+            Code::InvalidArgument,
+            "classification exceeds bounded limits",
+        ),
+    ] {
+        let ops = (0..count)
+            .map(|index| proto::BatchOperation {
+                op: Some(proto::batch_operation::Op::SchemaDefineNode(
+                    proto::DefineNodeRequest {
+                        name: format!("DistinctModel{index}"),
+                        id_field: "id".into(),
+                        fields: vec![],
+                    },
+                )),
+            })
+            .collect();
+        let error = execute(
+            &mut client,
+            &handle,
+            proto::runtime_request::Request::ApplyBatch(proto::BatchRequest {
+                atomic: true,
+                allow_deletes: false,
+                response_mode: proto::BatchResponseMode::Detailed as i32,
+                ops,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), expected_code);
+        assert!(
+            error
+                .message()
+                .contains("request is too large for the security audit record")
+        );
+        assert!(error.message().contains(expected_detail));
+        let response = execute(
+            &mut client,
+            &handle,
+            proto::runtime_request::Request::SchemaList(proto::SchemaListRequest {}),
+        )
+        .await
+        .unwrap()
+        .response
+        .unwrap()
+        .response
+        .unwrap();
+        let proto::runtime_response::Response::SchemaList(schema) = response else {
+            panic!("expected schema response")
+        };
+        assert!(schema.node_models.is_empty());
+        assert_eq!(audit.health(), SecurityAuditSinkHealth::Healthy);
+    }
+    execute(
+        &mut client,
+        &handle,
+        proto::runtime_request::Request::DefineNode(user_model()),
+    )
+    .await
+    .unwrap();
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn secured_batch_limit_returns_resource_exhausted_before_runtime() {
     let security = secured_with_policy(Arc::new(AllowPolicy)).with_max_batch_operations(1);
     let (mut client, shutdown, server) = start_service(security).await;
