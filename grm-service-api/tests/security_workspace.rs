@@ -1557,6 +1557,118 @@ async fn query_wrappers_include_underlying_edge_and_traversal_authorization() {
 }
 
 #[tokio::test]
+async fn shipped_read_templates_allow_traversal_only_with_traverse_permission() {
+    let templates: serde_json::Value = serde_json::from_str(include_str!(
+        "../../examples/secured-local/templates/access-levels.json"
+    ))
+    .unwrap();
+
+    for template_id in ["owner-bootstrap-admin", "graph-reader"] {
+        let template = templates["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|template| template["id"] == template_id)
+            .unwrap();
+        // Use the shipped read/traverse grants; setup and wrapper grants below
+        // let the same fixture exercise every traversal entry point.
+        let read_permissions: Vec<_> = template["assignments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|assignment| assignment["permissions"].as_array().unwrap())
+            .filter_map(|grant| {
+                let (action, resource) = match grant["action"].as_str().unwrap() {
+                    "node.read" => (SecurityAction::NodeRead, ResourceSelector::AnyNodeModel),
+                    "edge.read" => (SecurityAction::EdgeRead, ResourceSelector::AnyEdgeModel),
+                    "traverse" => (SecurityAction::Traverse, ResourceSelector::OperationFamily),
+                    _ => return None,
+                };
+                let expected_kind = match resource {
+                    ResourceSelector::AnyNodeModel => "any_node_model",
+                    ResourceSelector::AnyEdgeModel => "any_edge_model",
+                    ResourceSelector::OperationFamily => "operation_family",
+                    _ => unreachable!(),
+                };
+                assert_eq!(grant["resource"]["kind"], expected_kind);
+                Some(permission(action, resource))
+            })
+            .collect();
+        assert_eq!(read_permissions.len(), 3);
+
+        for allow_traverse in [true, false] {
+            let principal = principal(template_id);
+            let mut permissions = read_permissions.clone();
+            if !allow_traverse {
+                permissions.retain(|grant| grant.action != SecurityAction::Traverse);
+            }
+            permissions.extend([
+                permission(SecurityAction::SchemaDefine, ResourceSelector::AnyNodeModel),
+                permission(SecurityAction::SchemaDefine, ResourceSelector::AnyEdgeModel),
+                permission(SecurityAction::Query, ResourceSelector::OperationFamily),
+                permission(SecurityAction::Explain, ResourceSelector::OperationFamily),
+                permission(SecurityAction::Profile, ResourceSelector::OperationFamily),
+            ]);
+            let security = secured_with_table(
+                principal.clone(),
+                vec![
+                    service_create_assignment(principal.clone()),
+                    assignment(
+                        principal,
+                        PermissionScope::DeploymentLocalAllWorkspaces,
+                        permissions,
+                    ),
+                ],
+            );
+            let (mut client, shutdown, server) = start_service(security).await;
+            let handle = create_workspace(&mut client).await;
+            for request in [
+                proto::runtime_request::Request::DefineNode(user_model()),
+                proto::runtime_request::Request::DefineNode(post_model()),
+                proto::runtime_request::Request::DefineEdge(proto::DefineEdgeRequest {
+                    name: "Authored".into(),
+                    from_model: "User".into(),
+                    to_model: "Post".into(),
+                    id_field: "authoredId".into(),
+                    fields: vec![],
+                }),
+            ] {
+                execute(&mut client, &handle, request).await.unwrap();
+            }
+            // Ordinary reads must still work without the traversal permission.
+            find_users(&mut client, &handle, None).await;
+            let mut requests = vec![proto::runtime_request::Request::FindNodes(
+                node_find_with_traversal("User", "Authored", "Post"),
+            )];
+            for action in [
+                SecurityAction::Query,
+                SecurityAction::Explain,
+                SecurityAction::Profile,
+            ] {
+                requests.push(wrapper_request(
+                    action,
+                    proto::QueryRequest {
+                        query: Some(proto::query_request::Query::NodeFind(
+                            node_find_shape_with_traversal("User", "Authored", "Post"),
+                        )),
+                    },
+                ));
+            }
+            for request in requests {
+                let result = execute(&mut client, &handle, request).await;
+                if allow_traverse {
+                    result.unwrap();
+                } else {
+                    assert_eq!(result.unwrap_err().code(), Code::PermissionDenied);
+                }
+            }
+            shutdown.send(()).unwrap();
+            server.await.unwrap().unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn traversal_classifies_destination_models_for_query_and_direct_find() {
     let destination_policy = || {
         Arc::new(DenyResourcePolicy {
