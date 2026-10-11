@@ -4785,7 +4785,7 @@ fn node_find_security_operations(
     if force_traverse || !traversals.is_empty() {
         operations.push(SecurityOperation {
             action: SecurityAction::Traverse,
-            resource: resource(SecurityResourceKind::NodeModel, Some(root_model)),
+            resource: resource(SecurityResourceKind::OperationFamily, None),
         });
     }
     for traversal in traversals {
