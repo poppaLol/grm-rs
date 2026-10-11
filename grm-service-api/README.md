@@ -55,5 +55,13 @@ The checked service-backed client path uses binary local autocommit workspace
 files by default. JSON remains available when a caller explicitly requests the
 JSON durability format. The supported durability target is single-writer local
 filesystem behavior for service-managed workspaces, not hosted durability or
-multi-writer coordination; see
+multi-process writer coordination; see
 [Local Durability Target Class](../docs/local-durability-target.md).
+
+Within one service instance, handles opened for the same workspace file share
+one live workspace. Requests run under the service lock, so clients see each
+other's completed writes and use the same ID counters. Closing one handle does
+not close the others; after the last handle closes, the next open reloads the
+workspace from disk. In-memory workspaces and snapshot opens remain independent.
+Run only one service writer for a workspace root; separate service processes or
+direct local writers are not coordinated by this handle sharing.
