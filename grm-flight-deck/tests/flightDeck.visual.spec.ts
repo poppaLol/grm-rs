@@ -485,6 +485,61 @@ test.describe("flight-deck Visual Design Space", () => {
     });
   }
 
+  for (const workspace of ["flight-deck-demo", "project-memory"]) {
+    test(`service workspace ${workspace} shows bounded evidence and preserves layout overrides`, async ({ page }) => {
+      const base = fixtureSnapshot.summary!;
+      const reason = "1 node models exceeded the per-model snapshot limit";
+      const snapshot = {
+        ...fixtureSnapshot,
+        workspace,
+        modelLimit: 20,
+        partialReason: reason,
+        summary: {
+          ...base,
+          workspace,
+          backend: "inmemory",
+          fullWorkspace: {
+            ...base.fullWorkspace,
+            nodeCount: base.fullWorkspace.nodeCount + 100,
+            nodeCounts: { ...base.fullWorkspace.nodeCounts, WorkSlice: base.fullWorkspace.nodeCounts.WorkSlice + 100 }
+          },
+          completeness: { ...base.completeness, modelLimit: 20, complete: false, truncatedNodeModels: ["WorkSlice"], reason }
+        }
+      };
+      await page.route("**/api/**", async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        const payload = path.endsWith("/snapshot") ? snapshot
+          : path.endsWith("/visual-projection") ? { ...fixtureVisualProjection, workspace }
+          : path.endsWith("/audit/status") ? fixtureSecurityAuditStatus : fixtureSecurityStatus;
+        await route.fulfill({ json: payload });
+      });
+      await page.getByRole("button", { name: "Change connection" }).click();
+      const dialog = page.getByRole("dialog", { name: "Connection settings" });
+      await dialog.getByLabel("Fixture").uncheck();
+      await dialog.getByRole("textbox", { name: "Workspace" }).fill(workspace);
+      await dialog.getByRole("button", { name: "Save profile" }).click();
+      await dialog.getByRole("button", { name: "Connect", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await openSchemaMode(page);
+      const evidence = page.getByRole("region", { name: "Visual projection", exact: true }).locator(".snapshot-evidence");
+      await expect(evidence.getByText(`${base.fullWorkspace.nodeCount + 100} nodes / ${base.fullWorkspace.edgeCount} relationships`, { exact: true })).toBeVisible();
+      await expect(evidence.getByText(`${fixtureSnapshot.nodes.length} nodes / ${fixtureSnapshot.edges.length} relationships`, { exact: true })).toBeVisible();
+      await expect(evidence.getByText("20 per model", { exact: true })).toBeVisible();
+      await expect(evidence.getByText(reason, { exact: true })).toBeVisible();
+      await openDesignMode(page);
+      const layout = designSpace(page).getByRole("region", { name: "Layout Mode" });
+      await expect(layout.getByRole("button", { name: "Container/map" })).toHaveClass(/active/);
+      expect((await renderedGraph(page)).nodes.filter((node) => node.classes.includes("visual-container"))).toHaveLength(5);
+      await layout.getByRole("button", { name: "Edge-network" }).click();
+      await page.reload();
+      // Service profiles persist settings, but reconnect explicitly after reload.
+      await page.getByRole("button", { name: "Connect", exact: true }).click();
+      await expect(page.getByText(/service snapshot:/i)).toBeVisible();
+      await openDesignMode(page);
+      await expect(designSpace(page).getByRole("region", { name: "Layout Mode" }).getByRole("button", { name: "Edge-network" })).toHaveClass(/active/);
+    });
+  }
+
   test("persists local overlays by profile and workspace only", async ({ page }) => {
     await openDesignMode(page);
     await makeNodeAndContainerOverride(page, "PM roadmap");

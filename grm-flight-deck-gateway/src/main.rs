@@ -100,6 +100,7 @@ struct FlightDeckLayoutProjection {
 #[serde(rename_all = "camelCase")]
 struct FlightDeckSnapshot {
     workspace: String,
+    summary: FlightDeckWorkspaceSummary,
     node_models: Vec<String>,
     edge_models: Vec<String>,
     schema_node_models: Vec<FlightDeckSchemaNodeModel>,
@@ -109,6 +110,68 @@ struct FlightDeckSnapshot {
     edges: Vec<FlightDeckEdge>,
     model_limit: usize,
     omitted_edges: usize,
+    partial_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckWorkspaceSummary {
+    workspace: String,
+    backend: String,
+    full_workspace: FlightDeckWorkspaceTotals,
+    loaded_snapshot: FlightDeckSnapshotTotals,
+    completeness: FlightDeckSnapshotCompleteness,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckWorkspaceTotals {
+    node_count: u64,
+    edge_count: u64,
+    node_model_count: u64,
+    edge_model_count: u64,
+    node_counts: BTreeMap<String, u64>,
+    edge_counts: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckSnapshotTotals {
+    node_count: usize,
+    edge_count: usize,
+    node_counts: BTreeMap<String, usize>,
+    edge_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FlightDeckSnapshotCompleteness {
+    model_limit: usize,
+    truncated_node_models: Vec<String>,
+    truncated_edge_models: Vec<String>,
+    omitted_edges: usize,
+    complete: bool,
+    reason: Option<String>,
+}
+
+struct FlightDeckSummaryInput {
+    scope: FlightDeckSummaryScope,
+    loaded_node_counts: BTreeMap<String, usize>,
+    loaded_edge_counts: BTreeMap<String, usize>,
+    loaded_node_count: usize,
+    loaded_edge_count: usize,
+    model_limit: usize,
+    omitted_edges: usize,
+}
+
+enum FlightDeckSummaryScope {
+    WorkspaceSnapshot {
+        fetched_edge_counts: BTreeMap<String, usize>,
+    },
+    QueryResult {
+        truncated_node_models: Vec<String>,
+        truncated_edge_models: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -479,6 +542,7 @@ async fn collect_query_result(
     parsed: ParsedFlightDeckQuery,
 ) -> Result<FlightDeckQueryResponse, GrpcWorkspaceClientError> {
     let schema = client.schema_list().await?;
+    let summary = client.summary().await?;
     let schema_node_models = schema
         .node_models
         .iter()
@@ -516,9 +580,23 @@ async fn collect_query_result(
         })
         .collect::<Vec<_>>();
 
-    let (nodes, edges, omitted_edges, partial_reason) = match &parsed.plan {
+    let (nodes, edges, omitted_edges, scope) = match &parsed.plan {
         FlightDeckQueryPlan::NodeFind(request) => {
-            let found = client.find_node_results(request.clone()).await?;
+            // Probe one extra matching row, preserving the query's filters,
+            // traversal, ordering and offset. Workspace totals cannot establish
+            // whether a scoped query was truncated.
+            let limit = query_limit(&parsed.plan).unwrap_or(DEFAULT_MODEL_LIMIT);
+            let mut probe = request.clone();
+            probe.limit = Some(limit + 1);
+            let mut found = client.find_node_results(probe).await?;
+            let truncated_node_models = found
+                .nodes
+                .get(limit)
+                .cloned()
+                .map(flight_deck_node)
+                .map(|node| vec![node.model])
+                .unwrap_or_default();
+            found.nodes.truncate(limit);
             let nodes = found
                 .nodes
                 .into_iter()
@@ -543,22 +621,39 @@ async fn collect_query_result(
                     }
                 })
                 .collect::<Vec<_>>();
-            (nodes, edges, omitted_edges, None)
+            (
+                nodes,
+                edges,
+                omitted_edges,
+                FlightDeckSummaryScope::QueryResult {
+                    truncated_node_models,
+                    truncated_edge_models: Vec::new(),
+                },
+            )
         }
         FlightDeckQueryPlan::EdgeFind(request) => {
-            let found = client.find_edges(request.clone()).await?;
+            let limit = query_limit(&parsed.plan).unwrap_or(DEFAULT_MODEL_LIMIT);
+            let mut probe = request.clone();
+            probe.limit = Some(limit + 1);
+            let mut found = client.find_edges(probe).await?;
+            let truncated_edge_models = if found.edges.len() > limit {
+                vec![request.model.clone()]
+            } else {
+                Vec::new()
+            };
+            found.edges.truncate(limit);
             let (nodes, edges, omitted_edges) =
                 edge_result_with_known_endpoints(client, &schema_edge_models, request, found.edges)
                     .await?;
-            let partial_reason = if omitted_edges > 0 {
-                Some(
-                    "some edge endpoints were unavailable from the bounded typed query result"
-                        .into(),
-                )
-            } else {
-                None
-            };
-            (nodes, edges, omitted_edges, partial_reason)
+            (
+                nodes,
+                edges,
+                omitted_edges,
+                FlightDeckSummaryScope::QueryResult {
+                    truncated_node_models: Vec::new(),
+                    truncated_edge_models,
+                },
+            )
         }
     };
 
@@ -577,8 +672,25 @@ async fn collect_query_result(
         FlightDeckQueryKind::Profile => service_profile_evidence(client, &parsed.plan).await?,
     };
 
+    let loaded_node_counts = loaded_node_counts_from_flight_deck_nodes(&nodes);
+    let loaded_edge_counts = loaded_edge_counts_from_flight_deck_edges(&edges);
+    let workspace_summary = flight_deck_workspace_summary(
+        workspace.clone(),
+        summary,
+        FlightDeckSummaryInput {
+            scope,
+            loaded_node_counts,
+            loaded_edge_counts,
+            loaded_node_count: nodes.len(),
+            loaded_edge_count: edges.len(),
+            model_limit: query_limit(&parsed.plan).unwrap_or(DEFAULT_MODEL_LIMIT),
+            omitted_edges,
+        },
+    );
+    let partial_reason = workspace_summary.completeness.reason.clone();
     let result = FlightDeckSnapshot {
         workspace: workspace.clone(),
+        summary: workspace_summary,
         node_models,
         edge_models,
         schema_node_models,
@@ -588,6 +700,7 @@ async fn collect_query_result(
         edges,
         model_limit: query_limit(&parsed.plan).unwrap_or(DEFAULT_MODEL_LIMIT),
         omitted_edges,
+        partial_reason: partial_reason.clone(),
     };
 
     Ok(FlightDeckQueryResponse {
@@ -599,6 +712,22 @@ async fn collect_query_result(
         evidence,
         partial_reason,
     })
+}
+
+fn loaded_node_counts_from_flight_deck_nodes(nodes: &[FlightDeckNode]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for node in nodes {
+        *counts.entry(node.model.clone()).or_default() += 1;
+    }
+    counts
+}
+
+fn loaded_edge_counts_from_flight_deck_edges(edges: &[FlightDeckEdge]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for edge in edges {
+        *counts.entry(edge.model.clone()).or_default() += 1;
+    }
+    counts
 }
 
 fn flight_deck_security_status(status: proto::SecurityStatusResponse) -> FlightDeckSecurityStatus {
@@ -946,6 +1075,7 @@ async fn collect_snapshot(
     model_limit: usize,
 ) -> Result<FlightDeckSnapshot, GrpcWorkspaceClientError> {
     let schema = client.schema_list().await?;
+    let summary = client.summary().await?;
     let node_models = schema
         .node_models
         .iter()
@@ -987,6 +1117,7 @@ async fn collect_snapshot(
         .collect::<Vec<_>>();
 
     let mut nodes = BTreeMap::new();
+    let mut loaded_node_counts = BTreeMap::new();
     for model in &node_models {
         let found = client
             .find_nodes(NodeFindRequest {
@@ -995,6 +1126,7 @@ async fn collect_snapshot(
                 ..Default::default()
             })
             .await?;
+        loaded_node_counts.insert(model.clone(), found.nodes.len());
         for node in found.nodes {
             nodes.insert(node.id, node);
         }
@@ -1002,6 +1134,8 @@ async fn collect_snapshot(
 
     let mut edges = BTreeMap::new();
     let mut omitted_edges = 0;
+    let mut loaded_edge_counts = BTreeMap::new();
+    let mut fetched_edge_counts = BTreeMap::new();
     for model in &edge_models {
         let found = client
             .find_edges(EdgeFindRequest {
@@ -1010,13 +1144,33 @@ async fn collect_snapshot(
                 ..Default::default()
             })
             .await?;
+        fetched_edge_counts.insert(model.clone(), found.edges.len());
         let (included, omitted) = include_edges_with_known_endpoints(&nodes, found.edges);
+        loaded_edge_counts.insert(model.clone(), included.len());
         edges.extend(included);
         omitted_edges += omitted;
     }
 
+    let workspace_summary = flight_deck_workspace_summary(
+        workspace.clone(),
+        summary,
+        FlightDeckSummaryInput {
+            scope: FlightDeckSummaryScope::WorkspaceSnapshot {
+                fetched_edge_counts,
+            },
+            loaded_node_counts,
+            loaded_edge_counts,
+            loaded_node_count: nodes.len(),
+            loaded_edge_count: edges.len(),
+            model_limit,
+            omitted_edges,
+        },
+    );
+    let partial_reason = workspace_summary.completeness.reason.clone();
+
     Ok(FlightDeckSnapshot {
         workspace,
+        summary: workspace_summary,
         node_models,
         edge_models,
         schema_node_models,
@@ -1026,7 +1180,121 @@ async fn collect_snapshot(
         edges: edges.into_values().map(flight_deck_edge).collect(),
         model_limit,
         omitted_edges,
+        partial_reason,
     })
+}
+
+fn flight_deck_workspace_summary(
+    workspace: String,
+    summary: grm_rs::RuntimeSummaryResponse,
+    loaded: FlightDeckSummaryInput,
+) -> FlightDeckWorkspaceSummary {
+    let full_node_counts = summary
+        .node_counts
+        .iter()
+        .map(|count| (count.model.clone(), count.count))
+        .collect::<BTreeMap<_, _>>();
+    let full_edge_counts = summary
+        .edge_counts
+        .iter()
+        .map(|count| (count.model.clone(), count.count))
+        .collect::<BTreeMap<_, _>>();
+    let (truncated_node_models, truncated_edge_models, limit_description) = match loaded.scope {
+        FlightDeckSummaryScope::WorkspaceSnapshot {
+            fetched_edge_counts,
+        } => {
+            let truncated_node_models = full_node_counts
+                .iter()
+                .filter_map(|(model, count)| {
+                    let loaded_count = loaded
+                        .loaded_node_counts
+                        .get(model)
+                        .copied()
+                        .unwrap_or_default() as u64;
+                    (*count > loaded_count).then(|| model.clone())
+                })
+                .collect::<Vec<_>>();
+            let truncated_edge_models = full_edge_counts
+                .iter()
+                .filter_map(|(model, count)| {
+                    // Endpoint omissions are reported separately. Only the
+                    // fetch bound establishes per-model relationship truncation.
+                    let fetched_count =
+                        fetched_edge_counts.get(model).copied().unwrap_or_default() as u64;
+                    (*count > fetched_count).then(|| model.clone())
+                })
+                .collect::<Vec<_>>();
+            (
+                truncated_node_models,
+                truncated_edge_models,
+                "per-model snapshot limit",
+            )
+        }
+        FlightDeckSummaryScope::QueryResult {
+            truncated_node_models,
+            truncated_edge_models,
+        } => (
+            truncated_node_models,
+            truncated_edge_models,
+            "query result limit",
+        ),
+    };
+    let complete = truncated_node_models.is_empty()
+        && truncated_edge_models.is_empty()
+        && loaded.omitted_edges == 0;
+    let reason = if complete {
+        None
+    } else {
+        let mut parts = Vec::new();
+        if !truncated_node_models.is_empty() {
+            parts.push(format!(
+                "{} node models exceeded the {}",
+                truncated_node_models.len(),
+                limit_description
+            ));
+        }
+        if !truncated_edge_models.is_empty() {
+            parts.push(format!(
+                "{} relationship models exceeded the {}",
+                truncated_edge_models.len(),
+                limit_description
+            ));
+        }
+        if loaded.omitted_edges > 0 {
+            parts.push(format!(
+                "{} relationships were omitted because one or both endpoints were outside the loaded node snapshot",
+                loaded.omitted_edges
+            ));
+        }
+        Some(parts.join("; "))
+    };
+
+    FlightDeckWorkspaceSummary {
+        workspace,
+        backend: summary.backend.clone(),
+        full_workspace: FlightDeckWorkspaceTotals {
+            node_count: summary.node_count,
+            edge_count: summary.edge_count,
+            node_model_count: summary.node_model_count,
+            edge_model_count: summary.edge_model_count,
+            node_counts: full_node_counts,
+            edge_counts: full_edge_counts,
+        },
+        loaded_snapshot: FlightDeckSnapshotTotals {
+            node_count: loaded.loaded_node_count,
+            edge_count: loaded.loaded_edge_count,
+            node_counts: loaded.loaded_node_counts,
+            edge_counts: loaded.loaded_edge_counts,
+        },
+        completeness: FlightDeckSnapshotCompleteness {
+            model_limit: loaded.model_limit,
+            truncated_node_models,
+            truncated_edge_models,
+            omitted_edges: loaded.omitted_edges,
+            complete,
+            reason,
+        },
+    }
 }
 
 async fn edge_result_with_known_endpoints(
@@ -1700,6 +1968,32 @@ mod tests {
     async fn close_error_after_success_is_reported() {
         let snapshot = super::FlightDeckSnapshot {
             workspace: "demo".into(),
+            summary: super::FlightDeckWorkspaceSummary {
+                workspace: "demo".into(),
+                backend: "test".into(),
+                full_workspace: super::FlightDeckWorkspaceTotals {
+                    node_count: 0,
+                    edge_count: 0,
+                    node_model_count: 0,
+                    edge_model_count: 0,
+                    node_counts: BTreeMap::new(),
+                    edge_counts: BTreeMap::new(),
+                },
+                loaded_snapshot: super::FlightDeckSnapshotTotals {
+                    node_count: 0,
+                    edge_count: 0,
+                    node_counts: BTreeMap::new(),
+                    edge_counts: BTreeMap::new(),
+                },
+                completeness: super::FlightDeckSnapshotCompleteness {
+                    model_limit: 1,
+                    truncated_node_models: Vec::new(),
+                    truncated_edge_models: Vec::new(),
+                    omitted_edges: 0,
+                    complete: true,
+                    reason: None,
+                },
+            },
             node_models: Vec::new(),
             edge_models: Vec::new(),
             schema_node_models: Vec::new(),
@@ -1709,6 +2003,7 @@ mod tests {
             edges: Vec::new(),
             model_limit: 1,
             omitted_edges: 0,
+            partial_reason: None,
         };
         let close = async { Err(GrpcWorkspaceClientError::UnexpectedResponse("close")) };
 

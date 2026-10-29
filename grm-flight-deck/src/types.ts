@@ -44,6 +44,7 @@ export interface FlightDeckEdge {
 
 export interface FlightDeckSnapshot {
   workspace: string;
+  summary?: FlightDeckWorkspaceSummary;
   nodeModels: string[];
   edgeModels: string[];
   schemaNodeModels?: FlightDeckSchemaNodeModel[];
@@ -55,6 +56,40 @@ export interface FlightDeckSnapshot {
   omittedEdges: number;
   source: "service" | "fixture";
   partialReason?: string;
+}
+
+export interface FlightDeckWorkspaceSummary {
+  workspace: string;
+  backend: string;
+  fullWorkspace: FlightDeckWorkspaceTotals;
+  loadedSnapshot: FlightDeckSnapshotTotals;
+  completeness: FlightDeckSnapshotCompleteness;
+}
+
+export interface FlightDeckWorkspaceTotals {
+  nodeCount: number;
+  edgeCount: number;
+  nodeModelCount: number;
+  edgeModelCount: number;
+  nodeCounts: Record<string, number>;
+  edgeCounts: Record<string, number>;
+}
+
+export interface FlightDeckSnapshotTotals {
+  nodeCount: number;
+  edgeCount: number;
+  nodeCounts: Record<string, number>;
+  edgeCounts: Record<string, number>;
+}
+
+export interface FlightDeckSnapshotCompleteness {
+  // Relative to matching rows for a query response, or the full workspace for a snapshot.
+  modelLimit: number;
+  truncatedNodeModels: string[];
+  truncatedEdgeModels: string[];
+  omittedEdges: number;
+  complete: boolean;
+  reason?: string | null;
 }
 
 
