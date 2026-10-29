@@ -53,6 +53,54 @@ const securityControls = [
 
 export const fixtureSnapshot: FlightDeckSnapshot = {
   workspace: "flight-deck-demo",
+  summary: {
+    workspace: "flight-deck-demo",
+    backend: "fixture",
+    fullWorkspace: {
+      nodeCount: 1 + roadmapItems.length + workSlices.length + securityRequirements.length + securityControls.length,
+      edgeCount: roadmapItems.length + workSlices.length + workSlices.reduce((total, slice) => total + slice.requirements.length + slice.controls.length, 0),
+      nodeModelCount: 5,
+      edgeModelCount: 4,
+      nodeCounts: {
+        ProductContext: 1,
+        RoadmapItem: roadmapItems.length,
+        WorkSlice: workSlices.length,
+        SecurityRequirement: securityRequirements.length,
+        SecurityControl: securityControls.length
+      },
+      edgeCounts: {
+        HAS_ROADMAP_ITEM: roadmapItems.length,
+        HAS_WORK_SLICE: workSlices.length,
+        SLICE_ADDRESSES_SECURITY_REQUIREMENT: workSlices.reduce((total, slice) => total + slice.requirements.length, 0),
+        SLICE_TARGETS_SECURITY_CONTROL: workSlices.reduce((total, slice) => total + slice.controls.length, 0)
+      }
+    },
+    loadedSnapshot: {
+      nodeCount: 1 + roadmapItems.length + workSlices.length + securityRequirements.length + securityControls.length,
+      edgeCount: roadmapItems.length + workSlices.length + workSlices.reduce((total, slice) => total + slice.requirements.length + slice.controls.length, 0),
+      nodeCounts: {
+        ProductContext: 1,
+        RoadmapItem: roadmapItems.length,
+        WorkSlice: workSlices.length,
+        SecurityRequirement: securityRequirements.length,
+        SecurityControl: securityControls.length
+      },
+      edgeCounts: {
+        HAS_ROADMAP_ITEM: roadmapItems.length,
+        HAS_WORK_SLICE: workSlices.length,
+        SLICE_ADDRESSES_SECURITY_REQUIREMENT: workSlices.reduce((total, slice) => total + slice.requirements.length, 0),
+        SLICE_TARGETS_SECURITY_CONTROL: workSlices.reduce((total, slice) => total + slice.controls.length, 0)
+      }
+    },
+    completeness: {
+      modelLimit: 50,
+      truncatedNodeModels: [],
+      truncatedEdgeModels: [],
+      omittedEdges: 0,
+      complete: true,
+      reason: null
+    }
+  },
   nodeModels: [
     "ProductContext",
     "RoadmapItem",

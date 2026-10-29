@@ -272,7 +272,7 @@ export function createFlightDeckGraphStore(storage?: StorageLike): FlightDeckGra
         normalizedSnapshot: normalizeSnapshot(snapshot),
         connectionStatus: "connected",
         status: `${snapshot.source} snapshot:`,
-        statusDetail: `${snapshot.nodes.length} nodes / ${snapshot.edges.length} edges / limit ${snapshot.modelLimit}`,
+        statusDetail: snapshotStatusDetail(snapshot),
         lastError: "",
         lastExecutedQuery: null,
         events: eventsForSnapshot(snapshot, state.visibleSnapshot)
@@ -735,6 +735,16 @@ function executionResultState(context: QueryExecutionContext): string {
   }
 
   return `${context.visibleNodes} visible nodes, ${context.omittedEdges} omitted edges`;
+}
+
+function snapshotStatusDetail(snapshot: FlightDeckSnapshot): string {
+  const loaded = `${snapshot.nodes.length} nodes / ${snapshot.edges.length} edges / limit ${snapshot.modelLimit}`;
+  const full = snapshot.summary?.fullWorkspace;
+  if (!full) {
+    return loaded;
+  }
+  const completeness = snapshot.summary?.completeness.complete ? "complete" : "bounded";
+  return `${loaded} / full ${full.nodeCount} nodes / ${full.edgeCount} edges / ${completeness}`;
 }
 
 function schemaEdgeCountForSnapshot(snapshot: FlightDeckSnapshot | null): number {

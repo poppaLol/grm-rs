@@ -44,9 +44,15 @@ export async function fetchSnapshot(
   signal?: AbortSignal
 ): Promise<FlightDeckSnapshot> {
   if (settings.useFixtureData) {
+    const workspace = settings.workspace.trim() || fixtureSnapshot.workspace;
     return {
       ...fixtureSnapshot,
-      workspace: settings.workspace.trim() || fixtureSnapshot.workspace,
+      workspace,
+      summary: fixtureSnapshot.summary ? {
+        ...fixtureSnapshot.summary,
+        workspace,
+        completeness: { ...fixtureSnapshot.summary.completeness, modelLimit: settings.limit }
+      } : undefined,
       modelLimit: settings.limit
     };
   }
