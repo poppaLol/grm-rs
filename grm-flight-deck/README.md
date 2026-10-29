@@ -214,6 +214,24 @@ stays available; selecting a different preset or using the restore icon
 reapplies automatic layout and clears the asterisk. Manual positions are
 canvas-local and are not saved to the datasource or persisted across reloads.
 
+Query response completeness applies to the matching query result, including its
+filters, traversal, and offset. The gateway checks one extra matching row to
+detect a query limit, then returns only the requested number of rows. A result
+can be complete while smaller than the full workspace; workspace totals remain
+available separately. Snapshot completeness instead compares the bounded
+per-model load with the full workspace. Either response reports relationships
+omitted because their endpoints could not be loaded.
+
+Loaded relationship counts include only edges whose endpoints are present in the
+loaded graph. Fetch-limit truncation and endpoint omissions are reported
+separately. Service-backed RoadmapItem/WorkSlice schemas receive a browser-local
+container-map default through HAS_WORK_SLICE; fixture workspaces retain their
+existing defaults regardless of name. Explicit local layout choices take
+precedence.
+
+Gateway HTTP regression tests use an isolated service and temporary workspace:
+`cargo test -p grm-flight-deck-gateway`.
+
 ## Browser Regression Tests
 
 Run `npm run test:e2e` from `grm-flight-deck`. Playwright uses local fixtures,

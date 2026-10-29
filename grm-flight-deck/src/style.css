@@ -806,6 +806,20 @@ button:disabled {
   color: #98aaa9;
 }
 
+.snapshot-evidence {
+  display: grid;
+  gap: 0.45rem;
+  border-top: 1px solid #263139;
+  padding-top: 0.55rem;
+}
+
+.projection-warning {
+  margin: 0;
+  color: #f0c46f;
+  font-size: 0.72rem;
+  line-height: 1.15rem;
+}
+
 .projection-panel dl {
   display: grid;
   grid-template-columns: 4.5rem minmax(0, 1fr);
