@@ -116,9 +116,30 @@ function ProjectionPanel({
         </p>
       )}
       {snapshot && (
-        <p className="projection-footnote">
-          Current snapshot: {snapshot.source}, {snapshot.nodes.length} nodes / {snapshot.edges.length} edges.
-        </p>
+        <div className="snapshot-evidence">
+          <p className="projection-footnote">
+            Loaded snapshot: {snapshot.source}, {snapshot.nodes.length} nodes / {snapshot.edges.length} edges.
+          </p>
+          {snapshot.summary && (
+            <dl>
+              <dt>Workspace</dt>
+              <dd>{snapshot.summary.workspace}</dd>
+              <dt>Backend</dt>
+              <dd>{snapshot.summary.backend}</dd>
+              <dt>Full graph</dt>
+              <dd>{snapshot.summary.fullWorkspace.nodeCount} nodes / {snapshot.summary.fullWorkspace.edgeCount} relationships</dd>
+              <dt>Loaded</dt>
+              <dd>{snapshot.summary.loadedSnapshot.nodeCount} nodes / {snapshot.summary.loadedSnapshot.edgeCount} relationships</dd>
+              <dt>Bound</dt>
+              <dd>{snapshot.summary.completeness.modelLimit} per model</dd>
+              <dt>Complete</dt>
+              <dd>{snapshot.summary.completeness.complete ? "yes" : "bounded"}</dd>
+            </dl>
+          )}
+          {snapshot.summary?.completeness.reason && (
+            <p className="projection-warning">{snapshot.summary.completeness.reason}</p>
+          )}
+        </div>
       )}
     </section>
   );
@@ -413,6 +434,40 @@ function compactRecord<T extends object>(record: Record<string, T>): Record<stri
   );
 }
 
+function overlayWithGeneratedWorkbenchDefaults(
+  overlay: VisualProjectionOverlay,
+  projection: FlightDeckVisualProjection | null,
+  source: FlightDeckSnapshot["source"] | undefined
+): VisualProjectionOverlay {
+  const hasWorkSlice = projection?.edgeModels.find((edge) =>
+    edge.model === "HAS_WORK_SLICE" &&
+    edge.fromModel === "RoadmapItem" &&
+    edge.toModel === "WorkSlice"
+  );
+  if (source !== "service" || !hasWorkSlice || overlay.containers["edge:HAS_WORK_SLICE"]) {
+    return overlay;
+  }
+
+  return {
+    ...overlay,
+    containers: {
+      "edge:HAS_WORK_SLICE": {
+        parentModel: "RoadmapItem",
+        childModel: "WorkSlice",
+        viaEdgeModel: "HAS_WORK_SLICE",
+        renderAs: "section",
+        collapse: "expanded",
+        styleToken: "roadmap-section"
+      },
+      ...overlay.containers
+    },
+    layout: {
+      mode: overlay.layout.mode ?? "container-map",
+      style: overlay.layout.style ?? "groups",
+      ...overlay.layout
+    }
+  };
+}
 
 function SelectionPanel({
   selected,
@@ -688,6 +743,8 @@ function QueryInsightPanels({
           <dl>
             <dt>Source rows</dt>
             <dd>{sourceRowsSummary(snapshot, graphView, lastExecutedQuery)}</dd>
+            <dt>Full workspace</dt>
+            <dd>{fullWorkspaceSummary(snapshot)}</dd>
             <dt>Visible rows</dt>
             <dd>{resultShapeSummary(snapshot, visibleSnapshot, graphView, lastExecutedQuery)}</dd>
             {queryEvidence?.provenance === "service" && (
@@ -703,7 +760,7 @@ function QueryInsightPanels({
             <dt>Omitted edges</dt>
             <dd>{lastExecutedQuery?.omittedEdges ?? visibleSnapshot?.omittedEdges ?? 0}</dd>
             <dt>Partial</dt>
-            <dd>{lastExecutedQuery?.partialReason ?? visibleSnapshot?.partialReason ? "yes" : "no"}</dd>
+            <dd>{lastExecutedQuery?.partialReason ?? visibleSnapshot?.partialReason ?? snapshot?.summary?.completeness.reason ?? "no"}</dd>
           </dl>
         </section>
       )}
@@ -825,6 +882,11 @@ function sourceRowsSummary(
   return graphView === "schema"
     ? `${snapshot.nodeModels.length} models / ${schemaEdgeCount(snapshot)} schema edges`
     : `${snapshot.nodes.length} nodes / ${snapshot.edges.length} edges`;
+}
+
+function fullWorkspaceSummary(snapshot: FlightDeckSnapshot | null): string {
+  const full = snapshot?.summary?.fullWorkspace;
+  return full ? `${full.nodeCount} nodes / ${full.edgeCount} relationships` : "not reported";
 }
 
 function schemaEdgeCount(snapshot: FlightDeckSnapshot): number {
@@ -998,9 +1060,13 @@ export function App() {
     () => schemaFilteredSnapshot(snapshot, schemaFilter),
     [snapshot, schemaFilter]
   );
+  const effectiveProjectionOverlay = useMemo(
+    () => overlayWithGeneratedWorkbenchDefaults(projectionOverlay, visualProjection, snapshot?.source),
+    [projectionOverlay, visualProjection, snapshot?.source]
+  );
   const effectiveVisualProjection = useMemo(
-    () => applyVisualProjectionOverlay(visualProjection, projectionOverlay),
-    [projectionOverlay, visualProjection]
+    () => applyVisualProjectionOverlay(visualProjection, effectiveProjectionOverlay),
+    [effectiveProjectionOverlay, visualProjection]
   );
   const graphSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
   const schemaSidebarSnapshot = graphView === "schema" ? schemaGraphSnapshot : visibleSnapshot;
@@ -1400,7 +1466,7 @@ export function App() {
         <div className="design-workspace" role="tabpanel" id="workspace-panel-design" aria-labelledby="workspace-tab-design" tabIndex={0}>
           <ProjectionOverlayControls
             projection={visualProjection}
-            overlay={projectionOverlay}
+            overlay={effectiveProjectionOverlay}
             onOverlayChange={setProjectionOverlay}
             onReset={() => setProjectionOverlay(emptyVisualProjectionOverlay(selectedProfileId, settings.workspace))}
           />
@@ -1412,11 +1478,11 @@ export function App() {
               onSelect={handleSelect}
               onHover={setHovered}
               visualProjection={effectiveVisualProjection}
-              visualLayoutMode={projectionOverlay.layout.mode}
-              visualLayoutStyle={projectionOverlay.layout.style}
+              visualLayoutMode={effectiveProjectionOverlay.layout.mode}
+              visualLayoutStyle={effectiveProjectionOverlay.layout.style}
               onLayoutStyleChange={(style) => setProjectionOverlay((overlay) => ({ ...overlay, layout: { ...overlay.layout, style } }))}
               onOpenDetails={selectedItem && !selectionPanelOpen ? () => setSelectionPanelOpen(true) : undefined}
-              visualContainers={projectionOverlay.containers}
+              visualContainers={effectiveProjectionOverlay.containers}
             />
             {selectedItem && <SelectionPanel selected={selectedItem} projection={effectiveVisualProjection} open={selectionPanelOpen} onOpenChange={setSelectionPanelOpen} />}
           </div>
@@ -1571,11 +1637,11 @@ export function App() {
                   onSelect={handleSelect}
                   onHover={setHovered}
                   visualProjection={effectiveVisualProjection}
-                  visualLayoutMode={projectionOverlay.layout.mode}
-                  visualLayoutStyle={projectionOverlay.layout.style}
+                  visualLayoutMode={effectiveProjectionOverlay.layout.mode}
+                  visualLayoutStyle={effectiveProjectionOverlay.layout.style}
                   onLayoutStyleChange={(style) => setProjectionOverlay((overlay) => ({ ...overlay, layout: { ...overlay.layout, style } }))}
                   onOpenDetails={selectedItem && !selectionPanelOpen ? () => setSelectionPanelOpen(true) : undefined}
-                  visualContainers={projectionOverlay.containers}
+                  visualContainers={effectiveProjectionOverlay.containers}
                 />
                 <QueryInsightPanels
                   explainVisible={graphView === "data" && explainVisible}

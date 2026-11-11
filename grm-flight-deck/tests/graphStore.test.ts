@@ -18,6 +18,19 @@ import {
 import type { FlightDeckSnapshot, FlightDeckVisualProjection } from "../src/types";
 import { buildVisualContainerMap } from "../src/containerMap";
 import { fixtureSnapshot, fixtureVisualProjection } from "../src/fixtures";
+import { fetchSnapshot } from "../src/api";
+
+test("fixture snapshot evidence follows the selected workspace and bound", async () => {
+  const settings = createFlightDeckGraphStore().getState().settings;
+  const snapshot = await fetchSnapshot({ ...settings, useFixtureData: true, workspace: "renamed-memory", limit: 123 });
+  assert.equal(snapshot.workspace, "renamed-memory");
+  assert.equal(snapshot.summary?.workspace, "renamed-memory");
+  assert.equal(snapshot.summary?.completeness.modelLimit, snapshot.modelLimit);
+  assert.equal(snapshot.modelLimit, 123);
+  assert.equal(snapshot.summary?.fullWorkspace.nodeCount, snapshot.nodes.length);
+  assert.equal(snapshot.summary?.fullWorkspace.edgeCount, snapshot.edges.length);
+  assert.notEqual(fixtureSnapshot.workspace, snapshot.workspace);
+});
 
 test("software-delivery fixture has valid typed links, varied work, and shared requirements", () => {
   const graph = fixtureSnapshot;

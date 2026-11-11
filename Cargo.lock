@@ -783,9 +783,13 @@ dependencies = [
  "axum",
  "grm-rs",
  "grm-service-api",
+ "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "tower-http 0.5.2",
 ]
 
