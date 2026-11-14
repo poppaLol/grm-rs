@@ -24,7 +24,7 @@ contract or slipping into administration.
 
 ## Starting Point
 
-- Work in `/home/laurie/source/grm-rs`.
+- Work from the repository root.
 - Keep the existing code changes in:
   - `grm-flight-deck/src/App.tsx`
   - `grm-flight-deck/src/style.css`

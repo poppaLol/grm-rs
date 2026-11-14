@@ -52,7 +52,7 @@ Implications:
 
 ## Read First
 
-Start in `/home/laurie/source/grm-rs`.
+Start from the repository root.
 
 Read:
 

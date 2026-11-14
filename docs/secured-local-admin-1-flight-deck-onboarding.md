@@ -72,7 +72,7 @@ still listens on `127.0.0.1:8081`.
 From the repository root:
 
 ```bash
-cd /home/laurie/source/grm-rs
+cd /path/to/grm-rs
 
 examples/secured-local/start-flight-deck-demo.sh \
   --issuer local-admin \
@@ -181,7 +181,7 @@ intentionally want to regenerate or replace the local secured setup.
 Terminal 1:
 
 ```bash
-cd /home/laurie/source/grm-rs
+cd /path/to/grm-rs
 
 set -a
 . .grm/secured-local/service.env
@@ -204,7 +204,7 @@ This starts a secured local service using:
 Terminal 2:
 
 ```bash
-cd /home/laurie/source/grm-rs
+cd /path/to/grm-rs
 
 ROOT=.grm/secured-local \
 GRM_SERVICE_ENDPOINT=https://127.0.0.1:50052 \
@@ -223,7 +223,7 @@ The verification script checks that:
 Use Admin-1's client environment to create sample data for the UI:
 
 ```bash
-cd /home/laurie/source/grm-rs
+cd /path/to/grm-rs
 
 set -a
 . .grm/secured-local/client.env
@@ -241,7 +241,7 @@ and the example also accepts the endpoint as an argument.
 Terminal 3:
 
 ```bash
-cd /home/laurie/source/grm-rs
+cd /path/to/grm-rs
 
 examples/secured-local/start-flight-deck-gateway.sh
 ```
@@ -260,7 +260,7 @@ certificate and key. It exposes only bounded read-only JSON to the browser.
 Terminal 4:
 
 ```bash
-cd /home/laurie/source/grm-rs/grm-flight-deck
+cd /path/to/grm-rs/grm-flight-deck
 npm run dev
 ```
 
@@ -277,7 +277,7 @@ adapter through the Ziti fabric.
 One local shape is:
 
 ```bash
-cd /home/laurie/source/grm-rs
+cd /path/to/grm-rs
 
 GRM_FLIGHT_DECK_GATEWAY_BIND=127.0.0.1:3001 \
 GRM_FLIGHT_DECK_GATEWAY_WORKSPACE_HINT=sygnal-one-memory \
@@ -287,7 +287,7 @@ examples/secured-local/start-flight-deck-gateway.sh
 In a separate terminal:
 
 ```bash
-cd /home/laurie/source/grm-rs/grm-flight-deck
+cd /path/to/grm-rs/grm-flight-deck
 GRM_FLIGHT_DECK_DEV_PROXY_TARGET=http://127.0.0.1:3001 npm run dev -- --host 127.0.0.1 --strictPort
 ```
 
@@ -331,7 +331,7 @@ flight-deck gateway security status error: upstream request failed
 the error is intentionally redacted. Check the upstream service path directly:
 
 ```bash
-cd /home/laurie/source/grm-rs
+cd /path/to/grm-rs
 
 GRM_SERVICE_ENDPOINT=https://127.0.0.1:50052 \
 GRM_SERVICE_TLS_CA_CERT=.grm/secured-local/ca.crt \
