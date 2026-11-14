@@ -1,5 +1,8 @@
 # GRM Service API
 
+For the schema-guided migration example and optional Docker cold-backup helper,
+see [Migrating Neo4j data to GRM](../docs/neo4j-to-grm.md).
+
 `grm-service-api` is the first split-ready home for GRM's future typed service
 contract. It lives in the monorepo per ADR 0002, but the crate is deliberately
 client-facing: it contains protobuf source files, generated DTOs, and typed
