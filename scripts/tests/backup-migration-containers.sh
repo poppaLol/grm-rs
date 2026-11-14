@@ -22,8 +22,8 @@ run_dirs=("$test_dir/backups"/migration-*)
 [[ "$(stat -c %a "${run_dirs[0]}")" == 700 ]]
 [[ "$(stat -c %a "${run_dirs[0]}/neo4j-data.tar.gz")" == 600 ]]
 [[ ! -e "${run_dirs[0]}/metadata/neo4j-data.inspect.json" ]]
-rg -q '^start source-id$' "$test_dir/docker.log"
-rg -q '^start target-id$' "$test_dir/docker.log"
+grep -qx 'start source-id' "$test_dir/docker.log"
+grep -qx 'start target-id' "$test_dir/docker.log"
 export MOCK_FAIL_ARCHIVE=1
 if bash "$root/scripts/backup-migration-containers.sh" > /dev/null 2>&1; then
   echo 'Backup unexpectedly accepted failed archive' >&2; exit 1
