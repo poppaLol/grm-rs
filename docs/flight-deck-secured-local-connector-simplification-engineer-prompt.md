@@ -34,7 +34,7 @@ this local connector" without becoming a GRM deployment specialist.
 
 ## Starting Point
 
-- Work in `/home/laurie/source/grm-rs`.
+- Work from the repository root.
 - Read:
   - `docs/adr/0011-passwordless-secured-local-bootstrap.md`
   - `docs/secured-local-admin-1-flight-deck-onboarding.md`
