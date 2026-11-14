@@ -46,41 +46,65 @@ async fn http_client_with_args(
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
     tokio::process::Child,
 ) {
-    let probe = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral HTTP MCP port");
-    let addr = probe.local_addr().expect("ephemeral HTTP MCP addr");
-    drop(probe);
+    // The probed port is released before the child binds it, so a concurrently
+    // running test can take it in between and the child exits on bind failure.
+    // Retry with a fresh port in that case; a genuine startup failure exits on
+    // every attempt and still fails the test.
+    const ATTEMPTS: usize = 3;
+    for attempt in 1..=ATTEMPTS {
+        let probe = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral HTTP MCP port");
+        let addr = probe.local_addr().expect("ephemeral HTTP MCP addr");
+        drop(probe);
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_grm-mcp"));
-    command
-        .arg("--transport")
-        .arg("http")
-        .arg("--http-bind")
-        .arg(addr.to_string())
-        .arg("--http-path")
-        .arg("/mcp")
-        .kill_on_drop(true);
-    command.args(args);
-    let mut child = command.spawn().expect("spawn grm-mcp HTTP server");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_grm-mcp"));
+        command
+            .arg("--transport")
+            .arg("http")
+            .arg("--http-bind")
+            .arg(addr.to_string())
+            .arg("--http-path")
+            .arg("/mcp")
+            .kill_on_drop(true);
+        command.args(args);
+        let mut child = command.spawn().expect("spawn grm-mcp HTTP server");
 
-    let uri = format!("http://{addr}/mcp");
-    for _ in 0..20 {
-        match ().serve(StreamableHttpClientTransport::from_uri(uri.clone())).await {
-            Ok(client) => return (client, child),
-            Err(_) => {
-                if let Some(status) = child.try_wait().expect("poll HTTP MCP child") {
-                    panic!("grm-mcp HTTP server exited before accepting clients: {status}");
+        let uri = format!("http://{addr}/mcp");
+        let mut exited = None;
+        for _ in 0..20 {
+            match ().serve(StreamableHttpClientTransport::from_uri(uri.clone())).await {
+                Ok(client) => return (client, child),
+                Err(_) => {
+                    if let Some(status) = child.try_wait().expect("poll HTTP MCP child") {
+                        exited = Some(status);
+                        break;
+                    }
+                    sleep(Duration::from_millis(100)).await;
                 }
-                sleep(Duration::from_millis(100)).await;
+            }
+        }
+        match exited {
+            Some(status) if attempt < ATTEMPTS => {
+                eprintln!(
+                    "grm-mcp HTTP server on {addr} exited ({status}); retrying on a new port"
+                );
+            }
+            Some(status) => {
+                panic!(
+                    "grm-mcp HTTP server exited before accepting clients on all {ATTEMPTS} attempts: {status}"
+                );
+            }
+            None => {
+                child
+                    .kill()
+                    .await
+                    .expect("kill unresponsive HTTP MCP child");
+                panic!("grm-mcp HTTP server did not accept clients on {uri}");
             }
         }
     }
-    child
-        .kill()
-        .await
-        .expect("kill unresponsive HTTP MCP child");
-    panic!("grm-mcp HTTP server did not accept clients on {uri}");
+    unreachable!("every attempt returns, retries, or panics")
 }
 
 async fn neo4j_client() -> Option<rmcp::service::RunningService<rmcp::RoleClient, ()>> {
