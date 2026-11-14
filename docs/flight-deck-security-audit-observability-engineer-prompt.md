@@ -60,7 +60,7 @@ Implementation truth:
 
 ## Starting Point
 
-- Work in `/home/laurie/source/grm-rs`.
+- Work from the repository root.
 - Read the current security and flight-deck context before editing:
   - `docs/adr/0008-bounded-authoritative-security-audit.md`
   - `docs/adr/0009-grm-native-audit-log-store.md`
