@@ -1868,7 +1868,7 @@ mod tests {
 
     #[test]
     fn public_gateway_errors_do_not_include_local_tls_paths() {
-        let path = PathBuf::from("/home/laurie/.grm/secured-local/admin-1.key");
+        let path = PathBuf::from("/home/operator/.grm/secured-local/admin-1.key");
         let error = GrpcWorkspaceClientError::TlsConfig(GrpcTlsConfigError::ReadFile {
             path: path.clone(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing test file"),
