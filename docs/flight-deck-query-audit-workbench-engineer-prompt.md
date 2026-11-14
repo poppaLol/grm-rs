@@ -232,4 +232,3 @@ The PM review should check:
 - whether a new work slice should be recorded for real service-backed
   query/explain/profile/audit data; and
 - whether docs and graph memory need updates after merge.
-
