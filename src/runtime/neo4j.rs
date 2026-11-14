@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
@@ -10,9 +11,11 @@ use crate::error::{GrmError, Result};
 use super::{
     DurableOperation, EdgeCreateRequest, EdgeDeleteRequest, EdgeFindRequest, EdgeUpdateRequest,
     NodeCreateRequest, NodeDeleteRequest, NodeFindRequest, NodeUpdateRequest, OrderDirection,
-    OrderSpec, PredicateOp, PropertyPredicate, RuntimeField, RuntimeNodeModel, RuntimeRelModel,
-    RuntimeValueType, SessionBatchEndpoint, SessionBatchFieldParam, SessionBatchOp,
-    SessionBatchParams, SessionBatchResponse, SessionState,
+    OrderSpec, PredicateOp, PrimitiveKind, PropertyPredicate, RuntimeField, RuntimeNodeModel,
+    RuntimeRelModel, RuntimeValueType, SessionBatchEndpoint, SessionBatchFieldParam,
+    SessionBatchOp, SessionBatchParams, SessionBatchResponse, SessionState,
+    compare_typed_value_order, compare_typed_values, parse_typed_value, typed_value_kind,
+    typed_value_payload, validate_value_for_kind,
 };
 
 #[derive(Debug)]
@@ -26,17 +29,18 @@ pub async fn neo4j_node_create(
     state: &SessionState,
     request: NodeCreateRequest,
 ) -> Result<StoredNode> {
-    let raw = value_map_to_raw(request.props)?;
     let model = node_model(state, &request.model)?;
-    ensure_neo4j_fields_supported(&model.fields)?;
-    let props = model.validate_instance_input(&raw)?;
+    let props = encode_props_for_neo4j(
+        &model.fields,
+        &normalize_props_for_fields("model", &model.name, &model.fields, &request.props, true)?,
+    )?;
     let mut tx = client.transaction().await?;
     let node = tx
         .tx_mut()?
         .create_node(vec![model.label.clone()], props)
         .await?;
     tx.commit().await?;
-    Ok(node)
+    decode_node_props(node, &model)
 }
 
 pub async fn neo4j_node_update(
@@ -44,14 +48,12 @@ pub async fn neo4j_node_update(
     state: &SessionState,
     request: NodeUpdateRequest,
 ) -> Result<StoredNode> {
-    let raw = value_map_to_raw(request.props)?;
     let model = node_model(state, &request.model)?;
-    ensure_neo4j_fields_supported(&model.fields)?;
-    let props = node_update_props(&model, &raw)?;
+    let props = node_update_props(&model, &request.props)?;
     let mut tx = client.transaction().await?;
     let node = update_node(&mut tx, request.id, &model, props).await?;
     tx.commit().await?;
-    Ok(node)
+    decode_node_props(node, &model)
 }
 
 pub async fn neo4j_node_delete(
@@ -88,26 +90,25 @@ pub async fn neo4j_node_find(
         filters.push("id(n) = $grm_id".to_string());
         params.insert("grm_id".to_string(), Value::from(id));
     }
-    for (index, (predicate, value)) in predicates.into_iter().enumerate() {
-        filters.push(format!(
-            "n.{} {} $p{index}",
-            cypher_name(&predicate.field),
-            cypher_predicate_op(predicate.op)
-        ));
-        params.insert(format!("p{index}"), value);
-    }
+    append_pushdown_predicates(&mut filters, &mut params, "n", &predicates, &model.fields)?;
     if !filters.is_empty() {
         clauses.push(format!("WHERE {}", filters.join(" AND ")));
     }
     clauses.push("RETURN n".to_string());
-    append_order_page(
-        &mut clauses,
-        &mut params,
-        &request.order,
-        request.offset,
-        request.limit,
-        |spec| cypher_node_order_expression(spec, &model.id_field_name),
-    );
+    let requires_post_processing = predicates
+        .iter()
+        .any(|(predicate, _)| !predicate_can_push_down(predicate, &model.fields))
+        || !node_order_can_push_down(&request.order, &model);
+    if !requires_post_processing {
+        append_order_page(
+            &mut clauses,
+            &mut params,
+            &request.order,
+            request.offset,
+            request.limit,
+            |spec| cypher_node_order_expression(spec, &model.id_field_name),
+        );
+    }
 
     let mut tx = client.transaction().await?;
     let result = tx
@@ -115,21 +116,31 @@ pub async fn neo4j_node_find(
         .execute_query(&clauses.join(" "), Value::Object(params))
         .await?;
     tx.commit().await?;
-    result
+    let mut nodes = result
         .rows
         .into_iter()
         .filter_map(|row| row.values.into_values().next())
         .map(|value| match value {
-            KernelValue::Node(node) => Ok(StoredNode {
-                id: node.id,
-                labels: node.labels,
-                props: node.props,
-            }),
+            KernelValue::Node(node) => decode_node_props(
+                StoredNode {
+                    id: node.id,
+                    labels: node.labels,
+                    props: node.props,
+                },
+                &model,
+            ),
             _ => Err(GrmError::Mapping(
                 "Neo4j node find returned a non-node value".into(),
             )),
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    if requires_post_processing {
+        nodes.retain(|node| predicates_match(&node.props, &predicates));
+        sort_nodes(&mut nodes, &model, &request.order);
+        Ok(page(nodes, request.offset, request.limit))
+    } else {
+        Ok(nodes)
+    }
 }
 
 pub async fn neo4j_edge_create(
@@ -137,8 +148,8 @@ pub async fn neo4j_edge_create(
     state: &SessionState,
     request: EdgeCreateRequest,
 ) -> Result<StoredRel> {
-    let raw = value_map_to_raw(request.props)?;
-    let (model, from_label, to_label, props) = validated_edge_create(state, &request.model, raw)?;
+    let (model, from_label, to_label, props) =
+        validated_edge_create(state, &request.model, &request.props)?;
     let mut tx = client.transaction().await?;
     validate_endpoint(
         &mut tx,
@@ -154,7 +165,7 @@ pub async fn neo4j_edge_create(
         .create_relationship(request.from, request.to, &model.rel_type, props)
         .await?;
     tx.commit().await?;
-    Ok(edge)
+    decode_rel_props(edge, &model)
 }
 
 pub async fn neo4j_edge_update(
@@ -162,13 +173,12 @@ pub async fn neo4j_edge_update(
     state: &SessionState,
     request: EdgeUpdateRequest,
 ) -> Result<StoredRel> {
-    let raw = value_map_to_raw(request.props)?;
     let model = rel_model(state, &request.model)?;
-    let props = edge_update_props(&model, &raw)?;
+    let props = edge_update_props(&model, &request.props)?;
     let mut tx = client.transaction().await?;
     let edge = update_edge(&mut tx, request.id, &model, props).await?;
     tx.commit().await?;
-    Ok(edge)
+    decode_rel_props(edge, &model)
 }
 
 pub async fn neo4j_edge_delete(
@@ -212,26 +222,25 @@ pub async fn neo4j_edge_find(
         filters.push("id(endNode(r)) = $to_id".to_string());
         params.insert("to_id".to_string(), Value::from(id));
     }
-    for (index, (predicate, value)) in predicates.into_iter().enumerate() {
-        filters.push(format!(
-            "r.{} {} $p{index}",
-            cypher_name(&predicate.field),
-            cypher_predicate_op(predicate.op)
-        ));
-        params.insert(format!("p{index}"), value);
-    }
+    append_pushdown_predicates(&mut filters, &mut params, "r", &predicates, &model.fields)?;
     if !filters.is_empty() {
         clauses.push(format!("WHERE {}", filters.join(" AND ")));
     }
     clauses.push("RETURN r".to_string());
-    append_order_page(
-        &mut clauses,
-        &mut params,
-        &request.order,
-        request.offset,
-        request.limit,
-        |spec| cypher_edge_order_expression(spec, &model.id_field_name),
-    );
+    let requires_post_processing = predicates
+        .iter()
+        .any(|(predicate, _)| !predicate_can_push_down(predicate, &model.fields))
+        || !edge_order_can_push_down(&request.order, &model);
+    if !requires_post_processing {
+        append_order_page(
+            &mut clauses,
+            &mut params,
+            &request.order,
+            request.offset,
+            request.limit,
+            |spec| cypher_edge_order_expression(spec, &model.id_field_name),
+        );
+    }
 
     let mut tx = client.transaction().await?;
     let result = tx
@@ -239,23 +248,33 @@ pub async fn neo4j_edge_find(
         .execute_query(&clauses.join(" "), Value::Object(params))
         .await?;
     tx.commit().await?;
-    result
+    let mut rels = result
         .rows
         .into_iter()
         .filter_map(|row| row.values.into_values().next())
         .map(|value| match value {
-            KernelValue::Rel(rel) => Ok(StoredRel {
-                id: rel.id,
-                rel_type: rel.ty,
-                from: rel.from,
-                to: rel.to,
-                props: rel.props,
-            }),
+            KernelValue::Rel(rel) => decode_rel_props(
+                StoredRel {
+                    id: rel.id,
+                    rel_type: rel.ty,
+                    from: rel.from,
+                    to: rel.to,
+                    props: rel.props,
+                },
+                &model,
+            ),
             _ => Err(GrmError::Mapping(
                 "Neo4j edge find returned a non-edge value".into(),
             )),
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    if requires_post_processing {
+        rels.retain(|rel| predicates_match(&rel.props, &predicates));
+        sort_rels(&mut rels, &model, &request.order);
+        Ok(page(rels, request.offset, request.limit))
+    } else {
+        Ok(rels)
+    }
 }
 
 pub async fn apply_neo4j_batch(
@@ -333,7 +352,7 @@ pub async fn apply_neo4j_batch(
             SessionBatchOp::NodeUpdate(params) => {
                 async {
                     let model = node_model(&staged, &params.model)?;
-                    let props = node_update_props(&model, &value_map_to_raw(params.props)?)?;
+                    let props = node_update_props(&model, &params.props)?;
                     let node = update_node(&mut tx, params.id, &model, props).await?;
                     Ok(BatchApplied::entity(op_name, params.model, node.id, None))
                 }
@@ -353,7 +372,7 @@ pub async fn apply_neo4j_batch(
             SessionBatchOp::EdgeUpdate(params) => {
                 async {
                     let model = rel_model(&staged, &params.model)?;
-                    let props = edge_update_props(&model, &value_map_to_raw(params.props)?)?;
+                    let props = edge_update_props(&model, &params.props)?;
                     let edge = update_edge(&mut tx, params.id, &model, props).await?;
                     Ok(BatchApplied::entity(op_name, params.model, edge.id, None))
                 }
@@ -398,8 +417,10 @@ async fn create_batch_node(
     op: &'static str,
 ) -> Result<BatchApplied> {
     let model = node_model(state, &params.model)?;
-    ensure_neo4j_fields_supported(&model.fields)?;
-    let props = model.validate_instance_input(&value_map_to_raw(params.props)?)?;
+    let props = encode_props_for_neo4j(
+        &model.fields,
+        &model.validate_instance_props(&params.props)?,
+    )?;
     let node = tx
         .tx_mut()?
         .create_node(vec![model.label.clone()], props)
@@ -425,7 +446,7 @@ async fn create_batch_edge(
     let from = resolve_endpoint(&params.from, refs, "from")?;
     let to = resolve_endpoint(&params.to, refs, "to")?;
     let (model, from_label, to_label, props) =
-        validated_edge_create(state, &params.model, value_map_to_raw(params.props)?)?;
+        validated_edge_create(state, &params.model, &params.props)?;
     validate_endpoint(tx, from, &from_label, "from", &model.from_model).await?;
     validate_endpoint(tx, to, &to_label, "to", &model.to_model).await?;
     let edge = tx
@@ -570,50 +591,39 @@ fn missing_schema(kind: &str, model: &str) -> GrmError {
 fn validated_edge_create(
     state: &SessionState,
     model_name: &str,
-    raw: BTreeMap<String, String>,
+    values: &BTreeMap<String, Value>,
 ) -> Result<(RuntimeRelModel, String, String, BTreeMap<String, Value>)> {
     let model = rel_model(state, model_name)?;
-    ensure_neo4j_fields_supported(&model.fields)?;
     let from_label = node_model(state, &model.from_model)?.label;
     let to_label = node_model(state, &model.to_model)?.label;
-    let props = model.validate_instance_input(&raw)?;
+    let props = encode_props_for_neo4j(
+        &model.fields,
+        &normalize_props_for_fields(
+            "relationship model",
+            &model.name,
+            &model.fields,
+            values,
+            true,
+        )?,
+    )?;
     Ok((model, from_label, to_label, props))
-}
-
-fn value_map_to_raw(values: BTreeMap<String, Value>) -> Result<BTreeMap<String, String>> {
-    values
-        .into_iter()
-        .map(|(key, value)| {
-            let raw = match value {
-                Value::String(value) => value,
-                Value::Bool(value) => value.to_string(),
-                Value::Number(value) => value.to_string(),
-                _ => {
-                    return Err(GrmError::Constraint(format!(
-                        "property '{key}' must be a string, number, or boolean"
-                    )));
-                }
-            };
-            Ok((key, raw))
-        })
-        .collect()
 }
 
 fn node_update_props(
     model: &RuntimeNodeModel,
-    raw: &BTreeMap<String, String>,
+    values: &BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>> {
-    model_update_props(&model.fields, &model.name, raw, &[&model.id_field_name])
+    model_update_props(&model.fields, &model.name, values, &[&model.id_field_name])
 }
 
 fn edge_update_props(
     model: &RuntimeRelModel,
-    raw: &BTreeMap<String, String>,
+    values: &BTreeMap<String, Value>,
 ) -> Result<BTreeMap<String, Value>> {
     model_update_props(
         &model.fields,
         &model.name,
-        raw,
+        values,
         &[&model.id_field_name, "from", "to"],
     )
 }
@@ -621,22 +631,24 @@ fn edge_update_props(
 fn model_update_props(
     fields: &[RuntimeField],
     model_name: &str,
-    raw: &BTreeMap<String, String>,
+    values: &BTreeMap<String, Value>,
     special_keys: &[&str],
 ) -> Result<BTreeMap<String, Value>> {
-    raw.iter()
+    let mut props = BTreeMap::new();
+    for (key, value) in values
+        .iter()
         .filter(|(key, _)| key.as_str() != "id" && !special_keys.contains(&key.as_str()))
-        .map(|(key, value)| {
-            let field = fields
-                .iter()
-                .find(|field| field.name == *key)
-                .ok_or_else(|| {
-                    GrmError::Constraint(format!("unknown field '{key}' for model '{model_name}'"))
-                })?;
-            ensure_neo4j_value_type_supported(field.value_type)?;
-            Ok((key.clone(), field.value_type.parse_value(value)?))
-        })
-        .collect()
+    {
+        let field = fields
+            .iter()
+            .find(|field| field.name == *key)
+            .ok_or_else(|| {
+                GrmError::Constraint(format!("unknown field '{key}' for model '{model_name}'"))
+            })?;
+        let value = normalize_value_for_field("model", model_name, field, value)?;
+        props.insert(key.clone(), encode_value_for_neo4j(field, &value)?);
+    }
+    Ok(props)
 }
 
 fn typed_predicates(
@@ -664,39 +676,260 @@ fn typed_predicates(
                     predicate.field
                 )));
             }
-            ensure_neo4j_value_type_supported(field.value_type)?;
-            let raw = value_map_to_raw(BTreeMap::from([(
-                predicate.field.clone(),
-                predicate.value.clone(),
-            )]))?;
-            Ok((
-                predicate.clone(),
-                field.value_type.parse_value(&raw[&predicate.field])?,
-            ))
+            let value = normalize_value_for_field("model", model_name, field, &predicate.value)?;
+            Ok((predicate.clone(), value))
         })
         .collect()
 }
 
-fn ensure_neo4j_value_type_supported(value_type: RuntimeValueType) -> Result<()> {
-    match value_type {
+fn normalize_props_for_fields(
+    kind: &str,
+    model_name: &str,
+    fields: &[RuntimeField],
+    values: &BTreeMap<String, Value>,
+    require_missing: bool,
+) -> Result<BTreeMap<String, Value>> {
+    for key in values.keys() {
+        if !fields.iter().any(|field| field.name == *key) {
+            return Err(GrmError::Constraint(format!(
+                "unknown field '{key}' for {kind} '{model_name}'"
+            )));
+        }
+    }
+
+    let mut props = BTreeMap::new();
+    for field in fields {
+        match values.get(&field.name) {
+            Some(value) => {
+                let value = normalize_value_for_field(kind, model_name, field, value)?;
+                props.insert(field.name.clone(), value);
+            }
+            None if require_missing && field.required => {
+                return Err(GrmError::Constraint(format!(
+                    "missing required field '{}'",
+                    field.name
+                )));
+            }
+            None => {}
+        }
+    }
+    Ok(props)
+}
+
+fn normalize_value_for_field(
+    kind: &str,
+    model_name: &str,
+    field: &RuntimeField,
+    value: &Value,
+) -> Result<Value> {
+    if validate_value_for_kind(field.value_type.into(), value) {
+        return Ok(value.clone());
+    }
+    if let Some(actual) = typed_value_kind(value) {
+        return Err(GrmError::Constraint(format!(
+            "field '{}' for {} '{}' must be {}, got {}",
+            field.name,
+            kind,
+            model_name,
+            field.value_type.keyword(),
+            actual
+        )));
+    }
+    Err(GrmError::Constraint(format!(
+        "field '{}' for {} '{}' must be {}",
+        field.name,
+        kind,
+        model_name,
+        field.value_type.keyword()
+    )))
+}
+
+fn predicates_match(
+    props: &BTreeMap<String, Value>,
+    predicates: &[(PropertyPredicate, Value)],
+) -> bool {
+    predicates.iter().all(|(predicate, expected)| {
+        props
+            .get(&predicate.field)
+            .is_some_and(|actual| compare_typed_values(actual, predicate.op.into(), expected))
+    })
+}
+
+fn encode_props_for_neo4j(
+    fields: &[RuntimeField],
+    values: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>> {
+    values
+        .iter()
+        .map(|(key, value)| {
+            let field = fields
+                .iter()
+                .find(|field| field.name == *key)
+                .ok_or_else(|| GrmError::Constraint(format!("unknown field '{key}'")))?;
+            Ok((key.clone(), encode_value_for_neo4j(field, value)?))
+        })
+        .collect()
+}
+
+fn sort_nodes(nodes: &mut [StoredNode], model: &RuntimeNodeModel, order: &[OrderSpec]) {
+    nodes.sort_by(|left, right| compare_node_order_values(left, right, model, order));
+}
+
+fn compare_node_order_values(
+    left: &StoredNode,
+    right: &StoredNode,
+    model: &RuntimeNodeModel,
+    order: &[OrderSpec],
+) -> Ordering {
+    for spec in order {
+        let ordering = if spec.field == "id" || spec.field == model.id_field_name {
+            left.id.cmp(&right.id)
+        } else {
+            compare_optional_values(left.props.get(&spec.field), right.props.get(&spec.field))
+        };
+        let ordering = apply_order_direction(ordering, spec.direction);
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    Ordering::Equal
+}
+
+fn sort_rels(rels: &mut [StoredRel], model: &RuntimeRelModel, order: &[OrderSpec]) {
+    rels.sort_by(|left, right| compare_rel_order_values(left, right, model, order));
+}
+
+fn compare_rel_order_values(
+    left: &StoredRel,
+    right: &StoredRel,
+    model: &RuntimeRelModel,
+    order: &[OrderSpec],
+) -> Ordering {
+    for spec in order {
+        let ordering = match spec.field.as_str() {
+            "id" => left.id.cmp(&right.id),
+            "from" => left.from.cmp(&right.from),
+            "to" => left.to.cmp(&right.to),
+            field if field == model.id_field_name => left.id.cmp(&right.id),
+            _ => compare_optional_values(left.props.get(&spec.field), right.props.get(&spec.field)),
+        };
+        let ordering = apply_order_direction(ordering, spec.direction);
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    Ordering::Equal
+}
+
+fn compare_optional_values(left: Option<&Value>, right: Option<&Value>) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            compare_typed_value_order(left, right).unwrap_or(Ordering::Equal)
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn apply_order_direction(ordering: Ordering, direction: OrderDirection) -> Ordering {
+    match direction {
+        OrderDirection::Asc => ordering,
+        OrderDirection::Desc => ordering.reverse(),
+    }
+}
+
+fn page<T>(values: Vec<T>, offset: Option<usize>, limit: Option<usize>) -> Vec<T> {
+    values
+        .into_iter()
+        .skip(offset.unwrap_or(0))
+        .take(limit.unwrap_or(usize::MAX))
+        .collect()
+}
+
+fn encode_value_for_neo4j(field: &RuntimeField, value: &Value) -> Result<Value> {
+    match field.value_type {
         RuntimeValueType::String
         | RuntimeValueType::Int
         | RuntimeValueType::Float
-        | RuntimeValueType::Bool => Ok(()),
+        | RuntimeValueType::Bool => Ok(value.clone()),
         RuntimeValueType::Bytes
         | RuntimeValueType::Decimal
         | RuntimeValueType::Date
         | RuntimeValueType::DateTime
         | RuntimeValueType::Duration
-        | RuntimeValueType::Uuid => Err(GrmError::NotSupported(
-            "Neo4j runtime primitive preservation for bytes, decimal, date, datetime, duration, and uuid",
-        )),
+        | RuntimeValueType::Uuid => {
+            let expected = field.value_type.keyword();
+            let actual = typed_value_kind(value).ok_or_else(|| {
+                GrmError::Constraint(format!(
+                    "field '{}' must be canonical tagged {}",
+                    field.name, expected
+                ))
+            })?;
+            if actual != expected {
+                return Err(GrmError::Constraint(format!(
+                    "field '{}' must be {}, got {}",
+                    field.name, expected, actual
+                )));
+            }
+            let payload = typed_value_payload(value).ok_or_else(|| {
+                GrmError::Constraint(format!(
+                    "field '{}' must be canonical tagged {}",
+                    field.name, expected
+                ))
+            })?;
+            Ok(Value::String(payload.to_string()))
+        }
     }
 }
 
-fn ensure_neo4j_fields_supported(fields: &[RuntimeField]) -> Result<()> {
+fn decode_node_props(mut node: StoredNode, model: &RuntimeNodeModel) -> Result<StoredNode> {
+    decode_props(&mut node.props, &model.fields)?;
+    Ok(node)
+}
+
+fn decode_rel_props(mut rel: StoredRel, model: &RuntimeRelModel) -> Result<StoredRel> {
+    decode_props(&mut rel.props, &model.fields)?;
+    Ok(rel)
+}
+
+fn decode_props(props: &mut BTreeMap<String, Value>, fields: &[RuntimeField]) -> Result<()> {
     for field in fields {
-        ensure_neo4j_value_type_supported(field.value_type)?;
+        let Some(value) = props.get(&field.name).cloned() else {
+            continue;
+        };
+        let decoded = match field.value_type {
+            RuntimeValueType::String
+            | RuntimeValueType::Int
+            | RuntimeValueType::Float
+            | RuntimeValueType::Bool => {
+                if validate_value_for_kind(field.value_type.into(), &value) {
+                    value
+                } else {
+                    return Err(GrmError::Mapping(format!(
+                        "Neo4j property '{}' is not a valid {} value",
+                        field.name,
+                        field.value_type.keyword()
+                    )));
+                }
+            }
+            RuntimeValueType::Bytes
+            | RuntimeValueType::Decimal
+            | RuntimeValueType::Date
+            | RuntimeValueType::DateTime
+            | RuntimeValueType::Duration
+            | RuntimeValueType::Uuid => {
+                let raw = value.as_str().ok_or_else(|| {
+                    GrmError::Mapping(format!(
+                        "Neo4j property '{}' is not a canonical {} payload",
+                        field.name,
+                        field.value_type.keyword()
+                    ))
+                })?;
+                parse_typed_value(PrimitiveKind::from(field.value_type), raw)?
+            }
+        };
+        props.insert(field.name.clone(), decoded);
     }
     Ok(())
 }
@@ -706,21 +939,75 @@ mod primitive_support_tests {
     use super::*;
 
     #[test]
-    fn new_soml_primitives_have_stable_unsupported_behavior() {
-        for value_type in [
-            RuntimeValueType::Bytes,
-            RuntimeValueType::Decimal,
-            RuntimeValueType::Date,
-            RuntimeValueType::DateTime,
-            RuntimeValueType::Duration,
-            RuntimeValueType::Uuid,
-        ] {
-            let error = ensure_neo4j_value_type_supported(value_type).unwrap_err();
-            assert_eq!(
-                error.to_string(),
-                "operation not supported by backend: Neo4j runtime primitive preservation for bytes, decimal, date, datetime, duration, and uuid"
-            );
-        }
+    fn extended_soml_primitives_encode_to_scalars_and_decode_to_tagged_values() {
+        let fields = vec![
+            RuntimeField {
+                name: "event_id".into(),
+                value_type: RuntimeValueType::Uuid,
+                required: true,
+            },
+            RuntimeField {
+                name: "amount".into(),
+                value_type: RuntimeValueType::Decimal,
+                required: true,
+            },
+        ];
+        let event_id =
+            parse_typed_value(PrimitiveKind::Uuid, "123e4567-e89b-12d3-a456-426614174000").unwrap();
+        let amount = parse_typed_value(PrimitiveKind::Decimal, "12.5").unwrap();
+
+        let encoded = encode_props_for_neo4j(
+            &fields,
+            &BTreeMap::from([
+                ("event_id".into(), event_id.clone()),
+                ("amount".into(), amount.clone()),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            encoded["event_id"],
+            json!("123e4567-e89b-12d3-a456-426614174000")
+        );
+        assert_eq!(encoded["amount"], json!("12.5"));
+
+        let mut decoded = encoded;
+        decode_props(&mut decoded, &fields).unwrap();
+        assert_eq!(decoded["event_id"], event_id);
+        assert_eq!(decoded["amount"], amount);
+    }
+
+    #[test]
+    fn extended_primitive_decode_rejects_mismatched_backend_payloads() {
+        let fields = vec![RuntimeField {
+            name: "event_id".into(),
+            value_type: RuntimeValueType::Uuid,
+            required: true,
+        }];
+        let mut props = BTreeMap::from([("event_id".into(), json!("not-a-uuid"))]);
+        let err = decode_props(&mut props, &fields).unwrap_err();
+        assert!(err.to_string().contains("expected canonical uuid value"));
+    }
+
+    #[test]
+    fn extended_primitive_input_rejects_mismatched_tag_before_encoding() {
+        let fields = vec![RuntimeField {
+            name: "amount".into(),
+            value_type: RuntimeValueType::Decimal,
+            required: true,
+        }];
+        let err = normalize_props_for_fields(
+            "model",
+            "Evidence",
+            &fields,
+            &BTreeMap::from([(
+                "amount".into(),
+                parse_typed_value(PrimitiveKind::Uuid, "123e4567-e89b-12d3-a456-426614174000")
+                    .unwrap(),
+            )]),
+            true,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("must be decimal, got uuid"));
     }
 }
 
@@ -825,6 +1112,71 @@ fn validate_edge_order_fields(order: &[OrderSpec], model: &RuntimeRelModel) -> R
         }
     }
     Ok(())
+}
+
+fn append_pushdown_predicates(
+    filters: &mut Vec<String>,
+    params: &mut serde_json::Map<String, Value>,
+    variable: &str,
+    predicates: &[(PropertyPredicate, Value)],
+    fields: &[RuntimeField],
+) -> Result<()> {
+    for (index, (predicate, value)) in predicates.iter().enumerate() {
+        if !predicate_can_push_down(predicate, fields) {
+            continue;
+        }
+        let field = fields
+            .iter()
+            .find(|field| field.name == predicate.field)
+            .expect("typed predicates reference declared fields");
+        filters.push(format!(
+            "{variable}.{} {} $p{index}",
+            cypher_name(&predicate.field),
+            cypher_predicate_op(predicate.op)
+        ));
+        params.insert(format!("p{index}"), encode_value_for_neo4j(field, value)?);
+    }
+    Ok(())
+}
+
+fn predicate_can_push_down(predicate: &PropertyPredicate, fields: &[RuntimeField]) -> bool {
+    fields
+        .iter()
+        .find(|field| field.name == predicate.field)
+        .is_some_and(|field| {
+            is_native_neo4j_scalar(field.value_type)
+                || matches!(predicate.op, PredicateOp::Eq | PredicateOp::Ne)
+        })
+}
+
+fn node_order_can_push_down(order: &[OrderSpec], model: &RuntimeNodeModel) -> bool {
+    order.iter().all(|spec| {
+        spec.field == "id"
+            || spec.field == model.id_field_name
+            || model
+                .field(&spec.field)
+                .is_some_and(|field| is_native_neo4j_scalar(field.value_type))
+    })
+}
+
+fn edge_order_can_push_down(order: &[OrderSpec], model: &RuntimeRelModel) -> bool {
+    order.iter().all(|spec| {
+        matches!(spec.field.as_str(), "id" | "from" | "to")
+            || spec.field == model.id_field_name
+            || model
+                .field(&spec.field)
+                .is_some_and(|field| is_native_neo4j_scalar(field.value_type))
+    })
+}
+
+fn is_native_neo4j_scalar(value_type: RuntimeValueType) -> bool {
+    matches!(
+        value_type,
+        RuntimeValueType::String
+            | RuntimeValueType::Int
+            | RuntimeValueType::Float
+            | RuntimeValueType::Bool
+    )
 }
 
 fn append_order_page(
@@ -1052,13 +1404,72 @@ mod tests {
     }
 
     #[test]
-    fn update_validation_ignores_identity_and_types_changed_fields() {
+    fn update_validation_ignores_identity_and_requires_exact_field_types() {
         let props = node_update_props(
             &user_model(),
-            &BTreeMap::from([("userId".into(), "42".into()), ("age".into(), "43".into())]),
+            &BTreeMap::from([("userId".into(), "42".into()), ("age".into(), json!(43))]),
         )
         .unwrap();
         assert_eq!(props, BTreeMap::from([("age".into(), json!(43))]));
+
+        let err = node_update_props(
+            &user_model(),
+            &BTreeMap::from([("age".into(), json!("43"))]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("must be int"));
+    }
+
+    #[test]
+    fn neo4j_pushdown_preserves_native_scalars_and_defers_logical_primitives() {
+        let fields = vec![
+            RuntimeField {
+                name: "name".into(),
+                value_type: RuntimeValueType::String,
+                required: false,
+            },
+            RuntimeField {
+                name: "amount".into(),
+                value_type: RuntimeValueType::Decimal,
+                required: false,
+            },
+        ];
+        let scalar = PropertyPredicate {
+            field: "name".into(),
+            op: PredicateOp::Contains,
+            value: json!("Ada"),
+        };
+        let decimal_eq = PropertyPredicate {
+            field: "amount".into(),
+            op: PredicateOp::Eq,
+            value: parse_typed_value(PrimitiveKind::Decimal, "12.5").unwrap(),
+        };
+        let decimal_gt = PropertyPredicate {
+            field: "amount".into(),
+            op: PredicateOp::Gt,
+            value: parse_typed_value(PrimitiveKind::Decimal, "10").unwrap(),
+        };
+
+        assert!(predicate_can_push_down(&scalar, &fields));
+        assert!(predicate_can_push_down(&decimal_eq, &fields));
+        assert!(!predicate_can_push_down(&decimal_gt, &fields));
+
+        let model =
+            RuntimeNodeModel::new("Reading", "readingId", BackendIdType::Int64, fields).unwrap();
+        assert!(node_order_can_push_down(
+            &[OrderSpec {
+                field: "name".into(),
+                direction: OrderDirection::Asc,
+            }],
+            &model
+        ));
+        assert!(!node_order_can_push_down(
+            &[OrderSpec {
+                field: "amount".into(),
+                direction: OrderDirection::Asc,
+            }],
+            &model
+        ));
     }
 
     #[test]
@@ -1107,17 +1518,6 @@ mod tests {
     fn cypher_name_escapes_malicious_identifier_fragments() {
         let escaped = cypher_name("User`) MATCH (m) DETACH DELETE m //");
         assert_eq!(escaped, "`User``) MATCH (m) DETACH DELETE m //`");
-    }
-
-    #[test]
-    fn cypher_predicate_ops_are_fixed_enum_mappings() {
-        assert_eq!(cypher_predicate_op(PredicateOp::Eq), "=");
-        assert_eq!(cypher_predicate_op(PredicateOp::Ne), "<>");
-        assert_eq!(cypher_predicate_op(PredicateOp::Gt), ">");
-        assert_eq!(cypher_predicate_op(PredicateOp::Ge), ">=");
-        assert_eq!(cypher_predicate_op(PredicateOp::Lt), "<");
-        assert_eq!(cypher_predicate_op(PredicateOp::Le), "<=");
-        assert_eq!(cypher_predicate_op(PredicateOp::Contains), "CONTAINS");
     }
 
     #[test]

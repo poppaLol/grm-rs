@@ -206,10 +206,21 @@ Runtime operations, JSON and binary durability, reopen/recovery, gRPC, Python,
 and MCP preserve the logical type. Tagged values currently use predicate scans
 rather than scalar property-index lookup.
 
-Neo4j runtime operations explicitly report these six new types as unsupported
-until portable native mappings preserve the same validation, comparison, and
-round-trip semantics. No graph-native types, collections, generic wrappers,
-schema migration, or Cypher expansion are included.
+Updated on 2026-09-22 for Neo4j primitive parity. Neo4j runtime and MCP mode
+now preserve `bytes`, `decimal`, `date`, `datetime`, `duration`, and `uuid`
+through schema-aware node and relationship create/read/update, equality and
+logical comparison predicates, and declared-field ordering. Neo4j stores the
+canonical scalar payload under the declared property name and reconstructs the
+canonical tagged GRM value on schema-aware reads. Representation-equivalent
+equality is pushed to Neo4j, while logical comparisons and ordering use the
+shared runtime value comparator before pagination. Native scalar predicates,
+ordering, offset, and limit retain Cypher pushdown. Structured runtime requests
+require exact declared types; lexical parsing remains an adapter concern.
+
+Neo4j schema metadata remains outside the user's graph data by default. This
+does not add Cypher as a public GRM query surface, visual projection, schema
+migration, graph-native types, collections, generic wrappers, traversal/query
+parity, explain/profile, import/export, or destructive live-database behavior.
 
 ## Open Questions
 
