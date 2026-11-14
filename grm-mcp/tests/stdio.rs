@@ -168,13 +168,34 @@ async fn grpc_mcp_client(
     grpc_mcp_client_with_format(endpoint, workspace_ref, mode, None).await
 }
 
+/// Binds `address`, retrying briefly on `AddrInUse`.
+///
+/// Restart tests rebind the exact port of a service they just stopped. The old
+/// server's connection to the `grm-mcp` child can still be mid-close at that
+/// moment (the child closes its end on its own schedule), and macOS refuses the
+/// bind until the close completes, typically within tens of milliseconds under
+/// a loaded parallel test run. Linux allows the bind immediately.
+async fn bind_with_retry(address: &str) -> TcpListener {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match TcpListener::bind(address).await {
+            Ok(listener) => return listener,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AddrInUse
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("bind restartable service on {address}: {error}"),
+        }
+    }
+}
+
 async fn restartable_grpc_service(
     root: PathBuf,
     address: &str,
 ) -> (String, tokio::sync::oneshot::Sender<()>, JoinHandle<()>) {
-    let listener = TcpListener::bind(address)
-        .await
-        .expect("bind restartable service");
+    let listener = bind_with_retry(address).await;
     let address = listener.local_addr().unwrap();
     let service = GrpcWorkspaceService::with_local_workspace_root(
         root,
