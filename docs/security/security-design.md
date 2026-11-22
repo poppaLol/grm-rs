@@ -603,7 +603,7 @@ signing.
 | Server-authenticated TLS | Implemented and tested |
 | Optional mTLS client-certificate requirement | Implemented and tested |
 | Trusted application-principal abstraction | Implemented; no production credential provider |
-| Authorization and policy versioning | Exact versioned workspace permission table, default-deny enforcement, and public negative authorization tests implemented; durable policy storage and administration not implemented |
+| Authorization and policy versioning | Exact versioned workspace permission table, default-deny enforcement, and public negative authorization tests implemented; operator-triggered reload of mappings and permissions from the config file implemented and publicly tested; durable policy storage and administration APIs not implemented |
 | Request limits and admission policy | Batch operation count enforced in secured profile; broader limits not implemented |
 | Bounded security audit sink | First local bounded authoritative audit slice implemented and publicly tested; external audit, tamper evidence, recovery persistence, hosted/public MCP identity, receipts, state commitments, and attestation not implemented |
 | GRM-managed encryption at rest | Not implemented |
@@ -671,6 +671,21 @@ authoritative audit slice only; external audit forwarding, tamper-evident
 storage, audit recovery persistence, hosted/public MCP identity, signed
 receipts, state commitments, attestation, and high-assurance audit remain future
 work.
+
+A secured service loaded from a config file can apply certificate-mapping and
+permission-table changes without a restart. `ServiceSecurityConfig::policy_reloader`
+returns an operator handle, and `grm-local-workspace-server` invokes it on
+SIGHUP. A reload reads and validates the whole file before anything changes; an
+unreadable, malformed, or invalid file is rejected and the active policy keeps
+serving. Mappings and permissions form one policy generation: each request takes
+a single snapshot and uses it for authentication, authorization, and the policy
+version it records, so no request mixes mappings from one generation with
+permissions from another. Every attempt is recorded at audit stage
+`PolicyReload`; in the secured profile a new generation is activated only after
+its audit record is accepted. Because mappings and permissions are re-evaluated
+on every RPC, a removal takes effect on the next request, including over
+established TLS channels and open workspace handles. This is a local operator
+control over a protected file, not a remote administration API.
 
 Secured mode rejects traversal steps that omit `edge_model`. The runtime may
 infer an edge model in local workflows, but secured authorization does not
