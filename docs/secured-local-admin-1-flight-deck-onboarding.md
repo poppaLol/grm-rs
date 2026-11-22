@@ -363,6 +363,29 @@ Common checks:
 - the Admin-1 certificate fingerprint in `admin-1.sha256` appears in
   `security.json`.
 
+## Changing Access Without Restart
+
+The secured service re-reads `security.json` when it receives SIGHUP, so adding
+or removing a certificate mapping or permission does not need a restart:
+
+```bash
+# edit .grm/secured-local/security.json, then signal only this service:
+kill -HUP "$(pgrep -f 'grm-local-workspace-server 127.0.0.1:50052')"
+# in a container: docker kill --signal=HUP <container>
+```
+
+Only the secured profile loaded from `GRM_SERVICE_SECURITY_CONFIG` handles
+SIGHUP; other profiles keep the default behaviour and exit, so avoid broad
+`pkill` patterns.
+
+The service prints `security policy reloaded: <old version> -> <new version>`.
+Bump `permission_table.version` with each change so the new version is visible
+in the flight-deck security status and in audit records. An invalid file is
+rejected whole, the service prints the reason, and the previous policy stays
+active. Removals apply to the next request, including connections that are
+already open. Each attempt is recorded in the security audit at stage
+`PolicyReload`.
+
 ## Current Limits
 
 - No default admin password.
@@ -371,7 +394,8 @@ Common checks:
 - No browser display of certificate fingerprints, private credential paths, or
   rendered permission tables.
 - No hosted identity, OIDC/OAuth, or production certificate lifecycle.
-- No live service-side user or permission mutation API.
+- No live service-side user or permission mutation API; access changes are
+  made by editing `security.json` and sending SIGHUP (see above).
 - No service-backed query/explain/profile/audit-events endpoint in this
   workbench slice; current Explain/Profile/Audit entries are local UI
   summaries unless a later read-only gateway surface replaces them.

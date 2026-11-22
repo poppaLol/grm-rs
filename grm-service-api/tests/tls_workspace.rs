@@ -6,11 +6,13 @@ use std::sync::Arc;
 
 use grm_rs::{DefineNodeRequest, FieldSpec, FieldValueType, NodeCreateRequest};
 use grm_service_api::{
-    AuthorizationDecision, AuthorizationPolicy, AuthorizationReason, CertificateFingerprint,
-    CertificatePrincipalAuthenticator, CertificatePrincipalMapping, DurabilityFormat,
-    GrpcClientTlsOptions, GrpcServerTlsOptions, GrpcWorkspaceClient, GrpcWorkspaceMode,
-    GrpcWorkspaceService, MTLS_CERTIFICATE_AUTHENTICATION_METHOD, PolicyEvaluationError, Principal,
-    SecurityRequestContext, ServiceSecurityConfig, proto,
+    AuthorizationDecision, AuthorizationPolicy, AuthorizationReason, BoundedSecurityAuditSink,
+    CertificateFingerprint, CertificatePrincipalAuthenticator, CertificatePrincipalMapping,
+    DurabilityFormat, GrpcClientTlsOptions, GrpcServerTlsOptions, GrpcWorkspaceClient,
+    GrpcWorkspaceMode, GrpcWorkspaceService, MTLS_CERTIFICATE_AUTHENTICATION_METHOD,
+    PolicyEvaluationError, Principal, SecurityAuditDecision, SecurityAuditEvent,
+    SecurityAuditReason, SecurityAuditSink, SecurityAuditSinkError, SecurityAuditStage,
+    SecurityPolicyReloadError, SecurityRequestContext, ServiceSecurityConfig, proto,
 };
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -545,6 +547,600 @@ async fn mapping_removal_reauthenticates_next_rpc_on_existing_tls_channel_and_ha
 
     shutdown.send(()).unwrap();
     server.await.unwrap().unwrap();
+}
+
+/// One principal's grants in a test security.json: service-scope actions on
+/// the service resource and all-workspace actions on the workspace resource.
+struct PolicyGrant<'a> {
+    identity: &'a ClientIdentity,
+    subject: &'a str,
+    service_actions: &'a [&'a str],
+    workspace_actions: &'a [&'a str],
+}
+
+fn write_security_config(path: &Path, version: &str, grants: &[PolicyGrant<'_>]) {
+    let mut mappings = Vec::new();
+    let mut assignments = Vec::new();
+    for grant in grants {
+        let principal = serde_json::json!({ "issuer": "grm-test", "subject": grant.subject });
+        mappings.push(serde_json::json!({
+            "fingerprint_sha256": grant.identity.fingerprint.as_hex(),
+            "principal": principal,
+        }));
+        if !grant.service_actions.is_empty() {
+            assignments.push(serde_json::json!({
+                "principal": principal,
+                "scope": { "kind": "service" },
+                "permissions": grant.service_actions.iter().map(|action| serde_json::json!({
+                    "action": action, "resource": { "kind": "service" }
+                })).collect::<Vec<_>>(),
+            }));
+        }
+        if !grant.workspace_actions.is_empty() {
+            assignments.push(serde_json::json!({
+                "principal": principal,
+                "scope": { "kind": "deployment_local_all_workspaces" },
+                "permissions": grant.workspace_actions.iter().map(|action| serde_json::json!({
+                    "action": action, "resource": { "kind": "workspace" }
+                })).collect::<Vec<_>>(),
+            }));
+        }
+    }
+    let config = serde_json::json!({
+        "certificate_mappings": mappings,
+        "permission_table": { "version": version, "assignments": assignments },
+    });
+    fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+}
+
+fn reader_grant<'a>(identity: &'a ClientIdentity, subject: &'a str) -> PolicyGrant<'a> {
+    PolicyGrant {
+        identity,
+        subject,
+        service_actions: &["workspace.create"],
+        workspace_actions: &["schema.inspect", "workspace.close"],
+    }
+}
+
+async fn create_handle(
+    client: &mut proto::grm_service_client::GrmServiceClient<Channel>,
+) -> Result<proto::WorkspaceHandle, tonic::Status> {
+    Ok(client
+        .create_workspace(in_memory_workspace_create_request())
+        .await?
+        .into_inner()
+        .handle
+        .unwrap())
+}
+
+async fn schema_list(
+    client: &mut proto::grm_service_client::GrmServiceClient<Channel>,
+    handle: &proto::WorkspaceHandle,
+) -> Result<(), tonic::Status> {
+    client
+        .execute_workspace(proto::WorkspaceRuntimeRequest {
+            handle: Some(handle.clone()),
+            request: Some(proto::RuntimeRequest {
+                request: Some(proto::runtime_request::Request::SchemaList(
+                    proto::SchemaListRequest {},
+                )),
+            }),
+        })
+        .await
+        .map(|_| ())
+}
+
+async fn reported_policy_version(
+    client: &mut proto::grm_service_client::GrmServiceClient<Channel>,
+) -> String {
+    client
+        .security_status(proto::SecurityStatusRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+        .policy_version
+}
+
+fn policy_reload_events(audit: &BoundedSecurityAuditSink) -> Vec<SecurityAuditEvent> {
+    audit
+        .retained_events()
+        .into_iter()
+        .filter(|event| event.stage == SecurityAuditStage::PolicyReload)
+        .collect()
+}
+
+#[tokio::test]
+async fn policy_reload_grants_added_mapping_and_permission_on_next_rpc() {
+    let fixture = MtlsFixture::new();
+    let config = fixture.temp.path().join("security.json");
+    write_security_config(
+        &config,
+        "reload-policy-v1",
+        &[reader_grant(&fixture.client, "reader/client")],
+    );
+    let security = ServiceSecurityConfig::secured_from_config_file(&config).unwrap();
+    let reloader = security
+        .policy_reloader()
+        .expect("file-backed secured config reloads");
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+    let mut client = mtls_client(&endpoint, &fixture, &fixture.client).await;
+    let mut newcomer = mtls_client(&endpoint, &fixture, &fixture.rotation).await;
+
+    let denied = create_handle(&mut newcomer).await.unwrap_err();
+    assert_eq!(denied.code(), Code::Unauthenticated);
+    assert_eq!(
+        reported_policy_version(&mut client).await,
+        "reload-policy-v1"
+    );
+
+    write_security_config(
+        &config,
+        "reload-policy-v2",
+        &[
+            reader_grant(&fixture.client, "reader/client"),
+            reader_grant(&fixture.rotation, "reader/newcomer"),
+        ],
+    );
+    let outcome = reloader.reload().unwrap();
+    assert_eq!(
+        outcome.previous_policy_version.as_deref(),
+        Some("reload-policy-v1")
+    );
+    assert_eq!(outcome.policy_version.as_deref(), Some("reload-policy-v2"));
+
+    // Same TLS channel that was refused before the reload.
+    let handle = create_handle(&mut newcomer).await.unwrap();
+    schema_list(&mut newcomer, &handle).await.unwrap();
+    assert_eq!(
+        reported_policy_version(&mut client).await,
+        "reload-policy-v2"
+    );
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn policy_reload_mapping_removal_denies_next_rpc_on_established_channel_and_handle() {
+    let fixture = MtlsFixture::new();
+    let config = fixture.temp.path().join("security.json");
+    write_security_config(
+        &config,
+        "reload-policy-v1",
+        &[
+            reader_grant(&fixture.client, "reader/client"),
+            reader_grant(&fixture.rotation, "reader/other"),
+        ],
+    );
+    let security = ServiceSecurityConfig::secured_from_config_file(&config).unwrap();
+    let reloader = security.policy_reloader().unwrap();
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+    let mut client = mtls_client(&endpoint, &fixture, &fixture.client).await;
+    let handle = create_handle(&mut client).await.unwrap();
+    schema_list(&mut client, &handle).await.unwrap();
+
+    write_security_config(
+        &config,
+        "reload-policy-v2",
+        &[reader_grant(&fixture.rotation, "reader/other")],
+    );
+    reloader.reload().unwrap();
+
+    let execute = schema_list(&mut client, &handle).await.unwrap_err();
+    assert_eq!(execute.code(), Code::Unauthenticated);
+    let close = client
+        .close_workspace(proto::WorkspaceCloseRequest {
+            handle: Some(handle),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(close.code(), Code::Unauthenticated);
+    let mut other = mtls_client(&endpoint, &fixture, &fixture.rotation).await;
+    create_handle(&mut other).await.unwrap();
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn policy_reload_permission_removal_denies_next_rpc_on_existing_handle() {
+    let fixture = MtlsFixture::new();
+    let config = fixture.temp.path().join("security.json");
+    write_security_config(
+        &config,
+        "reload-policy-v1",
+        &[reader_grant(&fixture.client, "reader/client")],
+    );
+    let security = ServiceSecurityConfig::secured_from_config_file(&config).unwrap();
+    let reloader = security.policy_reloader().unwrap();
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+    let mut client = mtls_client(&endpoint, &fixture, &fixture.client).await;
+    let handle = create_handle(&mut client).await.unwrap();
+    schema_list(&mut client, &handle).await.unwrap();
+
+    write_security_config(
+        &config,
+        "reload-policy-v2",
+        &[PolicyGrant {
+            identity: &fixture.client,
+            subject: "reader/client",
+            service_actions: &["workspace.create"],
+            workspace_actions: &["workspace.close"],
+        }],
+    );
+    reloader.reload().unwrap();
+
+    let execute = schema_list(&mut client, &handle).await.unwrap_err();
+    assert_eq!(execute.code(), Code::PermissionDenied);
+    client
+        .close_workspace(proto::WorkspaceCloseRequest {
+            handle: Some(handle),
+        })
+        .await
+        .unwrap();
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn invalid_policy_reload_is_rejected_whole_and_previous_policy_keeps_serving() {
+    let fixture = MtlsFixture::new();
+    let config = fixture.temp.path().join("security.json");
+    write_security_config(
+        &config,
+        "reload-policy-v1",
+        &[reader_grant(&fixture.client, "reader/client")],
+    );
+    let audit = BoundedSecurityAuditSink::default_local();
+    let security = ServiceSecurityConfig::secured_from_config_file(&config)
+        .unwrap()
+        .with_audit_sink(Arc::new(audit.clone()));
+    let reloader = security.policy_reloader().unwrap();
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+    let mut client = mtls_client(&endpoint, &fixture, &fixture.client).await;
+    let mut newcomer = mtls_client(&endpoint, &fixture, &fixture.rotation).await;
+
+    // A valid new mapping alongside one invalid grant: nothing may apply.
+    write_security_config(
+        &config,
+        "reload-policy-v2",
+        &[
+            reader_grant(&fixture.rotation, "reader/newcomer"),
+            PolicyGrant {
+                identity: &fixture.client,
+                subject: "reader/client",
+                service_actions: &["workspace.create"],
+                workspace_actions: &["workspace.obliterate"],
+            },
+        ],
+    );
+    let rejected = reloader.reload().unwrap_err();
+    assert!(matches!(
+        rejected,
+        SecurityPolicyReloadError::InvalidConfig(_)
+    ));
+
+    fs::write(&config, b"{ not json").unwrap();
+    let rejected = reloader.reload().unwrap_err();
+    assert!(matches!(
+        rejected,
+        SecurityPolicyReloadError::InvalidConfig(_)
+    ));
+
+    fs::remove_file(&config).unwrap();
+    let rejected = reloader.reload().unwrap_err();
+    assert!(matches!(
+        rejected,
+        SecurityPolicyReloadError::InvalidConfig(_)
+    ));
+
+    let handle = create_handle(&mut client).await.unwrap();
+    schema_list(&mut client, &handle).await.unwrap();
+    assert_eq!(
+        create_handle(&mut newcomer).await.unwrap_err().code(),
+        Code::Unauthenticated
+    );
+    assert_eq!(
+        reported_policy_version(&mut client).await,
+        "reload-policy-v1"
+    );
+
+    let events = policy_reload_events(&audit);
+    assert_eq!(events.len(), 3);
+    for event in &events {
+        assert_eq!(event.decision, SecurityAuditDecision::Error);
+        assert_eq!(event.reason, SecurityAuditReason::PolicyReloadRejected);
+        assert_eq!(event.policy_version.as_deref(), Some("reload-policy-v1"));
+    }
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn policy_reload_audit_records_versions_without_identity_or_path_detail() {
+    let fixture = MtlsFixture::new();
+    let config = fixture.temp.path().join("security.json");
+    write_security_config(
+        &config,
+        "reload-policy-v1",
+        &[reader_grant(&fixture.client, "reader/client")],
+    );
+    let audit = BoundedSecurityAuditSink::default_local();
+    let security = ServiceSecurityConfig::secured_from_config_file(&config)
+        .unwrap()
+        .with_audit_sink(Arc::new(audit.clone()));
+    let reloader = security.policy_reloader().unwrap();
+
+    write_security_config(
+        &config,
+        "reload-policy-v2",
+        &[reader_grant(&fixture.rotation, "reader/newcomer")],
+    );
+    reloader.reload().unwrap();
+
+    let events = policy_reload_events(&audit);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.decision, SecurityAuditDecision::Allow);
+    assert_eq!(event.reason, SecurityAuditReason::PolicyReloaded);
+    assert_eq!(event.policy_version.as_deref(), Some("reload-policy-v2"));
+    assert!(event.authenticated_principal.is_none());
+    assert!(event.operations.is_empty());
+    let recorded = serde_json::to_string(event).unwrap();
+    for secret in [
+        fixture.client.fingerprint.as_hex(),
+        fixture.rotation.fingerprint.as_hex(),
+        "reader/newcomer".to_owned(),
+        config.display().to_string(),
+    ] {
+        assert!(!recorded.contains(&secret), "audit leaked {secret}");
+    }
+}
+
+/// Audit sink whose appends can be made to fail, for mandatory-audit tests.
+struct FailableAuditSink {
+    inner: BoundedSecurityAuditSink,
+    failing: std::sync::atomic::AtomicBool,
+}
+
+impl SecurityAuditSink for FailableAuditSink {
+    fn append(&self, event: SecurityAuditEvent) -> Result<(), SecurityAuditSinkError> {
+        if self.failing.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(SecurityAuditSinkError::Unavailable);
+        }
+        self.inner.append(event)
+    }
+
+    fn allocate_request_id(&self) -> Result<u64, SecurityAuditSinkError> {
+        self.inner.allocate_request_id()
+    }
+
+    fn allocate_event_identity(&self) -> Result<(u64, u64), SecurityAuditSinkError> {
+        self.inner.allocate_event_identity()
+    }
+}
+
+#[tokio::test]
+async fn policy_reload_is_not_applied_when_mandatory_audit_rejects_it() {
+    let fixture = MtlsFixture::new();
+    let config = fixture.temp.path().join("security.json");
+    write_security_config(
+        &config,
+        "reload-policy-v1",
+        &[reader_grant(&fixture.client, "reader/client")],
+    );
+    let audit = Arc::new(FailableAuditSink {
+        inner: BoundedSecurityAuditSink::default_local(),
+        failing: std::sync::atomic::AtomicBool::new(false),
+    });
+    let security = ServiceSecurityConfig::secured_from_config_file(&config)
+        .unwrap()
+        .with_audit_sink(audit.clone());
+    let reloader = security.policy_reloader().unwrap();
+    let (endpoint, shutdown, server) = fixture.start(security).await;
+    let mut client = mtls_client(&endpoint, &fixture, &fixture.client).await;
+
+    write_security_config(
+        &config,
+        "reload-policy-v2",
+        &[reader_grant(&fixture.rotation, "reader/newcomer")],
+    );
+    audit
+        .failing
+        .store(true, std::sync::atomic::Ordering::Release);
+    let rejected = reloader.reload().unwrap_err();
+    assert!(matches!(
+        rejected,
+        SecurityPolicyReloadError::AuditUnavailable
+    ));
+    audit
+        .failing
+        .store(false, std::sync::atomic::Ordering::Release);
+
+    create_handle(&mut client).await.unwrap();
+    assert_eq!(
+        reported_policy_version(&mut client).await,
+        "reload-policy-v1"
+    );
+
+    shutdown.send(()).unwrap();
+    server.await.unwrap().unwrap();
+}
+
+/// Runs the real server binary and reads its stdout lines on a thread.
+#[cfg(unix)]
+struct ServerProcess {
+    child: std::process::Child,
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+#[cfg(unix)]
+impl ServerProcess {
+    fn wait_for_line(&self, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.lines.recv_timeout(remaining) {
+                Ok(line) if line.contains(needle) => return line,
+                Ok(_) => continue,
+                Err(_) => panic!("server did not print {needle:?}"),
+            }
+        }
+    }
+
+    fn hangup(&self) {
+        let pid = libc::pid_t::try_from(self.child.id()).unwrap();
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGHUP) }, 0);
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ServerProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn server_binary_reloads_security_policy_on_sighup() {
+    use std::io::BufRead;
+
+    let fixture = MtlsFixture::new();
+    let config = fixture.temp.path().join("security.json");
+    write_security_config(
+        &config,
+        "sighup-policy-v1",
+        &[reader_grant(&fixture.client, "reader/client")],
+    );
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_grm-local-workspace-server"))
+        .arg(format!("127.0.0.1:{port}"))
+        .arg(fixture.temp.path().join("workspaces"))
+        .env("GRM_SERVICE_SECURITY_PROFILE", "secured")
+        .env("GRM_SERVICE_SECURITY_CONFIG", &config)
+        .env("GRM_SERVICE_TLS_SERVER_CERT", &fixture.server_cert)
+        .env("GRM_SERVICE_TLS_SERVER_KEY", &fixture.server_key)
+        .env("GRM_SERVICE_TLS_CLIENT_CA_CERT", &fixture.client_ca_cert)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (sender, lines) = std::sync::mpsc::channel();
+    for stream in [
+        Box::new(child.stdout.take().unwrap()) as Box<dyn std::io::Read + Send>,
+        Box::new(child.stderr.take().unwrap()),
+    ] {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stream)
+                .lines()
+                .map_while(Result::ok)
+            {
+                let _ = sender.send(line);
+            }
+        });
+    }
+    let mut server = ServerProcess { child, lines };
+    server.wait_for_line("security policy reload: send SIGHUP");
+
+    let endpoint = format!("https://127.0.0.1:{port}");
+    // The banner is printed before the listener binds, so wait for the port.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "server never listened"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let mut client = mtls_client(&endpoint, &fixture, &fixture.client).await;
+    let mut newcomer = mtls_client(&endpoint, &fixture, &fixture.rotation).await;
+    create_handle(&mut client).await.unwrap();
+    assert_eq!(
+        create_handle(&mut newcomer).await.unwrap_err().code(),
+        Code::Unauthenticated
+    );
+
+    fs::write(&config, b"{ not json").unwrap();
+    server.hangup();
+    server.wait_for_line("the previous policy remains active");
+    create_handle(&mut client).await.unwrap();
+
+    write_security_config(
+        &config,
+        "sighup-policy-v2",
+        &[
+            reader_grant(&fixture.client, "reader/client"),
+            reader_grant(&fixture.rotation, "reader/newcomer"),
+        ],
+    );
+    server.hangup();
+    let line = server.wait_for_line("security policy reloaded");
+    assert!(
+        line.contains("sighup-policy-v1 -> sighup-policy-v2"),
+        "{line}"
+    );
+    create_handle(&mut newcomer).await.unwrap();
+    assert_eq!(
+        reported_policy_version(&mut client).await,
+        "sighup-policy-v2"
+    );
+
+    // SIGHUP is handled, not fatal: the server has not exited.
+    assert!(server.child.try_wait().unwrap().is_none());
+}
+
+#[test]
+fn policy_reloader_requires_a_file_backed_secured_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("security.json");
+    let identity = ClientIdentity {
+        cert: temp.path().join("unused.crt"),
+        key: temp.path().join("unused.key"),
+        fingerprint: CertificateFingerprint::sha256_der(b"reader"),
+    };
+    write_security_config(
+        &config,
+        "reload-policy-v1",
+        &[reader_grant(&identity, "reader")],
+    );
+
+    assert!(
+        ServiceSecurityConfig::anonymous_local()
+            .policy_reloader()
+            .is_none()
+    );
+    assert!(
+        ServiceSecurityConfig::docker_local_insecure()
+            .policy_reloader()
+            .is_none()
+    );
+    assert!(ServiceSecurityConfig::secured().policy_reloader().is_none());
+    let file_backed = ServiceSecurityConfig::secured_from_config_file(&config).unwrap();
+    assert_eq!(
+        file_backed.policy_reloader().unwrap().source(),
+        config.as_path()
+    );
+    // Replacing the policy in code detaches it from the file.
+    assert!(
+        file_backed
+            .with_policy(Arc::new(AllowExpectedPrincipalPolicy {
+                expected: test_principal(),
+            }))
+            .policy_reloader()
+            .is_none()
+    );
 }
 
 #[tokio::test]

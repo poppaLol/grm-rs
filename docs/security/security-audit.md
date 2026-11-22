@@ -113,6 +113,7 @@ Not every request reaches every stage.
 | `Runtime` | The canonical workspace/runtime path ran, succeeded, or failed. |
 | `Durability` | The service recorded the mutation durability evidence it can truthfully support. |
 | `Delivery` | The service recorded response handoff or an audit-sink delivery problem it could observe. |
+| `PolicyReload` | An operator-triggered reload of certificate mappings and the permission table was applied (`policy_reloaded`, with the new policy version) or rejected (`policy_reload_rejected`, with the still-active version). It is not tied to a client request and carries no principal, operations, fingerprints, or file paths. |
 
 The important product rule is that these are distinct evidence classes. A
 successful authorization decision is not a runtime result. A runtime success is

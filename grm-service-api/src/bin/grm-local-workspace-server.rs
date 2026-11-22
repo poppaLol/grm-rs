@@ -5,7 +5,9 @@ use std::{env, fs, io};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
-use grm_service_api::{GrpcServerTlsOptions, GrpcWorkspaceService, ServiceSecurityConfig};
+use grm_service_api::{
+    GrpcServerTlsOptions, GrpcWorkspaceService, SecurityPolicyReloader, ServiceSecurityConfig,
+};
 use tonic::transport::Server;
 
 const GRM_SERVICE_SECURITY_PROFILE_ENV: &str = "GRM_SERVICE_SECURITY_PROFILE";
@@ -23,6 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let security = service_security_config_from_env(|key| env::var_os(key))?
         .with_durable_audit_store(&workspace_root)?;
     security.validate_bind_addr(addr)?;
+    // Taken after the durable audit store is selected so reloads are audited there.
+    let reloader = security.policy_reloader();
     let service =
         GrpcWorkspaceService::with_local_workspace_root(&workspace_root, security).into_server();
     let tls = GrpcServerTlsOptions::from_env()?;
@@ -43,8 +47,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "serving local GRM workspace gRPC shell on {addr}; workspace root: {}; transport: {transport}",
         workspace_root.display()
     );
+    if let Some(reloader) = reloader {
+        spawn_policy_reload_on_hangup(reloader)?;
+    }
     server.add_service(service).serve(addr).await?;
 
+    Ok(())
+}
+
+/// Reload certificate mappings and the permission table from the security
+/// config file on SIGHUP. Only installed for the secured profile loaded from
+/// `GRM_SERVICE_SECURITY_CONFIG`; other profiles keep the default SIGHUP
+/// behaviour.
+#[cfg(unix)]
+fn spawn_policy_reload_on_hangup(reloader: SecurityPolicyReloader) -> io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut hangups = signal(SignalKind::hangup())?;
+    println!(
+        "security policy reload: send SIGHUP to re-read {}",
+        reloader.source().display()
+    );
+    tokio::spawn(async move {
+        while hangups.recv().await.is_some() {
+            let reloader = reloader.clone();
+            match tokio::task::spawn_blocking(move || reloader.reload()).await {
+                Ok(Ok(outcome)) => println!(
+                    "security policy reloaded: {} -> {}",
+                    outcome.previous_policy_version.as_deref().unwrap_or("none"),
+                    outcome.policy_version.as_deref().unwrap_or("none"),
+                ),
+                Ok(Err(error)) => eprintln!("{error}; the previous policy remains active"),
+                Err(_) => eprintln!(
+                    "security policy reload task failed; the previous policy remains active"
+                ),
+            }
+        }
+    });
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn spawn_policy_reload_on_hangup(_reloader: SecurityPolicyReloader) -> io::Result<()> {
+    println!("security policy reload on SIGHUP is not available on this platform");
     Ok(())
 }
 

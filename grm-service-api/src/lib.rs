@@ -1427,6 +1427,8 @@ pub enum SecurityAuditStage {
     Runtime,
     Durability,
     Delivery,
+    /// Operator-triggered reload of certificate mappings and permissions.
+    PolicyReload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1460,6 +1462,8 @@ pub enum SecurityAuditReason {
     ResponseHandedOff,
     UnknownDelivery,
     SinkUnavailable,
+    PolicyReloaded,
+    PolicyReloadRejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -2556,11 +2560,33 @@ impl AuthorizationPolicy for PolicyLoadFailurePolicy {
     }
 }
 
+/// One authentication/authorization policy generation.
+///
+/// Requests take a single snapshot and use it for authentication,
+/// authorization and the recorded policy version, so a reload can never mix
+/// certificate mappings from one generation with permissions from another.
+struct SecurityPolicyState {
+    authenticator: Arc<dyn ApplicationAuthenticator>,
+    policy: Arc<dyn AuthorizationPolicy>,
+}
+
+type SharedSecurityPolicyState = Arc<RwLock<Arc<SecurityPolicyState>>>;
+
+fn shared_security_policy_state(
+    authenticator: Arc<dyn ApplicationAuthenticator>,
+    policy: Arc<dyn AuthorizationPolicy>,
+) -> SharedSecurityPolicyState {
+    Arc::new(RwLock::new(Arc::new(SecurityPolicyState {
+        authenticator,
+        policy,
+    })))
+}
+
 #[derive(Clone)]
 pub struct ServiceSecurityConfig {
     profile: ServiceSecurityProfile,
-    authenticator: Arc<dyn ApplicationAuthenticator>,
-    policy: Arc<dyn AuthorizationPolicy>,
+    policy_state: SharedSecurityPolicyState,
+    reload_source: Option<PathBuf>,
     max_batch_operations: usize,
     audit_sink: Arc<dyn SecurityAuditSink>,
 }
@@ -2575,8 +2601,11 @@ impl ServiceSecurityConfig {
     pub fn anonymous_local() -> Self {
         Self {
             profile: ServiceSecurityProfile::AnonymousLocal,
-            authenticator: Arc::new(NoApplicationAuthenticator),
-            policy: Arc::new(AnonymousLocalPolicy),
+            policy_state: shared_security_policy_state(
+                Arc::new(NoApplicationAuthenticator),
+                Arc::new(AnonymousLocalPolicy),
+            ),
+            reload_source: None,
             max_batch_operations: usize::MAX,
             audit_sink: Arc::new(BoundedSecurityAuditSink::default_local()),
         }
@@ -2591,8 +2620,11 @@ impl ServiceSecurityConfig {
     pub fn docker_local_insecure() -> Self {
         Self {
             profile: ServiceSecurityProfile::DockerLocalInsecure,
-            authenticator: Arc::new(NoApplicationAuthenticator),
-            policy: Arc::new(AnonymousLocalPolicy),
+            policy_state: shared_security_policy_state(
+                Arc::new(NoApplicationAuthenticator),
+                Arc::new(AnonymousLocalPolicy),
+            ),
+            reload_source: None,
             max_batch_operations: usize::MAX,
             audit_sink: Arc::new(BoundedSecurityAuditSink::default_local()),
         }
@@ -2601,8 +2633,11 @@ impl ServiceSecurityConfig {
     pub fn secured() -> Self {
         Self {
             profile: ServiceSecurityProfile::Secured,
-            authenticator: Arc::new(NoApplicationAuthenticator),
-            policy: Arc::new(DefaultDenyPolicy),
+            policy_state: shared_security_policy_state(
+                Arc::new(NoApplicationAuthenticator),
+                Arc::new(DefaultDenyPolicy),
+            ),
+            reload_source: None,
             max_batch_operations: 128,
             audit_sink: Arc::new(BoundedSecurityAuditSink::default_local()),
         }
@@ -2611,29 +2646,35 @@ impl ServiceSecurityConfig {
     pub fn secured_from_config_file(
         path: impl AsRef<Path>,
     ) -> Result<Self, ServiceSecurityConfigFileError> {
-        let config = load_service_security_config_file(path.as_ref())?;
-        Ok(Self::secured()
-            .with_authenticator(Arc::new(CertificatePrincipalAuthenticator::new(
-                config.certificate_mappings,
-            )?))
-            .with_policy(Arc::new(PermissionTablePolicy::new(
-                config.permission_table,
-            )?)))
+        let path = path.as_ref();
+        let state = build_security_policy_state_from_file(path)?;
+        let mut config = Self::secured();
+        config.policy_state = Arc::new(RwLock::new(Arc::new(state)));
+        config.reload_source = Some(path.to_path_buf());
+        Ok(config)
     }
 
+    /// Replace the authenticator for this configuration value.
+    ///
+    /// Builders produce an independent policy generation, so other clones of
+    /// the configuration are unaffected. A configuration whose authenticator
+    /// or policy is replaced this way no longer reloads from a config file.
     pub fn with_authenticator(mut self, authenticator: Arc<dyn ApplicationAuthenticator>) -> Self {
-        self.authenticator = authenticator;
+        let policy = self.policy_snapshot().policy.clone();
+        self.policy_state = shared_security_policy_state(authenticator, policy);
+        self.reload_source = None;
         self
     }
 
     pub fn with_policy(mut self, policy: Arc<dyn AuthorizationPolicy>) -> Self {
-        self.policy = policy;
+        let authenticator = self.policy_snapshot().authenticator.clone();
+        self.policy_state = shared_security_policy_state(authenticator, policy);
+        self.reload_source = None;
         self
     }
 
-    pub fn with_policy_load_failure(mut self) -> Self {
-        self.policy = Arc::new(PolicyLoadFailurePolicy);
-        self
+    pub fn with_policy_load_failure(self) -> Self {
+        self.with_policy(Arc::new(PolicyLoadFailurePolicy))
     }
 
     pub fn with_max_batch_operations(mut self, max_batch_operations: usize) -> Self {
@@ -2650,8 +2691,37 @@ impl ServiceSecurityConfig {
         self.profile
     }
 
-    pub fn policy_version(&self) -> Option<&str> {
-        self.policy.policy_version()
+    /// The policy version of the currently active policy generation.
+    pub fn policy_version(&self) -> Option<String> {
+        self.policy_snapshot()
+            .policy
+            .policy_version()
+            .map(str::to_owned)
+    }
+
+    /// An operator handle that reloads certificate mappings and the permission
+    /// table from the config file this configuration was built from.
+    ///
+    /// Returns `None` unless the configuration came from
+    /// [`ServiceSecurityConfig::secured_from_config_file`]. Obtain the handle
+    /// after selecting the final audit sink so reloads are audited there.
+    pub fn policy_reloader(&self) -> Option<SecurityPolicyReloader> {
+        let source = self.reload_source.clone()?;
+        Some(SecurityPolicyReloader {
+            source,
+            policy_state: self.policy_state.clone(),
+            audit_sink: self.audit_sink.clone(),
+            audit_mode: security_audit_mode_for_profile(self.profile),
+        })
+    }
+
+    fn policy_snapshot(&self) -> Arc<SecurityPolicyState> {
+        // A poisoned lock still holds a fully built generation: swaps replace
+        // the Arc in one assignment, so readers never observe a partial state.
+        match self.policy_state.read() {
+            Ok(state) => state.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// Select the service-owned durable local audit store under `service_root/audit`.
@@ -2681,6 +2751,179 @@ impl ServiceSecurityConfig {
 
     fn allows_transport_peer(&self, peer: &TransportPeer) -> bool {
         self.profile != ServiceSecurityProfile::AnonymousLocal || transport_peer_is_loopback(peer)
+    }
+}
+
+fn build_security_policy_state_from_file(
+    path: &Path,
+) -> Result<SecurityPolicyState, ServiceSecurityConfigFileError> {
+    let config = load_service_security_config_file(path)?;
+    Ok(SecurityPolicyState {
+        authenticator: Arc::new(CertificatePrincipalAuthenticator::new(
+            config.certificate_mappings,
+        )?),
+        policy: Arc::new(PermissionTablePolicy::new(config.permission_table)?),
+    })
+}
+
+fn security_audit_mode_for_profile(profile: ServiceSecurityProfile) -> SecurityAuditMode {
+    match profile {
+        ServiceSecurityProfile::Secured => SecurityAuditMode::Mandatory,
+        ServiceSecurityProfile::AnonymousLocal | ServiceSecurityProfile::DockerLocalInsecure => {
+            SecurityAuditMode::BestEffort
+        }
+    }
+}
+
+/// Outcome of a successful operator-triggered policy reload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityPolicyReloadOutcome {
+    pub previous_policy_version: Option<String>,
+    pub policy_version: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum SecurityPolicyReloadError {
+    /// The config file could not be read, parsed or validated. The previously
+    /// active policy generation keeps serving.
+    InvalidConfig(ServiceSecurityConfigFileError),
+    /// The reload could not be recorded in the mandatory security audit, so
+    /// the previously active policy generation keeps serving.
+    AuditUnavailable,
+    /// The policy state lock was poisoned; nothing was swapped.
+    StateUnavailable,
+}
+
+impl fmt::Display for SecurityPolicyReloadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfig(error) => {
+                write!(formatter, "security policy reload rejected: {error}")
+            }
+            Self::AuditUnavailable => formatter.write_str(
+                "security policy reload not applied: the security audit sink is unavailable",
+            ),
+            Self::StateUnavailable => formatter
+                .write_str("security policy reload not applied: policy state is unavailable"),
+        }
+    }
+}
+
+impl Error for SecurityPolicyReloadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidConfig(error) => Some(error),
+            Self::AuditUnavailable | Self::StateUnavailable => None,
+        }
+    }
+}
+
+/// Operator handle that atomically replaces the certificate mappings and the
+/// permission table of a running service from its security config file.
+///
+/// The whole file is validated before anything changes; an invalid file is
+/// rejected and the active generation keeps serving. Every attempt is recorded
+/// in the security audit at stage `PolicyReload`. In the secured profile the
+/// new generation is only activated after its audit record is accepted.
+#[derive(Clone)]
+pub struct SecurityPolicyReloader {
+    source: PathBuf,
+    policy_state: SharedSecurityPolicyState,
+    audit_sink: Arc<dyn SecurityAuditSink>,
+    audit_mode: SecurityAuditMode,
+}
+
+impl fmt::Debug for SecurityPolicyReloader {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecurityPolicyReloader")
+            .field("source", &self.source)
+            .field("audit_mode", &self.audit_mode)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SecurityPolicyReloader {
+    pub fn source(&self) -> &Path {
+        &self.source
+    }
+
+    pub fn reload(&self) -> Result<SecurityPolicyReloadOutcome, SecurityPolicyReloadError> {
+        // Read and validate under the write lock so concurrent reloads are
+        // serialized and a slower, older read can never replace a newer one.
+        // Requests wait only for the duration of one small file read.
+        let mut active = self
+            .policy_state
+            .write()
+            .map_err(|_| SecurityPolicyReloadError::StateUnavailable)?;
+        let candidate = build_security_policy_state_from_file(&self.source);
+        let previous_policy_version = active.policy.policy_version().map(str::to_owned);
+        match candidate {
+            Ok(candidate) => {
+                let policy_version = candidate.policy.policy_version().map(str::to_owned);
+                self.record(
+                    SecurityAuditDecision::Allow,
+                    SecurityAuditReason::PolicyReloaded,
+                    policy_version.clone(),
+                )?;
+                *active = Arc::new(candidate);
+                Ok(SecurityPolicyReloadOutcome {
+                    previous_policy_version,
+                    policy_version,
+                })
+            }
+            Err(error) => {
+                // Best effort: the rejection is reported to the operator even
+                // when it cannot be recorded, and nothing changes either way.
+                let _ = self.record(
+                    SecurityAuditDecision::Error,
+                    SecurityAuditReason::PolicyReloadRejected,
+                    previous_policy_version,
+                );
+                Err(SecurityPolicyReloadError::InvalidConfig(error))
+            }
+        }
+    }
+
+    fn record(
+        &self,
+        decision: SecurityAuditDecision,
+        reason: SecurityAuditReason,
+        policy_version: Option<String>,
+    ) -> Result<(), SecurityPolicyReloadError> {
+        let result = (|| {
+            let request_id = self.audit_sink.allocate_request_id()?;
+            let (event_id, service_sequence) = self.audit_sink.allocate_event_identity()?;
+            self.audit_sink.append(SecurityAuditEvent {
+                schema_version: SECURITY_AUDIT_SCHEMA_VERSION,
+                event_id,
+                request_id,
+                service_sequence,
+                timestamp: SystemTime::now(),
+                service_identity: "grm-local-workspace-service".into(),
+                mode: self.audit_mode,
+                stage: SecurityAuditStage::PolicyReload,
+                transport_peer: SecurityAuditTransportPeer {
+                    remote_address_present: false,
+                    client_certificate_present: false,
+                },
+                authenticated_principal: None,
+                asserted_actor: None,
+                workspace: None,
+                operations: Vec::new(),
+                policy_version,
+                decision,
+                reason,
+                runtime_outcome: SecurityAuditRuntimeOutcome::NotReached,
+                durability_outcome: SecurityAuditDurabilityOutcome::NotApplicable,
+                delivery_outcome: SecurityAuditDeliveryOutcome::NotReached,
+            })
+        })();
+        match result {
+            Ok(()) => Ok(()),
+            Err(_) if self.audit_mode == SecurityAuditMode::BestEffort => Ok(()),
+            Err(_) => Err(SecurityPolicyReloadError::AuditUnavailable),
+        }
     }
 }
 
@@ -2914,6 +3157,7 @@ impl GrpcWorkspaceService {
     fn request_security_inputs<T>(
         &self,
         request: &Request<T>,
+        policy: &SecurityPolicyState,
     ) -> Result<(TransportPeer, Option<Principal>, Option<ActorAssertion>), SecurityEnforcementError>
     {
         let peer_certs = request.peer_certs();
@@ -2931,8 +3175,7 @@ impl GrpcWorkspaceService {
         }
         let asserted_actor = actor_assertion(request.metadata())
             .map_err(|_| SecurityEnforcementError::InvalidActorAssertion)?;
-        let authenticated_principal = self
-            .security
+        let authenticated_principal = policy
             .authenticator
             .authenticate(&transport_peer, request.metadata())
             .map_err(|_| SecurityEnforcementError::AuthenticationFailed)?;
@@ -2945,11 +3188,7 @@ impl GrpcWorkspaceService {
     }
 
     fn audit_mode(&self) -> SecurityAuditMode {
-        match self.security.profile {
-            ServiceSecurityProfile::Secured => SecurityAuditMode::Mandatory,
-            ServiceSecurityProfile::AnonymousLocal
-            | ServiceSecurityProfile::DockerLocalInsecure => SecurityAuditMode::BestEffort,
-        }
+        security_audit_mode_for_profile(self.security.profile)
     }
 
     fn ensure_mandatory_audit_available(&self) -> Result<(), SecurityEnforcementError> {
@@ -2968,6 +3207,7 @@ impl GrpcWorkspaceService {
 
     fn security_status_response(
         &self,
+        policy: &SecurityPolicyState,
         authenticated_principal: Option<Principal>,
     ) -> proto::SecurityStatusResponse {
         let principal = authenticated_principal
@@ -2985,8 +3225,8 @@ impl GrpcWorkspaceService {
             ),
             principal,
             authentication_method,
-            policy_version: self
-                .security
+            policy_version: policy
+                .policy
                 .policy_version()
                 .map(bounded_security_status_field)
                 .unwrap_or_default(),
@@ -3034,7 +3274,10 @@ impl GrpcWorkspaceService {
         }
     }
 
-    fn start_audit_request(&self) -> Result<SecurityAuditRequest, SecurityEnforcementError> {
+    fn start_audit_request(
+        &self,
+        policy: &SecurityPolicyState,
+    ) -> Result<SecurityAuditRequest, SecurityEnforcementError> {
         let mode = self.audit_mode();
         let (request_id, authoritative_persistence) =
             match self.security.audit_sink.allocate_request_id() {
@@ -3067,7 +3310,7 @@ impl GrpcWorkspaceService {
             asserted_actor: None,
             workspace: None,
             operations: Vec::new(),
-            policy_version: self.security.policy.policy_version().map(str::to_owned),
+            policy_version: policy.policy.policy_version().map(str::to_owned),
         })
     }
 
@@ -3163,6 +3406,7 @@ impl GrpcWorkspaceService {
 
     fn authorize(
         &self,
+        policy: &SecurityPolicyState,
         transport_peer: TransportPeer,
         authenticated_principal: Option<Principal>,
         asserted_actor: Option<ActorAssertion>,
@@ -3176,9 +3420,9 @@ impl GrpcWorkspaceService {
             delegated_actor: None,
             workspace,
             operations,
-            policy_version: self.security.policy.policy_version().map(str::to_owned),
+            policy_version: policy.policy.policy_version().map(str::to_owned),
         };
-        self.security
+        policy
             .policy
             .evaluate(&context)
             .map_err(|_| SecurityEnforcementError::PolicyEvaluationFailed)
@@ -3470,20 +3714,23 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::SecurityStatusRequest>,
     ) -> Result<Response<proto::SecurityStatusResponse>, Status> {
+        let policy = self.security.policy_snapshot();
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
         let (_transport_peer, authenticated_principal, _asserted_actor) = self
-            .request_security_inputs(&request)
+            .request_security_inputs(&request, &policy)
             .map_err(security_status)?;
-        Ok(Response::new(
-            self.security_status_response(authenticated_principal),
-        ))
+        Ok(Response::new(self.security_status_response(
+            &policy,
+            authenticated_principal,
+        )))
     }
 
     async fn security_audit_status(
         &self,
         request: Request<proto::SecurityAuditStatusRequest>,
     ) -> Result<Response<proto::SecurityAuditStatusResponse>, Status> {
+        let policy = self.security.policy_snapshot();
         if self.security.profile == ServiceSecurityProfile::Secured
             && self.audit_degraded.load(Ordering::Acquire)
         {
@@ -3491,11 +3738,12 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
                 self.audit_degraded.store(false, Ordering::Release);
             } else {
                 let (transport_peer, authenticated_principal, asserted_actor) = self
-                    .request_security_inputs(&request)
+                    .request_security_inputs(&request, &policy)
                     .map_err(security_status)?;
                 let operations = vec![service_security_operation(SecurityAction::AuditInspect)];
                 let decision = self
                     .authorize(
+                        &policy,
                         transport_peer,
                         authenticated_principal,
                         asserted_actor,
@@ -3509,7 +3757,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
                 return Ok(Response::new(self.security_audit_status_response(false)));
             }
         }
-        let mut audit = self.start_audit_request().map_err(security_status)?;
+        let mut audit = self.start_audit_request(&policy).map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3523,8 +3771,9 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             ),
         )
         .map_err(security_status)?;
-        let (transport_peer, authenticated_principal, asserted_actor) =
-            self.request_security_inputs(&request).map_err(|error| {
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request, &policy)
+            .map_err(|error| {
                 audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
             })?;
         audit.transport_peer = audit_transport_peer(&transport_peer);
@@ -3553,6 +3802,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         })?;
         let decision = self
             .authorize(
+                &policy,
                 transport_peer,
                 authenticated_principal,
                 asserted_actor,
@@ -3573,7 +3823,8 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCreateRequest>,
     ) -> Result<Response<proto::WorkspaceCreateResponse>, Status> {
-        let mut audit = self.start_audit_request().map_err(security_status)?;
+        let policy = self.security.policy_snapshot();
+        let mut audit = self.start_audit_request(&policy).map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3587,8 +3838,9 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             ),
         )
         .map_err(security_status)?;
-        let (transport_peer, authenticated_principal, asserted_actor) =
-            self.request_security_inputs(&request).map_err(|error| {
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request, &policy)
+            .map_err(|error| {
                 audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
             })?;
         audit.transport_peer = audit_transport_peer(&transport_peer);
@@ -3628,6 +3880,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         })?;
         let decision = self
             .authorize(
+                &policy,
                 transport_peer,
                 authenticated_principal,
                 asserted_actor,
@@ -3672,7 +3925,8 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceOpenRequest>,
     ) -> Result<Response<proto::WorkspaceOpenResponse>, Status> {
-        let mut audit = self.start_audit_request().map_err(security_status)?;
+        let policy = self.security.policy_snapshot();
+        let mut audit = self.start_audit_request(&policy).map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3686,8 +3940,9 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             ),
         )
         .map_err(security_status)?;
-        let (transport_peer, authenticated_principal, asserted_actor) =
-            self.request_security_inputs(&request).map_err(|error| {
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request, &policy)
+            .map_err(|error| {
                 audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
             })?;
         audit.transport_peer = audit_transport_peer(&transport_peer);
@@ -3742,6 +3997,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         })?;
         let decision = self
             .authorize(
+                &policy,
                 transport_peer,
                 authenticated_principal,
                 asserted_actor,
@@ -3778,7 +4034,8 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceRuntimeRequest>,
     ) -> Result<Response<proto::WorkspaceRuntimeResponse>, Status> {
-        let mut audit = self.start_audit_request().map_err(security_status)?;
+        let policy = self.security.policy_snapshot();
+        let mut audit = self.start_audit_request(&policy).map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3792,8 +4049,9 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             ),
         )
         .map_err(security_status)?;
-        let (transport_peer, authenticated_principal, asserted_actor) =
-            self.request_security_inputs(&request).map_err(|error| {
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request, &policy)
+            .map_err(|error| {
                 audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
             })?;
         audit.transport_peer = audit_transport_peer(&transport_peer);
@@ -3849,6 +4107,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         })?;
         let decision = self
             .authorize(
+                &policy,
                 transport_peer,
                 authenticated_principal,
                 asserted_actor,
@@ -3901,7 +4160,8 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         &self,
         request: Request<proto::WorkspaceCloseRequest>,
     ) -> Result<Response<proto::WorkspaceCloseResponse>, Status> {
-        let mut audit = self.start_audit_request().map_err(security_status)?;
+        let policy = self.security.policy_snapshot();
+        let mut audit = self.start_audit_request(&policy).map_err(security_status)?;
         audit.transport_peer = audit_transport_peer(&transport_peer_from_request(&request));
         self.ensure_mandatory_audit_available()
             .map_err(security_status)?;
@@ -3915,8 +4175,9 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
             ),
         )
         .map_err(security_status)?;
-        let (transport_peer, authenticated_principal, asserted_actor) =
-            self.request_security_inputs(&request).map_err(|error| {
+        let (transport_peer, authenticated_principal, asserted_actor) = self
+            .request_security_inputs(&request, &policy)
+            .map_err(|error| {
                 audit_security_error(self, &audit, SecurityAuditStage::Authentication, error)
             })?;
         audit.transport_peer = audit_transport_peer(&transport_peer);
@@ -3962,6 +4223,7 @@ impl proto::grm_service_server::GrmService for GrpcWorkspaceService {
         })?;
         let decision = self
             .authorize(
+                &policy,
                 transport_peer,
                 authenticated_principal,
                 asserted_actor,
@@ -4350,6 +4612,7 @@ fn security_audit_stage_code(stage: SecurityAuditStage) -> i32 {
         SecurityAuditStage::Runtime => proto::SecurityAuditStage::Runtime as i32,
         SecurityAuditStage::Durability => proto::SecurityAuditStage::Durability as i32,
         SecurityAuditStage::Delivery => proto::SecurityAuditStage::Delivery as i32,
+        SecurityAuditStage::PolicyReload => proto::SecurityAuditStage::PolicyReload as i32,
     }
 }
 
@@ -4506,6 +4769,8 @@ fn security_audit_reason_label(reason: SecurityAuditReason) -> &'static str {
         SecurityAuditReason::ResponseHandedOff => "response_handed_off",
         SecurityAuditReason::UnknownDelivery => "unknown_delivery",
         SecurityAuditReason::SinkUnavailable => "sink_unavailable",
+        SecurityAuditReason::PolicyReloaded => "policy_reloaded",
+        SecurityAuditReason::PolicyReloadRejected => "policy_reload_rejected",
     }
 }
 

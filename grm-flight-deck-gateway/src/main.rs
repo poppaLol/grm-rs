@@ -847,6 +847,7 @@ fn security_audit_stage_label(value: i32) -> String {
         Some(proto::SecurityAuditStage::Runtime) => "runtime",
         Some(proto::SecurityAuditStage::Durability) => "durability",
         Some(proto::SecurityAuditStage::Delivery) => "delivery",
+        Some(proto::SecurityAuditStage::PolicyReload) => "policy_reload",
         _ => "unknown",
     }
     .into()
